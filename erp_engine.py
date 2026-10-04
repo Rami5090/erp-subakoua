@@ -1237,8 +1237,15 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 # MODULE 4 : EXTRACTEUR WEB (SCRAPER CLOUD)
 # ==========================================
 elif module_principal == "🕷️ Extracteur Web (Scraper)":
+    
+    # --- INSTALLATION SÉCURISÉE DU NAVIGATEUR EN CACHE ---
+    @st.cache_resource
+    def installer_navigateur():
+        import subprocess
+        subprocess.run(["playwright", "install", "chromium"])
+        
     st.title("🕷️ Centre de Contrôle du Scraper Subakoua")
-    st.info("Lancez le robot d'aspiration directement depuis les serveurs Cloud. L'opération prendra quelques dizaines de secondes.")
+    # ... la suite du code reste identique ...
 
     # --- PARAMÈTRES ET CONSTANTES DU SCRAPER ---
     URL_CONNEXION = "https://login.arkhe.com/" 
@@ -1544,10 +1551,10 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
         elif not mois_a_scraper:
             st.error("⚠️ Veuillez sélectionner au moins un mois.")
         else:
-            with st.spinner("🤖 Démarrage du robot... Installation du navigateur fantôme (prend environ 30 secondes la première fois)..."):
-                import os
-                # Installation automatique de Playwright sur le serveur Streamlit Cloud
-                os.system("playwright install chromium")
+            with st.spinner("🤖 Démarrage du robot... (Lancement du navigateur)"):
+                
+                # On appelle la fonction cachée (elle ne s'exécutera réellement qu'une seule fois)
+                installer_navigateur()
                 
                 try:
                     structure_bdd = {
@@ -1561,6 +1568,7 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
                     # Lancement du navigateur EN MODE FANTÔME (headless=True)
                     with sync_playwright() as p:
                         browser = p.chromium.launch(headless=True) 
+                        # ... (le reste de votre logique d'extraction ne change pas) ...
                         page = browser.new_page()
 
                         page.goto(URL_CONNEXION)
