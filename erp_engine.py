@@ -381,7 +381,8 @@ st.sidebar.divider()
 module_principal = st.sidebar.radio("Choisissez le module :", [
     "📊 État des lieux global", 
     "📥 Saisie des Données Réelles", 
-    "🧠 Simulateur & Décision Stratégique"
+    "🧠 Simulateur & Décision Stratégique",
+    "🕷️ Extracteur Web (Scraper)" # <-- Ajoutez cette ligne
 ])
 
 # ==========================================
@@ -1227,3 +1228,91 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             
             for c in conseils:
                 st.markdown(c)
+
+# ==========================================
+# MODULE 4 : EXTRACTEUR WEB (SCRAPER CLOUD)
+# ==========================================
+elif module_principal == "🕷️ Extracteur Web (Scraper)":
+    st.title("🕷️ Centre de Contrôle du Scraper Subakoua")
+    st.info("Lancez le robot d'aspiration directement depuis les serveurs Cloud. L'opération prendra quelques dizaines de secondes.")
+
+    with st.form("form_scraper"):
+        st.subheader("🔐 Identifiants Subakoua")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            sub_user = st.text_input("Adresse email (Subakoua)")
+        with col_c2:
+            sub_pass = st.text_input("Mot de passe", type="password")
+
+        st.subheader("📅 Paramètres d'extraction")
+        # On utilise multiselect pour pouvoir choisir plusieurs mois d'un coup
+        mois_a_scraper = st.multiselect("Sélectionnez le(s) mois à extraire :", list(mois_mapping.keys()), default=[mois_selectionne])
+
+        st.subheader("⚙️️ Traitement des données")
+        col_o1, col_o2 = st.columns(2)
+        with col_o1:
+            opt_bdd = st.checkbox("💾 Enregistrer automatiquement dans la base de données (Aiven)", value=True)
+        with col_o2:
+            opt_export = st.checkbox("📄 Générer un fichier de sauvegarde (JSON)", value=True)
+
+        bouton_lancer = st.form_submit_button("🚀 Lancer l'Aspiration Cloud")
+
+    if bouton_lancer:
+        if not sub_user or not sub_pass:
+            st.error("⚠️ Veuillez renseigner vos identifiants Subakoua.")
+        elif not mois_a_scraper:
+            st.error("⚠️ Veuillez sélectionner au moins un mois.")
+        else:
+            with st.spinner("🤖 Démarrage du robot... Installation du navigateur fantôme (peut prendre 1 min la première fois)..."):
+                
+                # --- ASTUCE CLOUD STREAMLIT ---
+                # On force l'installation du navigateur Chromium sur le serveur Linux de Streamlit
+                import os
+                os.system("playwright install chromium")
+                os.system("playwright install-deps chromium")
+                
+                try:
+                    # ---------------------------------------------------------
+                    # C'EST ICI QUE VOUS COLLEZ LA LOGIQUE DE VOTRE SCRAPER
+                    # ---------------------------------------------------------
+                    # Exemple de structure attendue :
+                    # from playwright.sync_api import sync_playwright
+                    # donnees_extraites = {}
+                    # with sync_playwright() as p:
+                    #     browser = p.chromium.launch(headless=True)
+                    #     page = browser.new_page()
+                    #     page.goto("URL_DE_SUBAKOUA")
+                    #     page.fill('input[name="email"]', sub_user)
+                    #     page.fill('input[name="password"]', sub_pass)
+                    #     page.click('button[type="submit"]')
+                    #     ... (votre JS_EXTRACTEUR_UNIVERSEL) ...
+                    #     browser.close()
+                    
+                    # --- SIMULATION DE RÉUSSITE POUR L'EXEMPLE ---
+                    import time
+                    time.sleep(3) # Simule le temps de scraping
+                    donnees_extraites = {"statut": "succès", "mois": mois_a_scraper, "donnees": "Vos données aspirées ici"}
+                    # ---------------------------------------------------------
+
+                    st.success("✅ Aspiration terminée avec succès !")
+
+                    # Action 1 : Envoi en Base de Données
+                    if opt_bdd:
+                        with st.spinner("💾 Enregistrement dans Aiven..."):
+                            # Remplacez ceci par votre vraie requête SQL d'insertion
+                            # engine.execute(...)
+                            time.sleep(1)
+                        st.success("Données intégrées à l'ERP (Base de données Aiven).")
+
+                    # Action 2 : Création du bouton de téléchargement JSON
+                    if opt_export:
+                        json_data = json.dumps(donnees_extraites, indent=4, ensure_ascii=False)
+                        st.download_button(
+                            label="📥 Télécharger la sauvegarde (JSON)",
+                            data=json_data,
+                            file_name=f"subakoua_export.json",
+                            mime="application/json"
+                        )
+                
+                except Exception as e:
+                    st.error(f"❌ Une erreur est survenue lors du scraping : {e}")
