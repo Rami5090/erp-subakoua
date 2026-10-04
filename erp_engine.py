@@ -1137,7 +1137,7 @@ elif module_principal == "📄 Édition des Rapports PDF":
                 
                 # 4. Remplissage de la page 5 (Résultat) avec une position décalée
                 page_resultat = doc[4]
-                page_resultat.insert_text((pos_x, pos_y + 50), resultat_net, fontsize=12, color=(1, 0, 0))
+                page_resultat.insert_text((pos_x, pos_y), resultat_net, fontsize=12, color=(1, 0, 0))
                 
                 # 5. Sauvegarde
                 pdf_bytes = io.BytesIO()
