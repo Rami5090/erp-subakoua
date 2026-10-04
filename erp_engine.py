@@ -1574,14 +1574,23 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
                         # ... (le reste de votre logique d'extraction ne change pas) ...
                         page = browser.new_page()
 
+                       print("🌐 1. Connexion à Subakoua...")
                         page.goto(URL_CONNEXION)
-                        page.fill("input#username", sub_user)
-                        page.fill("input#password", sub_pass)
-                        page.click("button[type='submit']:has-text('Se connecter')")
-                        page.wait_for_load_state("load")
+                        
+                        # Sélecteurs élargis pour s'adapter à la structure d'Arkhe
+                        page.locator("input[type='email'], input[name='username'], input#username").first.fill(sub_user)
+                        page.locator("input[type='password'], input[name='password'], input#password").first.fill(sub_pass)
+                        
+                        # Clic générique sur le bouton de soumission
+                        page.locator("button[type='submit']").first.click()
+                        
+                        # On force le robot à attendre 4 secondes pleines (très important pour les redirections)
+                        page.wait_for_timeout(4000) 
                         
                         if "login" in page.url:
-                            raise Exception("Identifiants incorrects ou protection anti-bot déclenchée par Subakoua.")
+                            # On prend une capture d'écran "fantôme" pour comprendre ce qu'a vu le robot
+                            page.screenshot(path="erreur_login.png")
+                            raise Exception("Identifiants incorrects ou protection Cloudflare activée. L'IP du serveur Streamlit est peut-être bannie.")
                         
                         revenir_au_dashboard(page)
 
