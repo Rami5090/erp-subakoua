@@ -365,7 +365,8 @@ st.sidebar.divider()
 module_principal = st.sidebar.radio("Choisissez le module :", [
     "📊 État des lieux global", 
     "📥 Saisie des Données Réelles", 
-    "🧠 Simulateur & Décision Stratégique"
+    "🧠 Simulateur & Décision Stratégique",
+    "📄 Édition des Rapports PDF" # <-- LA NOUVELLE LIGNE
 ])
 
 # ==========================================
@@ -1100,3 +1101,70 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.markdown("##### 🏦 Situation de l'Entreprise")
             if treso_finale >= 0: st.info(f"Trésorerie Fin de Mois Estimée : **{treso_finale:,.2f} €**")
             else: st.error(f"⚠️ DÉCOUVERT BANCAIRE ESTIMÉ : **{treso_finale:,.2f} €**")
+# ==========================================
+# MODULE 4 : ÉDITION DES RAPPORTS PDF
+# ==========================================
+elif module_principal == "📄 Édition des Rapports PDF":
+    import fitz  # PyMuPDF
+    import io
+    
+    st.title("📄 Édition des Rapports Financiers")
+    st.write("Ce module génère le document officiel du Directeur Financier pré-rempli avec les données de l'ERP.")
+    
+    mois_export = st.selectbox("Sélectionnez la période à exporter :", list(mois_mapping.keys()))
+    periode_db_export = mois_mapping[mois_export]
+    
+    if st.button("Générer le rapport PDF", type="primary"):
+        with st.spinner("Extraction et formatage en cours..."):
+            try:
+                # 1. Récupération des données dans Aiven
+                query = f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_db_export}' AND type_donnee = 'etat_actuel' AND module = 'expert_comptable'"
+                df = pd.read_sql(query, engine)
+                
+                # Valeurs par défaut si la BDD est vide pour ce mois
+                compte_banque = "0 €"
+                resultat_net = "0 €"
+                
+                if not df.empty:
+                    donnees = json.loads(df.iloc[0]['contenu'])
+                    # Extraction basique d'exemple (à adapter selon votre structure JSON exacte)
+                    try:
+                        tab_treso = donnees.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
+                        for row in tab_treso:
+                            if "solde de trésorerie final" in str(row.get("Rubrique", "")).lower():
+                                compte_banque = str(row.get("Montant (€)", "0")) + " €"
+                            if "résultat net" in str(row.get("Rubrique", "")).lower():
+                                resultat_net = str(row.get("Montant (€)", "0")) + " €"
+                    except Exception:
+                        pass
+
+                # 2. Ouverture du PDF vierge
+                doc = fitz.open("service_financier.pdf")
+                
+                # 3. Remplissage de la page 4 (Bilan - Tableau Diagnostic)
+                page_bilan = doc[3]
+                page_bilan.insert_text((200, 150), compte_banque, fontsize=11, color=(0, 0, 0.8)) # Bleu
+                
+                # 4. Remplissage de la page 5 (Compte de résultat)
+                page_resultat = doc[4]
+                page_resultat.insert_text((200, 200), resultat_net, fontsize=11, color=(0, 0, 0.8))
+                
+                # (Vous pourrez ajouter ici le remplissage de la page 6 pour les marges, etc.)
+                
+                # 5. Sauvegarde en mémoire
+                pdf_bytes = io.BytesIO()
+                doc.save(pdf_bytes)
+                doc.close()
+                
+                st.success(f"✅ Rapport généré avec succès pour la période : {mois_export}")
+                
+                st.download_button(
+                    label="📥 Télécharger le rapport rempli (PDF)",
+                    data=pdf_bytes.getvalue(),
+                    file_name=f"Directeur_Financier_{mois_export.replace(' ', '_')}.pdf",
+                    mime="application/pdf"
+                )
+                
+            except Exception as e:
+                st.error(f"❌ Impossible de générer le document : {e}")
+                st.info("💡 Vérifiez que le fichier 'service_financier.pdf' est bien présent sur GitHub.")
