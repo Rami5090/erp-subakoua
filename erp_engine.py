@@ -1548,7 +1548,7 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
 
         bouton_lancer = st.form_submit_button("🚀 Lancer l'Aspiration Cloud")
 
-    if bouton_lancer:
+   if bouton_lancer:
         if not sub_user or not sub_pass:
             st.error("⚠️ Veuillez renseigner vos identifiants Subakoua.")
         elif not mois_a_scraper:
@@ -1556,7 +1556,6 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
         else:
             with st.spinner("🤖 Démarrage du robot... (Lancement du navigateur)"):
                 
-                # On appelle la fonction cachée (elle ne s'exécutera réellement qu'une seule fois)
                 installer_navigateur()
                 
                 try:
@@ -1571,10 +1570,9 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
                     # Lancement du navigateur EN MODE FANTÔME (headless=True)
                     with sync_playwright() as p:
                         browser = p.chromium.launch(headless=True) 
-                        # ... (le reste de votre logique d'extraction ne change pas) ...
                         page = browser.new_page()
 
-                       print("🌐 1. Connexion à Subakoua...")
+                        print("🌐 1. Connexion à Subakoua...")
                         page.goto(URL_CONNEXION)
                         
                         # Sélecteurs élargis pour s'adapter à la structure d'Arkhe
