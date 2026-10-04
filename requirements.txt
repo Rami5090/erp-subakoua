@@ -2,4 +2,3 @@ streamlit
 pandas
 SQLAlchemy
 PyMySQL
-playwright
