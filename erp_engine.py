@@ -1456,7 +1456,7 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
             page.locator("okw-select-period span[role='combobox']").first.click()
             page.wait_for_timeout(300) 
             page.locator(f"div.p-select-option-label:text-is('{periode_cible}')").last.click(timeout=5000)
-            page.wait_for_load_state("networkidle")
+            page.wait_for_load_state("load")
             page.wait_for_timeout(2500)
         except: pass
 
@@ -1480,13 +1480,13 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
             for doc in documents:
                 try:
                     page.goto(DOMAINE_BASE + doc['url'])
-                    page.wait_for_load_state("networkidle")
+                    page.wait_for_load_state("load")
                     page.wait_for_timeout(800)
                     for mois in liste_mois:
                         selectionner_mois(page, mois)
                         donnees_par_mois[mois][doc['title']] = "SPECIMEN" if verifier_specimen(page) else page.evaluate(JS_EXTRACTEUR_UNIVERSEL)
                     page.goto(url_mosaique)
-                    page.wait_for_load_state("networkidle")
+                    page.wait_for_load_state("load")
                     page.wait_for_timeout(800)
                 except Exception:
                     try: page.goto(url_mosaique)
@@ -1509,9 +1509,9 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
             for onglet in onglets:
                 try:
                     page.goto(url_module) 
-                    page.wait_for_load_state("networkidle")
+                    page.wait_for_load_state("load")
                     page.get_by_text(onglet, exact=True).first.click(timeout=5000)
-                    page.wait_for_load_state("networkidle")
+                    page.wait_for_load_state("load")
                     page.wait_for_timeout(800)
                     resultat_onglet = aspirer_page_courante(page, liste_mois)
                     for mois in liste_mois:
@@ -1524,7 +1524,7 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
     def revenir_au_dashboard(page):
         try:
             page.goto(URL_DASHBOARD)
-            page.wait_for_load_state("networkidle")
+            page.wait_for_load_state("load")
         except: pass
 
     # --- INTERFACE UTILISATEUR STREAMLIT ---
@@ -1578,7 +1578,7 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
                         page.fill("input#username", sub_user)
                         page.fill("input#password", sub_pass)
                         page.click("button[type='submit']:has-text('Se connecter')")
-                        page.wait_for_load_state("networkidle")
+                        page.wait_for_load_state("load")
                         
                         if "login" in page.url:
                             raise Exception("Identifiants incorrects ou protection anti-bot déclenchée par Subakoua.")
@@ -1588,7 +1588,7 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
                         for mot_cle_tuile, cle_dict in MODULES_A_VISITER:
                             try:
                                 page.get_by_text(mot_cle_tuile, exact=False).first.click()
-                                page.wait_for_load_state("networkidle")
+                                page.wait_for_load_state("load")
                                 donnees_multi_mois = aspirer_structure_intelligente(page, mois_a_scraper)
                                 
                                 for mois in mois_a_scraper:
