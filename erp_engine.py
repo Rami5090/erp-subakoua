@@ -1111,67 +1111,97 @@ elif module_principal == "📄 Édition des Rapports PDF":
     import json
     
     st.title("📄 Édition des Rapports Financiers")
-    st.write("Ce module remplit automatiquement les champs interactifs du PDF.")
+    st.write("Ce module extrait les données, calcule les ratios et remplit le PDF.")
     
     mois_export = st.selectbox("Sélectionnez la période à exporter :", list(mois_mapping.keys()))
     periode_db_export = mois_mapping[mois_export]
     
     if st.button("Générer le rapport PDF", type="primary"):
-        with st.spinner("Remplissage des formulaires en cours..."):
+        with st.spinner("Calculs et remplissage en cours..."):
             try:
                 # 1. Récupération des données depuis l'ERP
                 query = f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_db_export}' AND type_donnee = 'etat_actuel' AND module = 'expert_comptable'"
                 df = pd.read_sql(query, engine)
                 
-                chiffre_affaires = "0 €"
-                resultat_net = "0 €"
+                # Variables financières par défaut
+                ca = 0.0
+                res_net = 0.0
+                cap_propres = 0.0
+                dettes_fin = 0.0
+                caf = 0.0
                 
                 if not df.empty:
                     donnees = json.loads(df.iloc[0]['contenu'])
-                    # Extraction (à adapter selon votre JSON)
-                    try:
-                        tab_resultat = donnees.get("Synthèse", {}).get("Compte de résultat", {}).get("Tableau_1", [])
-                        for row in tab_resultat:
-                            rubrique = str(row.get("Rubrique", "")).lower()
-                            if "chiffre d'affaires" in rubrique:
-                                chiffre_affaires = str(row.get("Montant (€)", "0"))
-                            if "résultat net" in rubrique:
-                                resultat_net = str(row.get("Montant (€)", "0"))
-                    except Exception: pass
+                    
+                    # Fonction pour scanner tout le JSON et trouver les valeurs
+                    def chercher_valeur(mot_cle, json_data):
+                        val = 0.0
+                        if isinstance(json_data, dict):
+                            for k, v in json_data.items():
+                                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
+                                    for item in v:
+                                        rub = str(item.get("Rubrique", item.get("Passif", item.get("Actif", "")))).lower()
+                                        if mot_cle in rub:
+                                            # Cherche dans les colonnes de montants connues
+                                            for col in ["Montant (€)", "Exercice N", "Net exercice N"]:
+                                                if col in item:
+                                                    val = parse_french_float(item[col])
+                                                    if val != 0.0: return val
+                                sub_val = chercher_valeur(mot_cle, v)
+                                if sub_val != 0.0: val = sub_val
+                        return val
 
-                # 2. Dictionnaire de correspondance (Mapping)
-                # Clé = Nom exact du champ dans le PDF (l'attribut 'name')
-                # Valeur = La donnée de l'ERP à injecter
+                    # Extraction dynamique depuis le JSON de l'expert comptable
+                    ca = chercher_valeur("chiffre d'affaires", donnees)
+                    res_net = chercher_valeur("résultat net", donnees)
+                    cap_propres = chercher_valeur("total capitaux propres", donnees)
+                    # Les dettes financières s'appellent souvent "Emprunts et dettes auprès des établissements de crédit"
+                    dettes_fin = chercher_valeur("emprunts et dettes", donnees) 
+                    caf = chercher_valeur("capacité d'autofinancement", donnees)
+
+                # 2. Calcul des Ratios (avec protection contre la division par zéro)
+                tx_profitabilite = (res_net / ca * 100) if ca != 0 else 0.0
+                tx_rentabilite = (res_net / cap_propres * 100) if cap_propres != 0 else 0.0
+                ratio_independance = (cap_propres / dettes_fin) if dettes_fin != 0 else 0.0
+                ratio_remboursement = (dettes_fin / caf) if caf != 0 else 0.0
+
+                # 3. Formatage propre des nombres (Séparateur de milliers et virgule)
+                def fmt_euro(v): return f"{v:,.2f}".replace(",", " ").replace(".", ",") + " €"
+                def fmt_pct(v): return f"{v:,.2f}".replace(",", " ").replace(".", ",") + " %"
+                def fmt_num(v): return f"{v:,.2f}".replace(",", " ").replace(".", ",")
+
+                # 4. MAPPING : Association entre les champs du PDF et nos calculs
+                # ⚠️ REMPLACEZ LES CLÉS À GAUCHE PAR LES VRAIS NOMS DE VOS CHAMPS PDF !
                 donnees_a_injecter = {
-                    "Chiffre daffairesRow1": f"{chiffre_affaires} €",
-                    "Resultat netRow1": f"{resultat_net} €",
-                    # Ajoutez tous vos autres champs ici...
+                    "Chiffre daffairesRow1": fmt_euro(ca),          # Retirez le " €" ici si le PDF l'affiche déjà
+                    "Resultat netRow1": fmt_euro(res_net),
+                    "Taux de ProfitabiliteRow1": fmt_pct(tx_profitabilite),
+                    "Capitaux propresRow1": fmt_euro(cap_propres),
+                    "Taux de rentabiliteRow1": fmt_pct(tx_rentabilite),
+                    
+                    # Ligne 2 de votre tableau
+                    "Dettes financieresRow2": fmt_euro(dettes_fin),
+                    "Capitaux propresRow2": fmt_euro(cap_propres),
+                    "Ratio dindependance financiereRow2": fmt_num(ratio_independance),
+                    "CAFRow2": fmt_euro(caf),
+                    "Ratio de capacite dautofinancementRow2": fmt_num(ratio_remboursement)
                 }
 
-                # 3. Ouverture et remplissage intelligent du PDF
+                # 5. Ouverture et remplissage intelligent du PDF
                 doc = fitz.open("service_financier.pdf")
                 
                 for page in doc:
-                    for champ in page.widgets(): # Parcourt tous les champs de la page
-                        nom_champ = champ.field_name
-                        
-                        if nom_champ in donnees_a_injecter:
-                            # Assigne la valeur et met à jour l'apparence du champ
-                            champ.field_value = str(donnees_a_injecter[nom_champ])
+                    for champ in page.widgets(): 
+                        if champ.field_name in donnees_a_injecter:
+                            champ.field_value = str(donnees_a_injecter[champ.field_name])
                             champ.update()
                 
-                # Optionnel : Aplatir le PDF (empêche toute modification ultérieure par l'utilisateur)
-                # for page in doc:
-                #     for champ in page.widgets():
-                #         champ.field_flags |= fitz.PDF_FIELD_IS_READ_ONLY
-                #         champ.update()
-
-                # 4. Sauvegarde
+                # 6. Sauvegarde
                 pdf_bytes = io.BytesIO()
                 doc.save(pdf_bytes)
                 doc.close()
                 
-                st.success("✅ Formulaire rempli avec succès !")
+                st.success("✅ Formulaire rempli et calculs effectués avec succès !")
                 st.download_button(
                     label="📥 Télécharger le rapport final",
                     data=pdf_bytes.getvalue(),
@@ -1181,11 +1211,3 @@ elif module_principal == "📄 Édition des Rapports PDF":
                 
             except Exception as e:
                 st.error(f"❌ Erreur lors du remplissage : {e}")
-
-if st.button("🔍 Lister tous les champs du PDF"):
-    doc = fitz.open("service_financier.pdf")
-    st.write("### Liste des champs détectés :")
-    for num_page, page in enumerate(doc):
-        for champ in page.widgets():
-            st.write(f"- Page {num_page + 1} | Nom du champ : **{champ.field_name}** | Type : {champ.field_type_string}")
-    doc.close()
