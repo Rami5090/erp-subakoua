@@ -1143,7 +1143,7 @@ elif module_principal == "📄 Édition des Rapports PDF":
                 
                 # Coordonnées validées par vos tests (X: 70, Y: 162)
                 pos_x = 70
-                pos_y = 162
+                pos_y = 169
                 
                 # 3. Remplissage de la page 4 (Bilan)
                 page_bilan = doc[3]
