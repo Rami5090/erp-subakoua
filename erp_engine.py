@@ -1101,57 +1101,71 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.markdown("##### 🏦 Situation de l'Entreprise")
             if treso_finale >= 0: st.info(f"Trésorerie Fin de Mois Estimée : **{treso_finale:,.2f} €**")
             else: st.error(f"⚠️ DÉCOUVERT BANCAIRE ESTIMÉ : **{treso_finale:,.2f} €**")
+
 # ==========================================
-# MODULE 4 : ÉDITION DES RAPPORTS PDF (CALIBRAGE)
+# MODULE 4 : ÉDITION DES RAPPORTS PDF
 # ==========================================
 elif module_principal == "📄 Édition des Rapports PDF":
     import fitz  
     import io
     
     st.title("📄 Édition des Rapports Financiers")
-    st.write("Ce module génère le document officiel pré-rempli. Utilisez les réglages ci-dessous pour aligner le texte avec les cases de votre PDF.")
+    st.write("Ce module génère le document officiel du Directeur Financier pré-rempli avec les données de l'ERP.")
     
     mois_export = st.selectbox("Sélectionnez la période à exporter :", list(mois_mapping.keys()))
     periode_db_export = mois_mapping[mois_export]
     
-    st.divider()
-    st.subheader("🛠️ Outil d'alignement (Bilan - Page 4)")
-    col1, col2 = st.columns(2)
-    pos_x = col1.slider("Position Horizontale (X)", 0.0, 600.0, 200.0, step=5.0)
-    pos_y = col2.slider("Position Verticale (Y)", 0.0, 850.0, 150.0, step=5.0)
-    
-    if st.button("Générer le PDF de test", type="primary"):
-        with st.spinner("Génération en cours..."):
+    if st.button("Générer le rapport PDF", type="primary"):
+        with st.spinner("Extraction et formatage en cours..."):
             try:
-                # 1. Données fictives bien visibles pour le test
-                compte_banque = "15 000 € (TEST)"
-                resultat_net = "8 500 € (TEST)"
+                # 1. Récupération des données dans Aiven
+                query = f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_db_export}' AND type_donnee = 'etat_actuel' AND module = 'expert_comptable'"
+                df = pd.read_sql(query, engine)
                 
+                # Valeurs par défaut
+                compte_banque = "0 €"
+                resultat_net = "0 €"
+                
+                if not df.empty:
+                    donnees = json.loads(df.iloc[0]['contenu'])
+                    try:
+                        tab_treso = donnees.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
+                        for row in tab_treso:
+                            if "solde de trésorerie final" in str(row.get("Rubrique", "")).lower():
+                                compte_banque = str(row.get("Montant (€)", "0")) + " €"
+                            if "résultat net" in str(row.get("Rubrique", "")).lower():
+                                resultat_net = str(row.get("Montant (€)", "0")) + " €"
+                    except Exception:
+                        pass
+
                 # 2. Ouverture du PDF vierge
                 doc = fitz.open("service_financier.pdf")
                 
-                # 3. Remplissage de la page 4 (Bilan) avec les curseurs
-                # Le texte est injecté en ROUGE pour le repérer immédiatement
-                page_bilan = doc[3] 
-                page_bilan.insert_text((pos_x, pos_y), compte_banque, fontsize=12, color=(1, 0, 0))
+                # Coordonnées validées par vos tests (X: 70, Y: 162)
+                pos_x = 70
+                pos_y = 162
                 
-                # 4. Remplissage de la page 5 (Résultat) avec une position décalée
+                # 3. Remplissage de la page 4 (Bilan)
+                page_bilan = doc[3]
+                page_bilan.insert_text((pos_x, pos_y), compte_banque, fontsize=11, color=(0, 0, 0)) 
+                
+                # 4. Remplissage de la page 5 (Compte de résultat)
                 page_resultat = doc[4]
-                page_resultat.insert_text((pos_x, pos_y), resultat_net, fontsize=12, color=(1, 0, 0))
+                page_resultat.insert_text((pos_x, pos_y), resultat_net, fontsize=11, color=(0, 0, 0))
                 
                 # 5. Sauvegarde
                 pdf_bytes = io.BytesIO()
                 doc.save(pdf_bytes)
                 doc.close()
                 
-                st.success("✅ Fichier généré avec vos coordonnées !")
+                st.success(f"✅ Rapport généré avec succès pour la période : {mois_export}")
                 
                 st.download_button(
-                    label=f"📥 Télécharger le test (X:{pos_x}, Y:{pos_y})",
+                    label="📥 Télécharger le rapport rempli (PDF)",
                     data=pdf_bytes.getvalue(),
-                    file_name="test_alignement.pdf",
+                    file_name=f"Directeur_Financier_{mois_export.replace(' ', '_')}.pdf",
                     mime="application/pdf"
                 )
                 
             except Exception as e:
-                st.error(f"❌ Erreur : {e}")
+                st.error(f"❌ Impossible de générer le document : {e}")
