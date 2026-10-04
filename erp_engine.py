@@ -10,8 +10,6 @@ from playwright.sync_api import sync_playwright
 # ==========================================
 # 1. CONFIGURATION ET CONNEXION BDD
 # ==========================================
-st.set_page_config(page_title="ERP Subakoua - Cockpit Stratégique Global", layout="wide", initial_sidebar_state="expanded")
-
 # Utilisation du coffre-fort (secrets) de Streamlit pour le déploiement
 @st.cache_resource
 def init_connection():
@@ -20,10 +18,15 @@ def init_connection():
     password = st.secrets["mysql"]["password"]
     host = st.secrets["mysql"]["host"]
     database = st.secrets["mysql"]["database"]
-    port = st.secrets["mysql"].get("port", 3306) # 3306 par défaut
     
-    # Création du moteur de connexion
-    return create_engine(f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}")
+    # 1. Mise à jour du port par défaut (16869 pour votre base Aiven)
+    port = st.secrets["mysql"].get("port", 16869) 
+    
+    # 2. Création du moteur avec l'argument SSL obligatoire
+    return create_engine(
+        f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}",
+        connect_args={'ssl': {}} # <-- Indispensable pour Aiven
+    )
 
 engine = init_connection()
 
