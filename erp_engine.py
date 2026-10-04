@@ -2,6 +2,10 @@ import streamlit as st
 import pandas as pd
 import json
 from sqlalchemy import create_engine, text
+import time
+from urllib.parse import urlparse
+from playwright.sync_api import sync_playwright
+
 
 # ==========================================
 # 1. CONFIGURATION ET CONNEXION BDD
@@ -1236,6 +1240,284 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
     st.title("🕷️ Centre de Contrôle du Scraper Subakoua")
     st.info("Lancez le robot d'aspiration directement depuis les serveurs Cloud. L'opération prendra quelques dizaines de secondes.")
 
+    # --- PARAMÈTRES ET CONSTANTES DU SCRAPER ---
+    URL_CONNEXION = "https://login.arkhe.com/" 
+    URL_DASHBOARD = "https://subakoua.arkhe.com/companies"
+    DOMAINE_BASE = f"https://{urlparse(URL_DASHBOARD).netloc}"
+
+    MODULES_A_VISITER = [
+        ("Marketing", "marketing"), 
+        ("Production", "production"), 
+        ("Approvisionnement", "approvisionnement"), 
+        ("Ressources", "rh"), 
+        ("Finance", "finance"), 
+        ("Banque", "banque_assurance"),
+        ("comptable", "expert_comptable"), 
+        ("internes", "donnees_internes"),
+        ("marché", "etudes_marche"),       
+        ("Veille", "veille_concurrentielle"),
+        ("Fournisseurs", "fournisseurs")
+    ]
+
+    JS_EXTRACTEUR_UNIVERSEL = """
+    () => {
+        let data = {};
+        
+        // 1. EXTRACTION DES FORMULAIRES DE DÉCISION
+        document.querySelectorAll('okw-base-block').forEach(bloc => {
+            let serviceTitleEl = bloc.querySelector('.subSectionTitle-subtitle');
+            let sectionName = serviceTitleEl ? serviceTitleEl.innerText.trim() : "Général";
+            let sectionData = {};
+            
+            bloc.querySelectorAll('.formBlock, .formProductBlock').forEach(row => {
+                let titleEl = row.querySelector('.formBlock-title');
+                if(!titleEl) return;
+                let title = titleEl.innerText.trim();
+                let values = [];
+                
+                row.querySelectorAll('ui-labeled-data, ui-input-number').forEach(cell => {
+                    let input = cell.querySelector('input');
+                    if (input && input.hasAttribute('aria-valuenow')) {
+                        values.push(parseFloat(input.getAttribute('aria-valuenow') || 0));
+                    } else {
+                        let text = cell.innerText.replace(/[^0-9,-]/g, '').replace(',', '.');
+                        if(text !== "") values.push(parseFloat(text));
+                        else values.push(0);
+                    }
+                });
+                
+                let ratings = Array.from(row.querySelectorAll('ui-rating')).map(rating => {
+                    let score = 0;
+                    rating.querySelectorAll('svg').forEach(svg => {
+                        let paths = svg.querySelectorAll('path');
+                        if (paths.length === 1 && paths[0].getAttribute('fill') === '#FDB022') score += 1;   
+                        else if (svg.querySelector('path[clip-rule="evenodd"][fill="#FDB022"]')) score += 0.5; 
+                    });
+                    return score;
+                });
+                
+                if(ratings.length > 0) sectionData[title + " (Notes)"] = ratings;
+                if(values.length > 0) sectionData[title] = values;
+            });
+            
+            bloc.querySelectorAll('.grid-x.cell.auto').forEach(row => {
+                if (!row.closest('.formBlock') && !row.closest('.formProductBlock')) {
+                    let labelEl = row.querySelector('.uiLabel-text');
+                    let valueEl = row.querySelector('.ui-tag-info, .ui-tag-label, ._number');
+                    if(labelEl && valueEl) {
+                        let label = labelEl.innerText.trim();
+                        let valText = valueEl.innerText.replace(/[^0-9,-]/g, '').replace(',', '.');
+                        if (valText !== "") sectionData[label] = parseFloat(valText);
+                        else sectionData[label] = 0;
+                    }
+                }
+            });
+            
+            if (Object.keys(sectionData).length > 0) {
+                data[sectionName] = sectionData;
+            }
+        });
+
+        // 2. EXTRACTION DES TABLEAUX CLASSIQUES
+        document.querySelectorAll('table').forEach((table, index) => {
+            let titleEl = table.closest('.card, div').querySelector('.subSectionTitle-subtitle, .headerMainCard-title');
+            let tableName = titleEl ? titleEl.innerText.trim() : "Tableau_" + (index + 1);
+
+            let headers = Array.from(table.querySelectorAll('thead th')).map(th => th.innerText.trim());
+            let tableData = [];
+            
+            table.querySelectorAll('tbody tr').forEach(tr => {
+                let rowData = {};
+                Array.from(tr.querySelectorAll('td')).forEach((cell, i) => {
+                    let colName = headers[i] || 'Colonne_' + i;
+                    let rawText = cell.innerText.trim();
+                    let numText = rawText.replace(/[^0-9,-]/g, '').replace(',', '.');
+                    
+                    if (numText !== "" && !isNaN(numText) && rawText.match(/[0-9]/)) {
+                        rowData[colName] = parseFloat(numText);
+                    } else {
+                        rowData[colName] = rawText;
+                    }
+                });
+                if (Object.keys(rowData).length > 0) tableData.push(rowData);
+            });
+            
+            if (tableData.length > 0) {
+                data[tableName] = tableData;
+            }
+        });
+        
+        // 3. EXTRACTION DES RATIOS & KPI
+        document.querySelectorAll('okw-base-block').forEach(bloc => {
+            let serviceTitleEl = bloc.querySelector('.subSectionTitle-subtitle, .headerMainCard-title');
+            let sectionName = serviceTitleEl ? serviceTitleEl.innerText.trim() : "Ratios et Indicateurs";
+            
+            let walker = document.createTreeWalker(bloc, NodeFilter.SHOW_TEXT, null, false);
+            let node;
+            let texts = [];
+            while(node = walker.nextNode()) {
+                let t = node.nodeValue.trim();
+                if(t.length > 0 && t !== '+' && t !== '-' && t !== '€' && t !== '%') {
+                    texts.push(t);
+                }
+            }
+            
+            let ratiosTrouves = {};
+            let currentCat = "Valeurs";
+            let hasNewRatios = false;
+            
+            for(let i=0; i<texts.length; i++) {
+                let txt = texts[i];
+                if(txt.toUpperCase() === "MENSUEL" || txt.toUpperCase() === "CUMULÉ" || txt.toUpperCase() === "ANNUEL") {
+                    currentCat = txt.toUpperCase();
+                }
+                else if(txt.match(/[0-9]/) && (txt.includes('€') || txt.includes('%') || txt.match(/^[-+]?[0-9\\s]+[,.][0-9]+$/))) {
+                    if (i > 0) {
+                        let label = texts[i-1];
+                        if (!label.match(/^[0-9\\s,.-]+$/)) {
+                            let numText = txt.replace(/[^0-9,-]/g, '').replace(',', '.');
+                            let num = parseFloat(numText);
+                            if(!isNaN(num)) {
+                                if(!ratiosTrouves[currentCat]) ratiosTrouves[currentCat] = {};
+                                ratiosTrouves[currentCat][label] = num;
+                                hasNewRatios = true;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if(hasNewRatios) {
+                if(!data[sectionName]) data[sectionName] = {};
+                for(let cat in ratiosTrouves) {
+                    if (Object.keys(ratiosTrouves[cat]).length > 0) {
+                        data[sectionName][`Indicateurs_${cat}`] = [ ratiosTrouves[cat] ];
+                    }
+                }
+            }
+        });
+
+        // 4. EXTRACTION DES SOLDES ISOLÉS
+        let soldesTrouves = {};
+        let motsClesSoldes = ["Solde initial", "Solde final"];
+        let walkerSoldes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let currentNode;
+        let textesPage = [];
+        while(currentNode = walkerSoldes.nextNode()) {
+            let t = currentNode.nodeValue.trim();
+            if(t.length > 0) textesPage.push(t);
+        }
+        
+        for(let i = 0; i < textesPage.length; i++) {
+            if(motsClesSoldes.includes(textesPage[i])) {
+                for(let j = 1; j <= 3; j++) {
+                    if(i + j < textesPage.length) {
+                        let txtCible = textesPage[i+j];
+                        if(txtCible.match(/[0-9]/)) {
+                            let numStr = txtCible.replace(/\\s/g, '').replace(/[^0-9,-]/g, '').replace(',', '.');
+                            let num = parseFloat(numStr);
+                            if(!isNaN(num)) {
+                                soldesTrouves[textesPage[i]] = num;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (Object.keys(soldesTrouves).length > 0) {
+            data["Soldes bancaires"] = [soldesTrouves];
+        }
+
+        return data;
+    }
+    """
+
+    # --- FONCTIONS DU SCRAPER ---
+    def verifier_specimen(page):
+        return page.get_by_text("Vous n'avez pas encore acheté ce document", exact=False).is_visible() or page.get_by_text("SPECIMEN", exact=False).is_visible()
+
+    def selectionner_mois(page, periode_cible):
+        try:
+            page.wait_for_selector("okw-select-period span[role='combobox']", timeout=3000)
+            if periode_cible in page.locator("okw-select-period span[role='combobox']").first.inner_text():
+                return
+            page.locator("okw-select-period span[role='combobox']").first.click()
+            page.wait_for_timeout(300) 
+            page.locator(f"div.p-select-option-label:text-is('{periode_cible}')").last.click(timeout=5000)
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(2500)
+        except: pass
+
+    def aspirer_page_courante(page, liste_mois):
+        donnees_par_mois = {mois: {} for mois in liste_mois}
+        documents = page.evaluate("""
+            () => {
+                let docs = [];
+                document.querySelectorAll('a.linkItemCard').forEach(a => {
+                    let textEls = a.querySelectorAll('.text-regular-md, .linkItemCard-title');
+                    let title = textEls.length > 0 ? textEls[textEls.length - 1].innerText.trim() : "Document";
+                    let url = a.getAttribute('href');
+                    if(url) docs.push({ title: title, url: url });
+                });
+                return docs;
+            }
+        """)
+        
+        if documents and len(documents) > 0:
+            url_mosaique = page.url
+            for doc in documents:
+                try:
+                    page.goto(DOMAINE_BASE + doc['url'])
+                    page.wait_for_load_state("networkidle")
+                    page.wait_for_timeout(800)
+                    for mois in liste_mois:
+                        selectionner_mois(page, mois)
+                        donnees_par_mois[mois][doc['title']] = "SPECIMEN" if verifier_specimen(page) else page.evaluate(JS_EXTRACTEUR_UNIVERSEL)
+                    page.goto(url_mosaique)
+                    page.wait_for_load_state("networkidle")
+                    page.wait_for_timeout(800)
+                except Exception:
+                    try: page.goto(url_mosaique)
+                    except: pass
+            return donnees_par_mois
+        else:
+            for mois in liste_mois:
+                selectionner_mois(page, mois)
+                donnees_par_mois[mois] = "SPECIMEN" if verifier_specimen(page) else page.evaluate(JS_EXTRACTEUR_UNIVERSEL)
+            return donnees_par_mois
+
+    def aspirer_structure_intelligente(page, liste_mois):
+        page.wait_for_timeout(1500)
+        onglets_elements = page.locator(".p-menubar-item-content-item-label").all_inner_texts()
+        onglets = [o.strip() for o in onglets_elements if o.strip()]
+        
+        if onglets:
+            donnees_par_mois = {mois: {} for mois in liste_mois}
+            url_module = page.url 
+            for onglet in onglets:
+                try:
+                    page.goto(url_module) 
+                    page.wait_for_load_state("networkidle")
+                    page.get_by_text(onglet, exact=True).first.click(timeout=5000)
+                    page.wait_for_load_state("networkidle")
+                    page.wait_for_timeout(800)
+                    resultat_onglet = aspirer_page_courante(page, liste_mois)
+                    for mois in liste_mois:
+                        donnees_par_mois[mois][onglet] = resultat_onglet[mois]
+                except Exception: pass
+            return donnees_par_mois
+        else:
+            return aspirer_page_courante(page, liste_mois)
+
+    def revenir_au_dashboard(page):
+        try:
+            page.goto(URL_DASHBOARD)
+            page.wait_for_load_state("networkidle")
+        except: pass
+
+    # --- INTERFACE UTILISATEUR STREAMLIT ---
     with st.form("form_scraper"):
         st.subheader("🔐 Identifiants Subakoua")
         col_c1, col_c2 = st.columns(2)
@@ -1245,15 +1527,14 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
             sub_pass = st.text_input("Mot de passe", type="password")
 
         st.subheader("📅 Paramètres d'extraction")
-        # On utilise multiselect pour pouvoir choisir plusieurs mois d'un coup
         mois_a_scraper = st.multiselect("Sélectionnez le(s) mois à extraire :", list(mois_mapping.keys()), default=[mois_selectionne])
 
-        st.subheader("⚙️️ Traitement des données")
+        st.subheader("⚙ Traitement des données")
         col_o1, col_o2 = st.columns(2)
         with col_o1:
             opt_bdd = st.checkbox("💾 Enregistrer automatiquement dans la base de données (Aiven)", value=True)
         with col_o2:
-            opt_export = st.checkbox("📄 Générer un fichier de sauvegarde (JSON)", value=True)
+            opt_export = st.checkbox("📄 Générer un fichier de sauvegarde (JSON) disponible au téléchargement", value=True)
 
         bouton_lancer = st.form_submit_button("🚀 Lancer l'Aspiration Cloud")
 
@@ -1263,54 +1544,79 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
         elif not mois_a_scraper:
             st.error("⚠️ Veuillez sélectionner au moins un mois.")
         else:
-            with st.spinner("🤖 Démarrage du robot... Installation du navigateur fantôme (peut prendre 1 min la première fois)..."):
-                
-                # --- ASTUCE CLOUD STREAMLIT ---
-                # On force l'installation du navigateur Chromium sur le serveur Linux de Streamlit
+            with st.spinner("🤖 Démarrage du robot... Installation du navigateur fantôme (prend environ 30 secondes la première fois)..."):
                 import os
+                # Installation automatique de Playwright sur le serveur Streamlit Cloud
                 os.system("playwright install chromium")
                 os.system("playwright install-deps chromium")
                 
                 try:
-                    # ---------------------------------------------------------
-                    # C'EST ICI QUE VOUS COLLEZ LA LOGIQUE DE VOTRE SCRAPER
-                    # ---------------------------------------------------------
-                    # Exemple de structure attendue :
-                    # from playwright.sync_api import sync_playwright
-                    # donnees_extraites = {}
-                    # with sync_playwright() as p:
-                    #     browser = p.chromium.launch(headless=True)
-                    #     page = browser.new_page()
-                    #     page.goto("URL_DE_SUBAKOUA")
-                    #     page.fill('input[name="email"]', sub_user)
-                    #     page.fill('input[name="password"]', sub_pass)
-                    #     page.click('button[type="submit"]')
-                    #     ... (votre JS_EXTRACTEUR_UNIVERSEL) ...
-                    #     browser.close()
-                    
-                    # --- SIMULATION DE RÉUSSITE POUR L'EXEMPLE ---
-                    import time
-                    time.sleep(3) # Simule le temps de scraping
-                    donnees_extraites = {"statut": "succès", "mois": mois_a_scraper, "donnees": "Vos données aspirées ici"}
-                    # ---------------------------------------------------------
+                    structure_bdd = {
+                        "metadata": {
+                            "projet": "Subakoua ERP",
+                            "date_export": time.strftime("%Y-%m-%d %H:%M:%S")
+                        },
+                        "periodes": {mois: {"etat_actuel": {}, "saisies_manuelles": {}, "simulations": {}} for mois in mois_a_scraper}
+                    }
+
+                    # Lancement du navigateur EN MODE FANTÔME (headless=True)
+                    with sync_playwright() as p:
+                        browser = p.chromium.launch(headless=True) 
+                        page = browser.new_page()
+
+                        page.goto(URL_CONNEXION)
+                        page.fill("input#username", sub_user)
+                        page.fill("input#password", sub_pass)
+                        page.click("button[type='submit']:has-text('Se connecter')")
+                        page.wait_for_load_state("networkidle")
+                        
+                        if "login" in page.url:
+                            raise Exception("Identifiants incorrects ou protection anti-bot déclenchée par Subakoua.")
+                        
+                        revenir_au_dashboard(page)
+
+                        for mot_cle_tuile, cle_dict in MODULES_A_VISITER:
+                            try:
+                                page.get_by_text(mot_cle_tuile, exact=False).first.click()
+                                page.wait_for_load_state("networkidle")
+                                donnees_multi_mois = aspirer_structure_intelligente(page, mois_a_scraper)
+                                
+                                for mois in mois_a_scraper:
+                                    structure_bdd["periodes"][mois]["etat_actuel"][cle_dict] = donnees_multi_mois.get(mois, {})
+                                    
+                                revenir_au_dashboard(page)
+                            except Exception:
+                                revenir_au_dashboard(page)
+
+                        browser.close()
 
                     st.success("✅ Aspiration terminée avec succès !")
 
-                    # Action 1 : Envoi en Base de Données
+                    # Action 1 : Envoi direct et sécurisé dans Aiven via SQLAlchemy
                     if opt_bdd:
                         with st.spinner("💾 Enregistrement dans Aiven..."):
-                            # Remplacez ceci par votre vraie requête SQL d'insertion
-                            # engine.execute(...)
-                            time.sleep(1)
-                        st.success("Données intégrées à l'ERP (Base de données Aiven).")
+                            with engine.begin() as conn:
+                                sql_insert = text("""
+                                    INSERT INTO erp_donnees (periode, type_donnee, module, contenu)
+                                    VALUES (:periode, :type_donnee, :module, :contenu)
+                                    ON DUPLICATE KEY UPDATE 
+                                        contenu = VALUES(contenu), 
+                                        date_maj = NOW()
+                                """)
+                                for periode, types_donnee in structure_bdd["periodes"].items():
+                                    for type_donnee, modules in types_donnee.items():
+                                        for nom_module, donnees_module in modules.items():
+                                            json_data = json.dumps(donnees_module, ensure_ascii=False)
+                                            conn.execute(sql_insert, {"periode": periode, "type_donnee": type_donnee, "module": nom_module, "contenu": json_data})
+                        st.success("☁️ Données intégrées avec succès à l'ERP (Base de données Aiven).")
 
                     # Action 2 : Création du bouton de téléchargement JSON
                     if opt_export:
-                        json_data = json.dumps(donnees_extraites, indent=4, ensure_ascii=False)
+                        json_str = json.dumps(structure_bdd, indent=4, ensure_ascii=False)
                         st.download_button(
                             label="📥 Télécharger la sauvegarde (JSON)",
-                            data=json_data,
-                            file_name=f"subakoua_export.json",
+                            data=json_str,
+                            file_name=f"subakoua_export_{time.strftime('%Y%m%d_%H%M%S')}.json",
                             mime="application/json"
                         )
                 
