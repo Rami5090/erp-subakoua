@@ -1133,11 +1133,11 @@ elif module_principal == "📄 Édition des Rapports PDF":
                 # 3. Remplissage de la page 4 (Bilan) avec les curseurs
                 # Le texte est injecté en ROUGE pour le repérer immédiatement
                 page_bilan = doc[3] 
-                page_bilan.insert_text((pos_x, pos_y), compte_banque, fontsize=12, color=(1, 0, 0), fontname="helv-bold")
+                page_bilan.insert_text((pos_x, pos_y), compte_banque, fontsize=12, color=(1, 0, 0))
                 
                 # 4. Remplissage de la page 5 (Résultat) avec une position décalée
                 page_resultat = doc[4]
-                page_resultat.insert_text((pos_x, pos_y + 50), resultat_net, fontsize=12, color=(1, 0, 0), fontname="helv-bold")
+                page_resultat.insert_text((pos_x, pos_y + 50), resultat_net, fontsize=12, color=(1, 0, 0))
                 
                 # 5. Sauvegarde
                 pdf_bytes = io.BytesIO()
