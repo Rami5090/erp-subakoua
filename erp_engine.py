@@ -1103,7 +1103,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             else: st.error(f"⚠️ DÉCOUVERT BANCAIRE ESTIMÉ : **{treso_finale:,.2f} €**")
 
 # ==========================================
-# MODULE 4 : ÉDITION DES RAPPORTS PDF (VIA FORMULAIRES)
+# MODULE 4 : ÉDITION DES RAPPORTS PDF (AUTO-MATCHER INTELLIGENT)
 # ==========================================
 elif module_principal == "📄 Édition des Rapports PDF":
     import fitz  
@@ -1111,27 +1111,13 @@ elif module_principal == "📄 Édition des Rapports PDF":
     import json
     
     st.title("📄 Édition des Rapports Financiers")
-    st.write("Ce module extrait les données, calcule les ratios et remplit le PDF de la Direction Financière.")
+    st.write("Ce module détecte automatiquement les cases du document et y injecte les bons calculs.")
     
-    # --- 🔍 BOUTON DE DIAGNOSTIC (À supprimer une fois vos noms de champs trouvés) ---
-    if st.button("🔍 Lister les vrais noms des champs du PDF", type="secondary"):
-        try:
-            doc_test = fitz.open("service_financier.pdf")
-            st.info("Voici les noms exacts à copier-coller dans votre code (dictionnaire 'donnees_a_injecter') :")
-            for num_page, page in enumerate(doc_test):
-                for champ in page.widgets():
-                    st.code(f"Page {num_page + 1} | Nom du champ : {champ.field_name}")
-            doc_test.close()
-        except Exception as e:
-            st.error(f"Erreur de lecture du PDF : {e}")
-    st.divider()
-    # ---------------------------------------------------------------------------------
-
     mois_export = st.selectbox("Sélectionnez la période à exporter :", list(mois_mapping.keys()))
     periode_db_export = mois_mapping[mois_export]
     
     if st.button("🚀 Générer le rapport PDF", type="primary"):
-        with st.spinner("Extraction, calculs et remplissage en cours..."):
+        with st.spinner("Analyse du PDF et calcul des ratios en cours..."):
             try:
                 # 1. Récupération des données depuis l'ERP
                 query = f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_db_export}' AND type_donnee = 'etat_actuel' AND module = 'expert_comptable'"
@@ -1143,11 +1129,12 @@ elif module_principal == "📄 Édition des Rapports PDF":
                 cap_propres = 0.0
                 dettes_fin = 0.0
                 caf = 0.0
+                compte_banque = 0.0 # Ajout pour la page 4
                 
                 if not df.empty:
                     donnees = json.loads(df.iloc[0]['contenu'])
                     
-                    # Fonction de recherche agressive dans le JSON
+                    # Radar à données JSON
                     def chercher_valeur(mots_cles, json_data):
                         val = 0.0
                         if isinstance(json_data, dict):
@@ -1155,71 +1142,77 @@ elif module_principal == "📄 Édition des Rapports PDF":
                                 if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
                                     for item in v:
                                         rub = str(item.get("Rubrique", item.get("Passif", item.get("Actif", item.get("Libellé", ""))))).lower()
-                                        
-                                        # Vérifie si l'un des mots-clés correspond à la rubrique
                                         if any(mc in rub for mc in mots_cles):
-                                            # Ratisse large sur les noms de colonnes possibles
                                             for col in ["Montant (€)", "Exercice N", "Net exercice N", "Cumul", "CUMUL", "Montant"]:
                                                 if col in item:
-                                                    val = parse_french_float(item[col])
-                                                    if val != 0.0: return val
+                                                    v_float = parse_french_float(item[col])
+                                                    if v_float != 0.0: return v_float
                                 sub_val = chercher_valeur(mots_cles, v)
                                 if sub_val != 0.0: val = sub_val
                         return val
 
-                    # Extraction avec mots-clés multiples pour éviter les ratés
-                    ca = chercher_valeur(["chiffre d'affaires", "chiffres d'affaires", "ca net"], donnees)
-                    res_net = chercher_valeur(["résultat net", "resultat net", "résultat de l'exercice"], donnees)
-                    cap_propres = chercher_valeur(["total capitaux propres", "capitaux propres"], donnees)
-                    dettes_fin = chercher_valeur(["emprunts et dettes", "dettes financières", "dettes financieres"], donnees) 
-                    caf = chercher_valeur(["capacité d'autofinancement", "capacite d'autofinancement", "caf"], donnees)
+                    ca = chercher_valeur(["chiffre d'affaires", "ca net"], donnees)
+                    res_net = chercher_valeur(["résultat net", "résultat de l'exercice"], donnees)
+                    cap_propres = chercher_valeur(["total capitaux propres"], donnees)
+                    dettes_fin = chercher_valeur(["emprunts et dettes", "dettes financières"], donnees) 
+                    caf = chercher_valeur(["capacité d'autofinancement", "caf"], donnees)
+                    compte_banque = chercher_valeur(["solde de trésorerie final", "banque", "disponibilités"], donnees)
 
-                # 2. Calcul des Ratios (avec protection division par zéro)
+                # 2. Calcul des Ratios 
                 tx_profitabilite = (res_net / ca * 100) if ca != 0 else 0.0
                 tx_rentabilite = (res_net / cap_propres * 100) if cap_propres != 0 else 0.0
                 ratio_independance = (cap_propres / dettes_fin) if dettes_fin != 0 else 0.0
                 ratio_remboursement = (dettes_fin / caf) if caf != 0 else 0.0
 
-                # 3. Formatage propre (Le PDF semble déjà avoir des "€" ou "%" en dur selon les cases, 
-                # on envoie donc juste le chiffre formaté à la française pour éviter les doublons "€€")
                 def fmt_num(v): return f"{v:,.2f}".replace(",", " ").replace(".", ",")
 
-                # 4. MAPPING : Le Cerveau de l'opération
-                # ⚠️ REMPLACEZ LES CLÉS À GAUCHE PAR LES VRAIS NOMS TROUVÉS AVEC LE BOUTON 🔍
-                donnees_a_injecter = {
-                    "Remplacer_Par_Vrai_Nom_CA": fmt_num(ca),
-                    "Remplacer_Par_Vrai_Nom_ResNet_1": fmt_num(res_net),
-                    "Remplacer_Par_Vrai_Nom_Profitabilite": fmt_num(tx_profitabilite),
-                    "Remplacer_Par_Vrai_Nom_CapPropres_1": fmt_num(cap_propres),
-                    "Remplacer_Par_Vrai_Nom_Rentabilite": fmt_num(tx_rentabilite),
-                    
-                    "Remplacer_Par_Vrai_Nom_DettesFin_2": fmt_num(dettes_fin),
-                    "Remplacer_Par_Vrai_Nom_CapPropres_2": fmt_num(cap_propres),
-                    "Remplacer_Par_Vrai_Nom_Independance": fmt_num(ratio_independance),
-                    "Remplacer_Par_Vrai_Nom_CAF": fmt_num(caf),
-                    "Remplacer_Par_Vrai_Nom_Remboursement": fmt_num(ratio_remboursement)
-                }
-
-                # 5. Injection dans le PDF
+                # 3. Ouverture du PDF
                 doc = fitz.open("service_financier.pdf")
-                
                 champs_remplis = 0
+                
+                # 4. L'AUTO-MATCHER : Le robot lit le nom des champs et décide tout seul
                 for page in doc:
                     for champ in page.widgets(): 
-                        if champ.field_name in donnees_a_injecter:
-                            champ.field_value = str(donnees_a_injecter[champ.field_name])
+                        nom = champ.field_name.lower()
+                        valeur_a_injecter = ""
+
+                        # Analyse heuristique des noms de champs
+                        if "chiffre" in nom or "affaire" in nom:
+                            valeur_a_injecter = fmt_num(ca)
+                        elif "profitabilit" in nom:
+                            valeur_a_injecter = fmt_num(tx_profitabilite)
+                        elif "rentabilit" in nom:
+                            valeur_a_injecter = fmt_num(tx_rentabilite)
+                        elif "independance" in nom or "indépendance" in nom:
+                            valeur_a_injecter = fmt_num(ratio_independance)
+                        elif "autofinancement" in nom and "ratio" in nom:
+                            valeur_a_injecter = fmt_num(ratio_remboursement)
+                        elif "caf" in nom or "autofinancement" in nom:
+                            valeur_a_injecter = fmt_num(caf)
+                        elif "resultat" in nom or "résultat" in nom:
+                            valeur_a_injecter = fmt_num(res_net)
+                        elif "capitaux" in nom or "propre" in nom:
+                            valeur_a_injecter = fmt_num(cap_propres)
+                        elif "dette" in nom and "financi" in nom:
+                            valeur_a_injecter = fmt_num(dettes_fin)
+                        elif "banque" in nom:
+                            valeur_a_injecter = fmt_num(compte_banque)
+                        
+                        # Si on a trouvé une correspondance, on l'injecte
+                        if valeur_a_injecter != "":
+                            champ.field_value = valeur_a_injecter
                             champ.update()
                             champs_remplis += 1
                 
-                # 6. Sauvegarde
+                # 5. Sauvegarde
                 pdf_bytes = io.BytesIO()
                 doc.save(pdf_bytes)
                 doc.close()
                 
                 if champs_remplis > 0:
-                    st.success(f"✅ Succès ! {champs_remplis} champs ont été remplis automatiquement.")
+                    st.success(f"✅ Formulaire intelligent terminé ! {champs_remplis} cases ont été remplies automatiquement.")
                 else:
-                    st.warning("⚠️ Le PDF a été généré, mais aucun champ n'a été rempli. Avez-vous bien mis les vrais noms dans le dictionnaire 'donnees_a_injecter' ?")
+                    st.warning("⚠️ Aucun champ reconnu. Vérifiez que c'est bien le PDF interactif.")
 
                 st.download_button(
                     label="📥 Télécharger le rapport final",
