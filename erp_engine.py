@@ -1,36 +1,32 @@
 import streamlit as st
 import pandas as pd
 import json
-from sqlalchemy import create_engine, text
 import time
+import subprocess
+import sys
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
-
+from sqlalchemy import create_engine, text
 
 # ==========================================
-# 1. CONFIGURATION ET CONNEXION BDD
+# 1. CONFIGURATION ET CONNEXION BDD (CLOUD)
 # ==========================================
-# Utilisation du coffre-fort (secrets) de Streamlit pour le déploiement
+st.set_page_config(page_title="ERP Subakoua - Cockpit Stratégique Global", layout="wide", initial_sidebar_state="expanded")
+
 @st.cache_resource
 def init_connection():
-    # On récupère les identifiants cachés
     user = st.secrets["mysql"]["user"]
     password = st.secrets["mysql"]["password"]
     host = st.secrets["mysql"]["host"]
     database = st.secrets["mysql"]["database"]
-    
-    # 1. Mise à jour du port par défaut (16869 pour votre base Aiven)
     port = st.secrets["mysql"].get("port", 16869) 
     
-    # 2. Création du moteur avec l'argument SSL obligatoire
     return create_engine(
         f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}",
-        connect_args={'ssl': {}} # <-- Indispensable pour Aiven
+        connect_args={'ssl': {}} 
     )
 
 engine = init_connection()
-
-# ... (le reste du code reste exactement identique) ...
 
 def init_db_simu():
     try:
@@ -53,16 +49,12 @@ init_db_simu()
 # 2. CHARGEMENT BDD & FONCTIONS UTILITAIRES
 # ==========================================
 def parse_french_float(val):
-    """Nettoie les nombres au format français (ex: '1 026,00 €') pour Python."""
-    if isinstance(val, (int, float)): 
-        return float(val)
+    if isinstance(val, (int, float)): return float(val)
     try:
         clean_str = str(val).replace(" ", "").replace("\u202f", "").replace("\xa0", "").replace("€", "").replace(",", ".").strip()
-        if clean_str == "" or clean_str == "-": 
-            return 0.0
+        if clean_str == "" or clean_str == "-": return 0.0
         return float(clean_str)
-    except:
-        return 0.0
+    except: return 0.0
 
 @st.cache_data
 def charger_nomenclature_bdd():
@@ -79,8 +71,7 @@ def charger_nomenclature_bdd():
                     'maximum': float(row['coeff_max'])
                 }
         return nom_dict
-    except Exception:
-        return {}
+    except Exception: return {}
 
 @st.cache_data
 def charger_temps_ateliers_bdd():
@@ -97,8 +88,7 @@ def charger_temps_ateliers_bdd():
                     'maximum': float(row['temps_max'])
                 }
         return temps_dict
-    except Exception:
-        return {}
+    except Exception: return {}
 
 @st.cache_data
 def charger_stocks_securite_bdd():
@@ -106,18 +96,15 @@ def charger_stocks_securite_bdd():
         query = "SELECT matiere, stock_securite FROM Parametres_StocksSecurite"
         df = pd.read_sql(query, engine)
         return dict(zip(df['matiere'], df['stock_securite']))
-    except Exception:
-        return {}
+    except Exception: return {}
 
 @st.cache_data
 def charger_parametre_global(nom_param, defaut=0.0):
     try:
         query = f"SELECT valeur FROM Parametres_Globaux WHERE parametre = '{nom_param}'"
         df = pd.read_sql(query, engine)
-        if not df.empty:
-            return float(df['valeur'].iloc[0])
-    except Exception:
-        pass
+        if not df.empty: return float(df['valeur'].iloc[0])
+    except Exception: pass
     return float(defaut)
 
 @st.cache_data
@@ -151,7 +138,6 @@ def optimiser_fournisseur_matiere(matiere, qualite_visee, critere="prix"):
         return df_tarifs.iloc[0].to_dict()
     except Exception: return None
 
-# --- Fonctions DYNAMIQUES sans Cache ---
 def charger_donnees_rh_bdd(tour_id):
     try:
         df = pd.read_sql(f"SELECT * FROM Decisions_RH_Mensuel WHERE Tour_ID = {tour_id}", engine)
@@ -207,7 +193,6 @@ def sauvegarder_scenario_seed(token_seed, tour_id, nom, parametres_dict):
     except Exception as e:
         st.error(f"Erreur sauvegarde seed : {e}")
 
-# --- Moteur Récursif Etat des lieux ---
 def afficher_tableau_dynamique(donnees):
     try:
         if isinstance(donnees, list) and len(donnees) > 0 and isinstance(donnees[0], dict):
@@ -254,7 +239,6 @@ def rendre_module_etat_des_lieux(donnees_module):
                 st.markdown("<br>", unsafe_allow_html=True)
                 parcourir_structure_json(contenu_onglet, niveau=4)
 
-# --- Utilitaires de simulation sécurisés ---
 def sim_number(label, key, default_val, step=None):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.number_input(label, key=key, step=step)
@@ -279,16 +263,12 @@ def sim_checkbox(label, key, default_val):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.checkbox(label, key=key)
 
-# Global params
 nomenclature_dynamique = charger_nomenclature_bdd()
 temps_dynamique = charger_temps_ateliers_bdd()
 stocks_securite_db = charger_stocks_securite_bdd()
 capacite_ref_machine = charger_parametre_global('capacite_min_machine', 9600.0)
 ratio_optimum_rh = charger_parametre_global('ratio_structure_optimum', 0.45)
 
-# ==========================================
-# 3. FONCTIONS MÉTIER & ALGORITHMES
-# ==========================================
 def predire_notes_publicite(budget_marq, axe_princ, axe_acc, budgets_prods):
     eval_produits = {}
     if budget_marq >= 70000: noto = 4.0
@@ -389,7 +369,7 @@ module_principal = st.sidebar.radio("Choisissez le module :", [
     "📊 État des lieux global", 
     "📥 Saisie des Données Réelles", 
     "🧠 Simulateur & Décision Stratégique",
-    "🕷️ Extracteur Web (Scraper)" # <-- Ajoutez cette ligne
+    "🕷️ Extracteur Web (Scraper)"
 ])
 
 # ==========================================
@@ -933,7 +913,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     with tab_sim_fin:
         st.subheader("5. Décisions Financières & Situation de l'Entreprise")
         
-        # --- RECUPERATION 100% BDD (M-1) ---
         donnees_fin_act = charger_donnees_fin_bdd(tour_id_precedent)
         dotations_prev = float(donnees_fin_act.get('Dotations_Amortissements', 0.0))
         dette_bancaire = float(donnees_fin_act.get('Emprunts_Bancaires', 0.0))
@@ -943,16 +922,13 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         
         report_a_nouveau = 0.0
         resultat_exercice_cumule = res_net_historique
-        
         ca_cumule_historique = 0.0
         res_avant_impot_cumule_historique = 0.0
 
-        # 🧠 SMART BRIDGE BDD : Aspiration robuste depuis les tables erp_donnees
         try:
             periode_m1_nom_ui = [k for k, v in tour_mapping_id.items() if v == tour_id_precedent][0]
             periode_m1_db = mois_mapping[periode_m1_nom_ui]
             
-            # 1. Trésorerie Banque
             df_bq = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'banque_assurance' AND type_donnee = 'etat_actuel'", engine)
             if not df_bq.empty:
                 data_bq = json.loads(df_bq.iloc[0]['contenu'])
@@ -961,7 +937,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                         if "Solde final" in acc:
                             treso_initiale = parse_french_float(acc["Solde final"])
             
-            # 2. Données Bilan & Compte de Résultat (Expert-Comptable)
             df_ec = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'expert_comptable' AND type_donnee = 'etat_actuel'", engine)
             if not df_ec.empty:
                 data_ec = json.loads(df_ec.iloc[0]['contenu'])
@@ -969,35 +944,27 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                 for row in tab_treso:
                     rub = str(row.get("Rubrique", "")).lower()
-                    if "résultat net" in rub:
-                        res_net_historique = parse_french_float(row.get("Montant (€)", res_net_historique))
-                    if "dotations aux amortissements" in rub:
-                        dotations_prev = parse_french_float(row.get("Montant (€)", dotations_prev))
-                    if "solde de trésorerie final" in rub or "solde de tresorerie final" in rub:
-                        treso_initiale = parse_french_float(row.get("Montant (€)", treso_initiale))
+                    if "résultat net" in rub: res_net_historique = parse_french_float(row.get("Montant (€)", res_net_historique))
+                    if "dotations aux amortissements" in rub: dotations_prev = parse_french_float(row.get("Montant (€)", dotations_prev))
+                    if "solde de trésorerie final" in rub or "solde de tresorerie final" in rub: treso_initiale = parse_french_float(row.get("Montant (€)", treso_initiale))
                         
                 tab_bilan = data_ec.get("Synthèse", {}).get("Bilan détaillé", {}).get("Tableau_1", [])
                 for row in tab_bilan:
                     pas = str(row.get("Passif", "")).lower()
                     act = str(row.get("Actif", "")).lower()
-                    
-                    if "total capitaux propres" in pas:
-                        val_cap = parse_french_float(row.get("Exercice N", 0.0))
-                        if val_cap != 0.0: capitaux_propres = val_cap
-                    if "report à nouveau" in pas or "report a nouveau" in pas:
-                        val_ran = parse_french_float(row.get("Exercice N", 0.0))
-                        if val_ran != 0.0: report_a_nouveau = val_ran
+                    if "total capitaux propres" in pas: 
+                        val = parse_french_float(row.get("Exercice N", 0.0))
+                        if val != 0.0: capitaux_propres = val
+                    if "report à nouveau" in pas or "report a nouveau" in pas: 
+                        val = parse_french_float(row.get("Exercice N", 0.0))
+                        if val != 0.0: report_a_nouveau = val
                     if "résultat de l'exercice" in pas or "resultat de l'exercice" in pas:
-                        val_res = parse_french_float(row.get("Exercice N", 0.0))
-                        if val_res != 0.0: resultat_exercice_cumule = val_res
-                        
-                    # NOUVEAU : Fallback infaillible pour la trésorerie via le Bilan Actif
+                        val = parse_french_float(row.get("Exercice N", 0.0))
+                        if val != 0.0: resultat_exercice_cumule = val
                     if act.strip() == "banque" or "disponibilités" in act:
-                        val_bq = parse_french_float(row.get("Net exercice N", row.get("Exercice N", 0.0)))
-                        if val_bq != 0.0 and treso_initiale == 0.0: 
-                            treso_initiale = val_bq
+                        val = parse_french_float(row.get("Net exercice N", row.get("Exercice N", 0.0)))
+                        if val != 0.0 and treso_initiale == 0.0: treso_initiale = val
 
-                # 3. Extraction intelligente de tous les tableaux pour dénicher les cumuls
                 def scan_cumuls_recur(node):
                     ca, res = 0.0, 0.0
                     if isinstance(node, dict):
@@ -1030,72 +997,54 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 c_json, r_json = scan_cumuls_recur(data_ec)
                 if c_json != 0.0: ca_cumule_historique = c_json
                 if r_json != 0.0: res_avant_impot_cumule_historique = r_json
-                        
         except Exception:
             pass
 
-        # 4. SÉCURITÉ SQL : Si le JSON ne remonte rien, on somme la table Finances_Mensuelles
         if ca_cumule_historique == 0.0 and tour_id_precedent > 1:
             try:
                 df_sql_hist = pd.read_sql(f"SELECT SUM(CA_Net) as sum_ca, SUM(Resultat_Net) as sum_res FROM Finances_Mensuelles WHERE Tour_ID <= {tour_id_precedent}", engine)
                 if not df_sql_hist.empty:
-                    val_sca = df_sql_hist['sum_ca'].iloc[0]
-                    val_sres = df_sql_hist['sum_res'].iloc[0]
-                    if val_sca is not None: ca_cumule_historique = float(val_sca)
-                    if val_sres is not None: res_avant_impot_cumule_historique = float(val_sres)
-            except Exception:
-                pass
+                    if df_sql_hist['sum_ca'].iloc[0] is not None: ca_cumule_historique = float(df_sql_hist['sum_ca'].iloc[0])
+                    if df_sql_hist['sum_res'].iloc[0] is not None: res_avant_impot_cumule_historique = float(df_sql_hist['sum_res'].iloc[0])
+            except Exception: pass
 
         st.markdown("##### 📁 Saisie des Décisions Administration / Finance")
         tab_f1, tab_f2, tab_f3, tab_f4 = st.tabs(["Compte épargne", "Ordres de bourse", "Assurances", "Actionnariat"])
         
         with tab_f1:
-            st.info("Le compte épargne permet de placer la trésorerie au taux de 1,20 %. Un placement ne génère des intérêts qu'au mois suivant.")
-            c_e1, c_e2, c_e3 = st.columns(3)
             solde_initial_ep = sim_number("Solde initial", "sim_solde_ep", 1500000.0, step=1000.0)
             placement_ep = sim_number("Placement", "sim_plac_ep", 0.0, step=1000.0)
             retrait_ep = sim_number("Retrait", "sim_retr_ep", 0.0, step=1000.0)
-            nouveau_solde_epargne = solde_initial_ep + placement_ep - retrait_ep
-            st.metric("Nouveau solde compte épargne", f"{nouveau_solde_epargne:,.2f} €")
+            st.metric("Nouveau solde compte épargne", f"{solde_initial_ep + placement_ep - retrait_ep:,.2f} €")
 
         with tab_f2:
-            st.info("Saisissez le nombre d'unités (u) achetées ou vendues.")
             c_b1, c_b2 = st.columns(2)
             with c_b1:
                 st.markdown("**Actions**")
-                a_a1 = sim_number("Achat A1 (224,58 €)", "sim_ach_a1", 0)
+                a_a1 = sim_number("Achat A1", "sim_ach_a1", 0)
                 v_a1 = sim_number("Vente A1", "sim_ven_a1", 0)
-                a_a2 = sim_number("Achat A2 (200,64 €)", "sim_ach_a2", 0)
+                a_a2 = sim_number("Achat A2", "sim_ach_a2", 0)
                 v_a2 = sim_number("Vente A2", "sim_ven_a2", 0)
-                a_a3 = sim_number("Achat A3 (163,84 €)", "sim_ach_a3", 0)
+                a_a3 = sim_number("Achat A3", "sim_ach_a3", 0)
                 v_a3 = sim_number("Vente A3", "sim_ven_a3", 0)
             with c_b2:
                 st.markdown("**Obligations**")
-                a_o1 = sim_number("Achat O1 (109,09 €)", "sim_ach_o1", 0)
+                a_o1 = sim_number("Achat O1", "sim_ach_o1", 0)
                 v_o1 = sim_number("Vente O1", "sim_ven_o1", 0)
-                a_o2 = sim_number("Achat O2 (114,89 €)", "sim_ach_o2", 0)
+                a_o2 = sim_number("Achat O2", "sim_ach_o2", 0)
                 v_o2 = sim_number("Vente O2", "sim_ven_o2", 0)
-                a_o3 = sim_number("Achat O3 (114,78 €)", "sim_ach_o3", 0)
+                a_o3 = sim_number("Achat O3", "sim_ach_o3", 0)
                 v_o3 = sim_number("Vente O3", "sim_ven_o3", 0)
 
         with tab_f3:
-            st.info("Les contrats sont reconduits par tacite reconduction.")
-            c_a1, c_a2, c_a3 = st.columns(3)
             ass_rc = sim_checkbox("Responsabilité civile (2 000,00 €)", "sim_ass_rc", True)
             ass_db = sim_checkbox("Dommages aux biens (2 000,00 €)", "sim_ass_db", True)
             ass_pe = sim_checkbox("Pertes d'exploitation (2 000,00 €)", "sim_ass_pe", True)
-            
-            cout_assurances = 0
-            if ass_rc: cout_assurances += 2000
-            if ass_db: cout_assurances += 2000
-            if ass_pe: cout_assurances += 2000
-            if ass_rc and ass_db and ass_pe:
-                cout_assurances -= 1000
-                st.success("Remise de 1 000,00 € appliquée pour la souscription aux 3 contrats.")
+            cout_assurances = (2000 if ass_rc else 0) + (2000 if ass_db else 0) + (2000 if ass_pe else 0)
+            if ass_rc and ass_db and ass_pe: cout_assurances -= 1000
             st.metric("Total des contrats d'assurance", f"{cout_assurances:,.2f} €")
 
         with tab_f4:
-            st.info("Capital Initial: 4 000 000,00 € | Nombre de parts Initial: 40 000 parts | Prix d'une part: 100,00 €")
             div_par_part = sim_number("Dividende versé par part (€)", "sim_div_part", 0.0, step=0.50)
             total_div = div_par_part * 40000
             st.metric("Total dividendes versés", f"{total_div:,.2f} €")
@@ -1103,138 +1052,58 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         st.divider()
         st.markdown("##### 💶 Synthèse Financière & Situation Globale de l'Entreprise")
         
-        masse_salariale_prod = tot_p if 'tot_p' in locals() else 44500.0
-        masse_salariale_appro = tot_a if 'tot_a' in locals() else 20500.0
-        masse_salariale_admin = tot_f if 'tot_f' in locals() else 20400.0
-        ms_prev_brute = masse_salariale_prod + masse_salariale_appro + masse_salariale_admin
-
+        ms_prev_brute = tot_p + tot_a + tot_f
         charges_sociales_prev = ms_prev_brute * 0.50 
         budget_mkg_prev = budget_pub_marque + sum(budgets_p_dict.values())
-        
-        amortissement_nouveau = cout_invest_machines / 60
-        dotations_totales = dotations_prev + amortissement_nouveau
+        dotations_totales = dotations_prev + (cout_invest_machines / 60)
 
         total_charges = cout_achats_total_sim + ms_prev_brute + charges_sociales_prev + budget_mkg_prev + dotations_totales + cout_assurances
-        rex_prev = ca_prev_sim - total_charges
-        
-        interets_epargne = solde_initial_ep * (0.012 / 12) 
-        frais_financiers = dette_bancaire * 0.005 
-        res_financier = interets_epargne - frais_financiers
-        
-        res_avant_impot = rex_prev + res_financier
+        res_financier = (solde_initial_ep * (0.012 / 12)) - (dette_bancaire * 0.005)
+        res_avant_impot = (ca_prev_sim - total_charges) + res_financier
         
         deficit_cumule = report_a_nouveau + resultat_exercice_cumule
         if deficit_cumule > 0: deficit_cumule = 0 
         
         assiette_fiscale = res_avant_impot + deficit_cumule
         impot_is = assiette_fiscale * 0.25 if assiette_fiscale > 0 else 0.0
-        
         res_net_prev = res_avant_impot - impot_is
 
-        # --- CALCULS DES RATIOS (BDD PURE) ---
         taux_profitabilite = (res_avant_impot / ca_prev_sim * 100) if ca_prev_sim > 0 else 0.0
         taux_rentabilite = (res_avant_impot / capitaux_propres * 100) if capitaux_propres > 0 else 0.0
 
         ca_cumule_sim = ca_cumule_historique + ca_prev_sim
         res_avant_impot_cumule_sim = res_avant_impot_cumule_historique + res_avant_impot
-        
         taux_profitabilite_cumule = (res_avant_impot_cumule_sim / ca_cumule_sim * 100) if ca_cumule_sim > 0 else 0.0
         taux_rentabilite_cumule = (res_avant_impot_cumule_sim / capitaux_propres * 100) if capitaux_propres > 0 else 0.0
 
         achats_titres = (a_a1 * 224.58) + (a_a2 * 200.64) + (a_a3 * 163.84) + (a_o1 * 109.09) + (a_o2 * 114.89) + (a_o3 * 114.78)
         ventes_titres = (v_a1 * 224.58) + (v_a2 * 200.64) + (v_a3 * 163.84) + (v_o1 * 109.09) + (v_o2 * 114.89) + (v_o3 * 114.78)
         
-        delta_ca = ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim
-        variation_bfr = delta_ca * 0.15
+        variation_bfr = (ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim) * 0.15
         
         flux_financier = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div
-        flux_investissement = - cout_invest_machines
-        flux_exploitation = res_net_prev + dotations_totales - variation_bfr
-        treso_finale = treso_initiale + flux_exploitation + flux_financier + flux_investissement
+        treso_finale = treso_initiale + (res_net_prev + dotations_totales - variation_bfr) + flux_financier - cout_invest_machines
         
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            st.markdown("##### 📈 Produits d'Exploitation")
+            st.markdown("##### 📈 Produits & Charges")
             st.metric("Chiffre d'Affaires Prévisionnel (CA)", f"{ca_prev_sim:,.2f} €")
-            st.markdown("##### 📉 Charges d'Exploitation")
-            st.metric("Achats Matières (MRP2)", f"{cout_achats_total_sim:,.2f} €")
-            st.metric("Budget Marketing & PLV", f"{budget_mkg_prev:,.2f} €")
-            st.metric("Rémunération du personnel (Brut)", f"{ms_prev_brute:,.2f} €")
-            st.metric("Charges sociales patronales (50%)", f"{charges_sociales_prev:,.2f} €")
-            st.metric("Frais d'Assurances", f"{cout_assurances:,.2f} €")
-            st.metric("Amortissements (Anciens + Nouveaux)", f"{dotations_totales:,.2f} €")
             st.metric("Total des Charges d'Exploitation", f"{total_charges:,.2f} €")
-            
-            st.markdown("##### 🛒 Investissements (Décaissements)")
-            st.metric("Achat Nouvelles Machines", f"{flux_investissement:,.2f} €")
+            st.metric("Achat Nouvelles Machines", f"{-cout_invest_machines:,.2f} €")
             
         with col_f2:
             st.markdown("##### 🎯 Résultat Prévisionnel")
-            st.metric("Résultat d'Exploitation (REX)", f"{rex_prev:,.2f} €")
-            st.metric("Résultat Financier (Estimé)", f"{res_financier:,.2f} €")
+            if deficit_cumule < 0: st.caption(f"🛡️ *Bouclier fiscal actif : Pertes cumulées de {deficit_cumule:,.2f} €.*")
+            st.metric("Résultat Net Prévisionnel", f"{res_net_prev:,.2f} €", delta=f"{res_net_prev - res_net_historique:+,.2f} € vs M-1", delta_color="normal")
             
-            if deficit_cumule < 0:
-                st.caption(f"🛡️ *Bouclier fiscal actif : Pertes cumulées de {deficit_cumule:,.2f} € à éponger avant impôt.*")
-            
-            if impot_is > 0:
-                st.metric("Impôt sur les Sociétés (25%)", f"- {impot_is:,.2f} €")
-            else:
-                st.metric("Impôt sur les Sociétés", "0.00 € (Exonéré ou Déficit)")
-            
-            delta_res_net = res_net_prev - res_net_historique
-            st.metric(
-                "Résultat Net Prévisionnel", 
-                f"{res_net_prev:,.2f} €", 
-                delta=f"{delta_res_net:+,.2f} € vs M-1", 
-                delta_color="normal"
-            )
-            
-            st.markdown("##### 📊 Répartition des Charges Prévisionnelles")
-            df_charts = pd.DataFrame({
-                "Poste": ["Achats", "Marketing", "Salaires + Charges", "Assurances", "Amortissements"],
-                "Montant (€)": [cout_achats_total_sim, budget_mkg_prev, ms_prev_brute + charges_sociales_prev, cout_assurances, dotations_totales]
-            }).set_index("Poste")
-            st.bar_chart(df_charts)
-
             st.markdown("##### 📊 Ratios de Performance")
-            tab_rat_mensuel, tab_rat_cumule = st.tabs(["Indicateurs Mensuels", "Indicateurs Cumulés"])
-            
-            with tab_rat_mensuel:
-                c_rm1, c_rm2 = st.columns(2)
-                c_rm1.metric("Taux de Profitabilité", f"{taux_profitabilite:.2f} %", help="Résultat avant impôt mensuel / CA mensuel")
-                c_rm2.metric("Taux de Rentabilité", f"{taux_rentabilite:.2f} %", help="Résultat avant impôt mensuel / Capitaux propres")
-                
-            with tab_rat_cumule:
-                c_rc1, c_rc2 = st.columns(2)
-                c_rc1.metric("Taux de Profitabilité (Cumulé)", f"{taux_profitabilite_cumule:.2f} %", help="Résultat avant impôt cumulé / CA cumulé")
-                c_rc2.metric("Taux de Rentabilité (Cumulé)", f"{taux_rentabilite_cumule:.2f} %", help="Résultat avant impôt cumulé / Capitaux propres")
-                st.caption(f"CA Cumulé M-1: {ca_cumule_historique:,.2f} € | Res. Avant Impôt Cumulé M-1: {res_avant_impot_cumule_historique:,.2f} €")
+            c_rm1, c_rm2 = st.columns(2)
+            c_rm1.metric("Profitabilité Mensuelle", f"{taux_profitabilite:.2f} %")
+            c_rm2.metric("Rentabilité Mensuelle", f"{taux_rentabilite:.2f} %")
 
-            st.markdown("##### 🏦 Situation de l'Entreprise & BFR")
-            st.write(f"**Trésorerie Initiale (Mois M-1) :** {treso_initiale:,.2f} €")
-            st.write(f"**Cash-Flow (Résultat Net + Amortissements) :** {flux_exploitation + variation_bfr:,.2f} €")
-            st.write(f"**Variation estimée du BFR :** {-variation_bfr:,.2f} €")
-            st.write(f"**Investissements (Machines) :** {flux_investissement:,.2f} €")
-            st.write(f"**Mouvements Hors-Exploitation :** {flux_financier:,.2f} €")
-            
-            if treso_finale >= 0:
-                st.info(f"Trésorerie Fin de Mois Estimée : **{treso_finale:,.2f} €**")
-            else:
-                st.error(f"⚠️ DÉCOUVERT BANCAIRE ESTIMÉ : **{treso_finale:,.2f} €**")
-
-            st.markdown("##### 🤖 Audit & Conseil Stratégique IA")
-            conseils = []
-            if treso_finale < 0:
-                conseils.append("🔴 **Alerte Trésorerie :** Vos choix mènent à un découvert bancaire. Envisagez de réduire vos investissements en machines ou d'augmenter vos prix.")
-            if taux_profitabilite < 0:
-                conseils.append("⚠️ **Rentabilité Mensuelle Négative :** Vos charges dépassent votre chiffre d'affaires ce mois-ci. Vérifiez vos volumes de production et vos dépenses marketing.")
-            if deficit_cumule < 0 and res_net_prev > 0:
-                conseils.append("🛡️ **Optimisation Fiscale :** Le bouclier fiscal absorbe vos impôts ce mois-ci grâce aux pertes passées. Profitez-en pour consolider vos marges.")
-            if not conseils:
-                conseils.append("✅ **Situation Stable :** Vos voyants financiers sont au vert. La trajectoire de rentabilité et la trésorerie sont saines.")
-            
-            for c in conseils:
-                st.markdown(c)
+            st.markdown("##### 🏦 Situation de l'Entreprise")
+            if treso_finale >= 0: st.info(f"Trésorerie Fin de Mois Estimée : **{treso_finale:,.2f} €**")
+            else: st.error(f"⚠️ DÉCOUVERT BANCAIRE ESTIMÉ : **{treso_finale:,.2f} €**")
 
 # ==========================================
 # MODULE 4 : EXTRACTEUR WEB (SCRAPER CLOUD)
@@ -1242,13 +1111,18 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 elif module_principal == "🕷️ Extracteur Web (Scraper)":
     
     # --- INSTALLATION SÉCURISÉE DU NAVIGATEUR EN CACHE ---
-    @st.cache_resource
+    @st.cache_resource(show_spinner=False)
     def installer_navigateur():
-        import subprocess
-        subprocess.run(["playwright", "install", "chromium"])
+        # On lance l'installation de manière totalement silencieuse (DEVNULL)
+        # pour éviter que la barre de progression ne fasse planter Streamlit Cloud
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
         
     st.title("🕷️ Centre de Contrôle du Scraper Subakoua")
-    # ... la suite du code reste identique ...
+    st.info("Lancez le robot d'aspiration directement depuis les serveurs Cloud. L'opération prendra quelques dizaines de secondes.")
 
     # --- PARAMÈTRES ET CONSTANTES DU SCRAPER ---
     URL_CONNEXION = "https://login.arkhe.com/" 
@@ -1273,7 +1147,6 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
     () => {
         let data = {};
         
-        // 1. EXTRACTION DES FORMULAIRES DE DÉCISION
         document.querySelectorAll('okw-base-block').forEach(bloc => {
             let serviceTitleEl = bloc.querySelector('.subSectionTitle-subtitle');
             let sectionName = serviceTitleEl ? serviceTitleEl.innerText.trim() : "Général";
@@ -1328,7 +1201,6 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
             }
         });
 
-        // 2. EXTRACTION DES TABLEAUX CLASSIQUES
         document.querySelectorAll('table').forEach((table, index) => {
             let titleEl = table.closest('.card, div').querySelector('.subSectionTitle-subtitle, .headerMainCard-title');
             let tableName = titleEl ? titleEl.innerText.trim() : "Tableau_" + (index + 1);
@@ -1357,7 +1229,6 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
             }
         });
         
-        // 3. EXTRACTION DES RATIOS & KPI
         document.querySelectorAll('okw-base-block').forEach(bloc => {
             let serviceTitleEl = bloc.querySelector('.subSectionTitle-subtitle, .headerMainCard-title');
             let sectionName = serviceTitleEl ? serviceTitleEl.innerText.trim() : "Ratios et Indicateurs";
@@ -1407,7 +1278,6 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
             }
         });
 
-        // 4. EXTRACTION DES SOLDES ISOLÉS
         let soldesTrouves = {};
         let motsClesSoldes = ["Solde initial", "Solde final"];
         let walkerSoldes = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
@@ -1548,7 +1418,7 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
 
         bouton_lancer = st.form_submit_button("🚀 Lancer l'Aspiration Cloud")
 
-   if bouton_lancer:
+    if bouton_lancer:
         if not sub_user or not sub_pass:
             st.error("⚠️ Veuillez renseigner vos identifiants Subakoua.")
         elif not mois_a_scraper:
