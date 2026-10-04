@@ -1548,7 +1548,6 @@ elif module_principal == "🕷️ Extracteur Web (Scraper)":
                 import os
                 # Installation automatique de Playwright sur le serveur Streamlit Cloud
                 os.system("playwright install chromium")
-                os.system("playwright install-deps chromium")
                 
                 try:
                     structure_bdd = {
