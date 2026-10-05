@@ -1076,8 +1076,9 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         treso_initiale = float(donnees_fin_act.get('Disponibilites_Banque', get_h('Tresorerie_Initiale', 0.0)))
         capitaux_propres = float(donnees_fin_act.get('Total_Capitaux_Propres', 0.0))
         
+        # Nouvelles variables pour scanner l'ERP automatiquement
         aace_historique = float(donnees_fin_act.get('Autres_Charges_Externes', 1104787.0))
-        deprec_historique = 99367.22 
+        deprec_historique = 793362.66 
         
         report_a_nouveau = 0.0
         resultat_exercice_cumule = res_net_historique
@@ -1101,7 +1102,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
                     
-                    # --- EXTRACTION CIBLÉE SUR LA BONNE COLONNE (JSON DEBUG) ---
+                    # --- EXTRACTION AUTOMATIQUE CIBLÉE DES CHARGES FIXES ---
                     cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat détaillé", {}).get("Tableau_1", [])
                     if not cr_lignes:
                         cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat simplifié", {}).get("Tableau_1", [])
@@ -1111,6 +1112,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     
                     for row in cr_lignes:
                         libelle = str(row.get("Colonne_0", "")).lower()
+                        # On récupère la valeur numérique de la ligne avec les clés que vous m'avez fournies
                         val_brute = row.get("Colonne_1", row.get("Montants (€)", 0.0))
                         montant = parse_french_float(val_brute)
                                     
@@ -1123,7 +1125,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
                     if v_aace != 0.0: aace_historique = v_aace
                     if v_deprec != 0.0: deprec_historique = v_deprec
-                    # ------------------------------------------------------------
+                    # --------------------------------------------------------
                     
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                     for row in tab_treso:
@@ -1236,10 +1238,13 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         with tab_f5:
             st.info("🤖 **Automatisé** : L'ERP a récupéré vos charges fixes incompressibles depuis le compte de résultat du mois précédent.")
             
-            # Contournement de sim_number pour que les valeurs forcées à 0 par un scénario n'écrasent plus l'historique !
-            aace_fixes = st.number_input("AACE Fixes (Loyers, énergie, transports...)", value=float(aace_historique), step=10000.0)
-            depreciations_prev = st.number_input("Dotations aux dépréciations & Autres charges", value=float(deprec_historique), step=10000.0)
+            # --- SUPPRESSION DES CHAMPS DE SAISIE POUR CONTOURNER LE CACHE DE STREAMLIT ---
+            aace_fixes = aace_historique
+            depreciations_prev = deprec_historique
             
+            c_fix1, c_fix2 = st.columns(2)
+            c_fix1.metric("AACE Fixes (Loyers, énergie, transports...)", f"{aace_fixes:,.2f} €")
+            c_fix2.metric("Dotations aux dépréciations & Autres charges", f"{depreciations_prev:,.2f} €")
             st.metric("Total Charges de structure fixes", f"{aace_fixes + depreciations_prev:,.2f} €")
 
         st.divider()
@@ -1255,6 +1260,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_maintenance_mensuel = 0.005
         maintenance_nouvelles_machines = cout_invest_machines * taux_maintenance_mensuel
 
+        # 🎯 IMPACT SUR LE RÉSULTAT : Les charges fixes sont maintenant IMPOSÉES au calcul
         total_charges = (
             cout_achats_total_sim + 
             ms_prev_brute + 
