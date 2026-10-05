@@ -1187,7 +1187,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     if df_sql_hist['sum_res'].iloc[0] is not None: res_avant_impot_cumule_historique = float(df_sql_hist['sum_res'].iloc[0])
             except Exception: pass
 
-        st.markdown("##### 📁 Saisie des Décisions Administration / Finance")
+       st.markdown("##### 📁 Saisie des Décisions Administration / Finance")
         tab_f1, tab_f2, tab_f3, tab_f4, tab_f5 = st.tabs(["Compte épargne", "Ordres de bourse", "Assurances", "Actionnariat", "Charges Fixes & Structure"])
         
         with tab_f1:
@@ -1219,115 +1219,4 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             ass_rc = sim_checkbox("Responsabilité civile (2 000,00 €)", "sim_ass_rc", True)
             ass_db = sim_checkbox("Dommages aux biens (2 000,00 €)", "sim_ass_db", True)
             ass_pe = sim_checkbox("Pertes d'exploitation (2 000,00 €)", "sim_ass_pe", True)
-            cout_assurances = (2000 if ass_rc else 0) + (2000 if ass_db else 0) + (2000 if ass_pe else 0)
-            if ass_rc and ass_db and ass_pe: cout_assurances -= 1000
-            st.metric("Total des contrats d'assurance", f"{cout_assurances:,.2f} €")
-
-        with tab_f4:
-            div_par_part = sim_number("Dividende versé par part (€)", "sim_div_part", 0.0, step=0.50)
-            total_div = div_par_part * 40000
-            st.metric("Total dividendes versés", f"{total_div:,.2f} €")
-            
-        with tab_f5:
-            st.info("🤖 **Automatisé** : L'ERP a récupéré vos charges fixes incompressibles depuis le compte de résultat du mois précédent.")
-            
-            with st.expander("🔍 DEBUG : AFFICHER LE JSON DU COMPTE DE RÉSULTAT"):
-                try:
-                    st.json(data_ec)
-                except Exception:
-                    st.warning("JSON non disponible pour le moment.")
-
-            aace_fixes = sim_number("AACE Fixes (Loyers, énergie, transports...)", "sim_aace_fixes", aace_historique, step=10000.0)
-            depreciations_prev = sim_number("Dotations aux dépréciations & Autres charges", "sim_deprec_prev", deprec_historique, step=10000.0)
-            st.metric("Total Charges de structure fixes",
-        st.markdown("##### 💶 Synthèse Financière & Situation Globale de l'Entreprise")
-        
-        ms_prev_brute = tot_p + tot_a + tot_f
-        charges_sociales_prev = ms_prev_brute * 0.50 
-        budget_mkg_prev = budget_pub_marque + sum(budgets_p_dict.values())
-        
-        dotations_base = dotations_prev if dotations_prev > 0 else 250000.0
-        dotations_totales = dotations_base + (cout_invest_machines / 60)
-
-        taux_maintenance_mensuel = 0.005
-        maintenance_nouvelles_machines = cout_invest_machines * taux_maintenance_mensuel
-
-        # 🎯 IMPACT SUR LE RÉSULTAT : Les charges fixes sont maintenant massivement déduites
-        total_charges = (
-            cout_achats_total_sim + 
-            ms_prev_brute + 
-            charges_sociales_prev + 
-            budget_mkg_prev + 
-            dotations_totales + 
-            cout_assurances + 
-            maintenance_nouvelles_machines + 
-            aace_fixes + 
-            depreciations_prev
-        )
-        
-        res_financier = (solde_initial_ep * (0.012 / 12)) - (dette_bancaire * 0.005)
-        res_avant_impot = (ca_prev_sim - total_charges) + res_financier
-        
-        deficit_cumule = report_a_nouveau + resultat_exercice_cumule
-        if deficit_cumule > 0: deficit_cumule = 0 
-        
-        assiette_fiscale = res_avant_impot + deficit_cumule
-        impot_is = assiette_fiscale * 0.25 if assiette_fiscale > 0 else 0.0
-        res_net_prev = res_avant_impot - impot_is
-
-        taux_profitabilite = (res_avant_impot / ca_prev_sim * 100) if ca_prev_sim > 0 else 0.0
-        taux_rentabilite = (res_avant_impot / capitaux_propres * 100) if capitaux_propres > 0 else 0.0
-
-        ca_cumule_sim = ca_cumule_historique + ca_prev_sim
-        res_avant_impot_cumule_sim = res_avant_impot_cumule_historique + res_avant_impot
-        taux_profitabilite_cumule = (res_avant_impot_cumule_sim / ca_cumule_sim * 100) if ca_cumule_sim > 0 else 0.0
-        taux_rentabilite_cumule = (res_avant_impot_cumule_sim / capitaux_propres * 100) if capitaux_propres > 0 else 0.0
-
-        achats_titres = (a_a1 * 224.58) + (a_a2 * 200.64) + (a_a3 * 163.84) + (a_o1 * 109.09) + (a_o2 * 114.89) + (a_o3 * 114.78)
-        ventes_titres = (v_a1 * 224.58) + (v_a2 * 200.64) + (v_a3 * 163.84) + (v_o1 * 109.09) + (v_o2 * 114.89) + (v_o3 * 114.78)
-        
-        # 🎯 IMPACT SUR LA TRÉSORERIE : Logique parfaite des Flux de Trésorerie
-        if "Crédit Fournisseur" in mode_financement_machines:
-            nouvelle_dette_fournisseur = cout_invest_machines * 0.70
-        else:
-            nouvelle_dette_fournisseur = 0.0
-
-        variation_bfr_commercial = ((ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim) * 0.15)
-        
-        flux_treso_exploitation = res_net_prev + dotations_totales - variation_bfr_commercial
-        flux_treso_investissement = - cout_invest_machines
-        flux_treso_financement = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div + nouvelle_dette_fournisseur
-        
-        treso_finale = treso_initiale + flux_treso_exploitation + flux_treso_investissement + flux_treso_financement
-        
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            st.markdown("##### 📈 Produits & Charges")
-            st.metric("Chiffre d'Affaires Prévisionnel (CA)", f"{ca_prev_sim:,.2f} €")
-            st.metric("Total des Charges d'Exploitation", f"{total_charges:,.2f} €")
-            st.metric("Achat Nouvelles Machines", f"{-cout_invest_machines:,.2f} €")
-            
-            st.markdown("##### 🏛️ Fiscalité & Impôts")
-            if deficit_cumule < 0: 
-                st.caption(f"🛡 *Bouclier fiscal actif : Pertes reportées de {deficit_cumule:,.2f} €.*")
-            st.metric("Impôt sur les Sociétés (IS)", f"{-impot_is:,.2f} €")
-            
-        with col_f2:
-            st.markdown("##### 🎯 Résultat Prévisionnel")
-            st.metric("Résultat Net Mensuel Prévisionnel", f"{res_net_prev:,.2f} €", delta=f"{res_net_prev - res_net_historique:+,.2f} € vs M-1", delta_color="normal")
-            
-            st.markdown("##### 📊 Ratios de Performance")
-            c_rm1, c_rm2 = st.columns(2)
-            c_rm1.metric("Profitabilité Mensuelle", f"{taux_profitabilite:.2f} %")
-            c_rm2.metric("Rentabilité Mensuelle", f"{taux_rentabilite:.2f} %")
-            
-            c_rc1, c_rc2 = st.columns(2)
-            c_rc1.metric("Profitabilité CUMULÉE", f"{taux_profitabilite_cumule:.2f} %")
-            c_rc2.metric("Rentabilité CUMULÉE", f"{taux_rentabilite_cumule:.2f} %")
-
-        st.divider()
-        st.markdown("##### 🏦 Situation de l'Entreprise")
-        if treso_finale >= 0: 
-            st.info(f"Trésorerie Fin de Mois Estimée : **{treso_finale:,.2f} €**")
-        else: 
-            st.error(f"⚠️ DÉCOUVERT BANCAIRE ESTIMÉ : **{treso_finale:,.2f} €**")
+            cout_assurances = (2000 if ass_rc else 0) +
