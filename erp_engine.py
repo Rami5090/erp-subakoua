@@ -341,37 +341,93 @@ def charger_donnees_fin_bdd(tour_id):
     return {}
 
 def lister_scenarios(tour_id):
-    if engine is None: return []
+    """Liste les scénarios du tour demandé, triés pour une UI stable."""
+    if engine is None:
+        return []
     try:
-        df = pd.read_sql(text("SELECT Token_Seed, Nom_Scenario FROM simulations_seeds WHERE Tour_ID = :tour_id"), engine, params={"tour_id": int(tour_id)})
-        return df.to_dict('records')
-    except Exception: return []
+        query = text("""
+            SELECT Token_Seed, Nom_Scenario
+            FROM simulations_seeds
+            WHERE Tour_ID = :tour_id
+            ORDER BY Nom_Scenario ASC, Token_Seed ASC
+        """)
+        df = pd.read_sql(query, engine, params={"tour_id": int(tour_id)})
+        return df.to_dict("records")
+    except Exception:
+        return []
+
 
 def charger_scenario_seed(token_seed, tour_id):
-    if engine is None: return {}
+    if engine is None:
+        return {}
     try:
-        df = pd.read_sql(text("SELECT * FROM simulations_seeds WHERE Token_Seed = :token_seed AND Tour_ID = :tour_id"), engine, params={"token_seed": token_seed, "tour_id": int(tour_id)})
-        if not df.empty: return df.iloc[0].to_dict()
-    except Exception: pass
+        query = text("""
+            SELECT *
+            FROM simulations_seeds
+            WHERE Token_Seed = :token_seed AND Tour_ID = :tour_id
+            LIMIT 1
+        """)
+        df = pd.read_sql(
+            query, engine,
+            params={"token_seed": str(token_seed), "tour_id": int(tour_id)},
+        )
+        if not df.empty:
+            return df.iloc[0].to_dict()
+    except Exception:
+        return {}
     return {}
 
+
 def sauvegarder_scenario_seed(token_seed, tour_id, nom, parametres_dict):
-    if engine is None: return
+    if engine is None:
+        return False
     try:
-        clean_params = {k: v for k, v in parametres_dict.items() if isinstance(v, (int, float, str, bool))}
+        clean_params = {
+            k: v for k, v in parametres_dict.items()
+            if isinstance(v, (int, float, str, bool))
+        }
         json_data = json.dumps(clean_params, ensure_ascii=False)
+        nom_propre = str(nom).strip()[:100] or "Scénario de travail"
         query = text("""
             INSERT INTO simulations_seeds (Token_Seed, Tour_ID, Nom_Scenario, Parametres_JSON)
             VALUES (:token_seed, :tour_id, :nom, :json_data)
-            ON DUPLICATE KEY UPDATE Nom_Scenario=:nom_update, Parametres_JSON=:json_update
+            ON DUPLICATE KEY UPDATE
+                Nom_Scenario = :nom_update,
+                Parametres_JSON = :json_update
         """)
         with engine.begin() as conn:
             conn.execute(query, {
-                "token_seed": token_seed, "tour_id": int(tour_id), "nom": nom, "json_data": json_data,
-                "nom_update": nom, "json_update": json_data,
+                "token_seed": str(token_seed),
+                "tour_id": int(tour_id),
+                "nom": nom_propre,
+                "json_data": json_data,
+                "nom_update": nom_propre,
+                "json_update": json_data,
             })
+        return True
     except Exception as e:
-        st.error(f"Erreur sauvegarde seed : {e}")
+        st.error(f"Erreur sauvegarde scénario : {e}")
+        return False
+
+
+def supprimer_scenario_seed(token_seed, tour_id):
+    """Supprime un scénario dans le tour concerné uniquement."""
+    if engine is None:
+        return False
+    try:
+        query = text("""
+            DELETE FROM simulations_seeds
+            WHERE Token_Seed = :token_seed AND Tour_ID = :tour_id
+        """)
+        with engine.begin() as conn:
+            result = conn.execute(query, {
+                "token_seed": str(token_seed),
+                "tour_id": int(tour_id),
+            })
+        return int(result.rowcount or 0) > 0
+    except Exception as e:
+        st.error(f"Erreur suppression scénario : {e}")
+        return False
 
 # Fonctions d'aide globale sécurisées
 def get_rh_v(donnees_rh, k, def_v): return float(donnees_rh.get(k, def_v))
@@ -851,24 +907,35 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     nb_m_cond_actuel = get_m('Nb_Machines_Cond', 4)
 
     # -------------------------------------------------------------------
-    # Scénarios : enregistrer / recharger une décision complète en 1 clic.
+    # Scénarios : enregistrer / recharger / supprimer une décision complète.
     # -------------------------------------------------------------------
     with st.container(border=True):
         st.markdown("**💾 Scénarios de décision**")
-        sc1, sc2, sc3, sc4 = st.columns([2.15, 0.85, 1.35, 0.85])
         scenarios_existants = lister_scenarios(tour_id_actif)
-        options_scenarios = ["— Aucun scénario —"] + [
-            f"{row['Token_Seed']} · {row['Nom_Scenario']}" for row in scenarios_existants
-        ]
+        scenario_par_token = {
+            str(row["Token_Seed"]): str(row.get("Nom_Scenario") or "Sans nom")
+            for row in scenarios_existants
+        }
+        options_tokens = [""] + list(scenario_par_token.keys())
+
+        sc1, sc2, sc3, sc4, sc5 = st.columns([2.35, 0.9, 1.35, 0.9, 0.9])
         scenario_selection = sc1.selectbox(
-            "Scénario enregistré", options_scenarios, key="ui_scenario_selection",
+            "Scénario enregistré",
+            options_tokens,
+            key="ui_scenario_selection_token_v2",
+            format_func=lambda token: "— Aucun scénario —" if not token else f"{scenario_par_token.get(token, 'Scénario')} · {token}",
             label_visibility="collapsed",
         )
-        nom_scenario = st.session_state.get("ui_nom_scenario", "Scénario de travail")
+
+        nom_scenario_defaut = st.session_state.get("ui_nom_scenario", "Scénario de travail")
         with sc2:
-            if st.button("📂 Charger", use_container_width=True, disabled=scenario_selection == "— Aucun scénario —"):
-                token = scenario_selection.split(" · ", 1)[0]
-                data_scenario = charger_scenario_seed(token, tour_id_actif)
+            if st.button(
+                "📂 Charger",
+                use_container_width=True,
+                disabled=not scenario_selection or engine is None,
+                help="Recharge toutes les décisions enregistrées dans ce scénario.",
+            ):
+                data_scenario = charger_scenario_seed(scenario_selection, tour_id_actif)
                 raw_params = data_scenario.get("Parametres_JSON", {}) if data_scenario else {}
                 if isinstance(raw_params, str):
                     try:
@@ -880,21 +947,68 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                         st.session_state[key] = value
                     st.success("Scénario chargé.")
                     st.rerun()
+
         with sc3:
-            st.session_state["ui_nom_scenario"] = st.text_input(
-                "Nom", value=nom_scenario, key="ui_nom_scenario_input", label_visibility="collapsed",
+            st.text_input(
+                "Nom",
+                value=nom_scenario_defaut,
+                key="ui_nom_scenario",
+                label_visibility="collapsed",
                 placeholder="Nom du scénario…",
+                max_chars=100,
             )
+
         with sc4:
-            if st.button("💾 Sauver", use_container_width=True, disabled=engine is None):
+            if st.button(
+                "💾 Sauver",
+                use_container_width=True,
+                disabled=engine is None,
+                help="Crée ou met à jour un scénario portant ce nom pour le tour sélectionné.",
+            ):
                 nom = str(st.session_state.get("ui_nom_scenario", "Scénario de travail")).strip() or "Scénario de travail"
                 token_seed = hashlib.sha1(f"{tour_id_actif}:{nom}".encode("utf-8")).hexdigest()[:16]
                 parametres_sim = {
                     key: value for key, value in st.session_state.items()
                     if key.startswith(SIM_STATE_PREFIXES)
                 }
-                sauvegarder_scenario_seed(token_seed, tour_id_actif, nom, parametres_sim)
-                st.success("Scénario enregistré.")
+                if sauvegarder_scenario_seed(token_seed, tour_id_actif, nom, parametres_sim):
+                    st.success("Scénario enregistré.")
+                    st.rerun()
+
+        with sc5:
+            if st.button(
+                "🗑️ Suppr.",
+                use_container_width=True,
+                disabled=not scenario_selection or engine is None,
+                help="Supprime définitivement le scénario sélectionné pour ce tour.",
+            ):
+                st.session_state["ui_confirmation_suppression_scenario"] = True
+                st.rerun()
+
+        if st.session_state.get("ui_confirmation_suppression_scenario", False) and scenario_selection:
+            scenario_nom = scenario_par_token.get(scenario_selection, "Scénario")
+            with st.container(border=True):
+                st.warning(
+                    f"Supprimer définitivement **{scenario_nom}** pour **{mois_selectionne}** ? "
+                    "Cette action ne supprime pas les autres tours."
+                )
+                cconf1, cconf2, _ = st.columns([1, 1, 3])
+                with cconf1:
+                    if st.button("✅ Confirmer", type="primary", use_container_width=True):
+                        if supprimer_scenario_seed(scenario_selection, tour_id_actif):
+                            st.session_state.pop("ui_confirmation_suppression_scenario", None)
+                            st.session_state.pop("ui_scenario_selection_token_v2", None)
+                            st.success("Scénario supprimé.")
+                            st.rerun()
+                with cconf2:
+                    if st.button("Annuler", use_container_width=True):
+                        st.session_state.pop("ui_confirmation_suppression_scenario", None)
+                        st.rerun()
+
+        if scenarios_existants:
+            st.caption(f"{len(scenarios_existants)} scénario(s) enregistré(s) pour {mois_selectionne}. 💡 La suppression agit uniquement sur le scénario sélectionné.")
+        else:
+            st.caption("Aucun scénario enregistré pour cette période. Sauvegardez vos réglages avant de comparer plusieurs stratégies.")
 
     tab_sim_marche, tab_sim_prod, tab_sim_appro, tab_sim_rh, tab_sim_fin = st.tabs([
         "🎯 1. Marché & Ventes", "🏭 2. Production", "📦 3. Achats & MRP", "👥 4. RH", "💶 5. Finance & Cash"

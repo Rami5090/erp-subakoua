@@ -10,3 +10,6 @@ __pycache__/
 subakoua_full_database_dump.json
 *.before_*.py
 retrotest_*.csv
+scraper_output/
+scraper_*.log
+playwright-report/
