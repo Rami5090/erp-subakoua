@@ -1076,7 +1076,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         treso_initiale = float(donnees_fin_act.get('Disponibilites_Banque', get_h('Tresorerie_Initiale', 0.0)))
         capitaux_propres = float(donnees_fin_act.get('Total_Capitaux_Propres', 0.0))
         
-        # Valeurs par défaut ultra sécurisées
+        # Valeurs par défaut sécurisées
         aace_historique = 1104787.0
         deprec_historique = 793362.66 
         
@@ -1084,13 +1084,16 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         resultat_exercice_cumule = res_net_historique
         ca_cumule_historique = 0.0
         res_avant_impot_cumule_historique = 0.0
+        bfr_precedent_m1 = 295476.0
 
         try:
             if engine is not None:
+                # 1. Récupération stricte du dernier état comptable M-1
                 df_ec = pd.read_sql("SELECT contenu FROM erp_donnees WHERE module = 'expert_comptable' ORDER BY id DESC LIMIT 1", engine)
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
                     
+                    # Extraction des charges fixes
                     cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat détaillé", {}).get("Tableau_1", [])
                     if not cr_lignes:
                         cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat simplifié", {}).get("Tableau_1", [])
@@ -1113,12 +1116,23 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     if v_aace > 0.0: aace_historique = v_aace
                     if v_deprec > 0.0: deprec_historique = v_deprec
                     
+                    # Extraction du véritable Solde Bancaire Initial (tb) depuis le tableau de trésorerie M-1
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                     for row in tab_treso:
-                        rub = str(row.get("Rubrique", "")).lower()
+                        rub = str(row.get("Rubrique", row.get("Colonne_0", ""))).lower()
+                        if "solde de trésorerie final" in rub or "solde trésorerie final" in rub:
+                            val_tb = parse_french_float(row.get("Montant (€)", row.get("Colonne_6", 0.0)))
+                            if val_tb != 0.0:
+                                treso_initiale = val_tb
                         if "résultat net" in rub: res_net_historique = parse_french_float(row.get("Montant (€)", res_net_historique))
                         if "dotations aux amortissements" in rub: dotations_prev = parse_french_float(row.get("Montant (€)", dotations_prev))
-                        if "solde de trésorerie final" in rub or "solde de tresorerie final" in rub: treso_initiale = parse_french_float(row.get("Montant (€)", treso_initiale))
+
+                    # Extraction du BFR du mois précédent pour calcul exact de la variation
+                    for row in tab_treso:
+                        rub = str(row.get("Colonne_0", "")).lower()
+                        if "montant du bfr" in rub:
+                            val_bfr = parse_french_float(row.get("Colonne_5", row.get("Colonne_6", 0.0)))
+                            if val_bfr != 0.0: bfr_precedent_m1 = val_bfr
                             
                     tab_bilan = data_ec.get("Synthèse", {}).get("Bilan détaillé", {}).get("Tableau_1", [])
                     for row in tab_bilan:
@@ -1133,52 +1147,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                         if "résultat de l'exercice" in pas or "resultat de l'exercice" in pas:
                             val = parse_french_float(row.get("Exercice N", 0.0))
                             if val != 0.0: resultat_exercice_cumule = val
-                        if act.strip() == "banque" or "disponibilités" in act:
-                            val = parse_french_float(row.get("Net exercice N", row.get("Exercice N", 0.0)))
-                            if val != 0.0 and treso_initiale == 0.0: treso_initiale = val
-
-                    def scan_cumuls_recur(node):
-                        ca, res = 0.0, 0.0
-                        if isinstance(node, dict):
-                            for k, v in node.items():
-                                if "CUMULÉ" in str(k).upper() or "CUMULE" in str(k).upper():
-                                    if isinstance(v, list) and len(v) > 0:
-                                        item = v[0]
-                                        if "Chiffre d'affaires" in item: ca = parse_french_float(item["Chiffre d'affaires"])
-                                        if "Résultat avant impôt" in item: res = parse_french_float(item["Résultat avant impôt"])
-                                        return ca, res
-                                sub_ca, sub_res = scan_cumuls_recur(v)
-                                if sub_ca != 0.0: ca = sub_ca
-                                if sub_res != 0.0: res = sub_res
-                        elif isinstance(node, list):
-                            for item in node:
-                                if isinstance(item, dict):
-                                    rub = str(item.get("Rubrique", item.get("Libellé", ""))).lower()
-                                    if "chiffre d'affaires" in rub:
-                                        for col_k, col_v in item.items():
-                                            if "cumul" in str(col_k).lower() or "exercice" in str(col_k).lower():
-                                                c_val = parse_french_float(col_v)
-                                                if c_val > ca: ca = c_val
-                                    if "résultat avant impôt" in rub or "resultat avant impot" in rub:
-                                        for col_k, col_v in item.items():
-                                            if "cumul" in str(col_k).lower() or "exercice" in str(col_k).lower():
-                                                r_val = parse_french_float(col_v)
-                                                if r_val != 0.0: res = r_val
-                        return ca, res
-
-                    c_json, r_json = scan_cumuls_recur(data_ec)
-                    if c_json != 0.0: ca_cumule_historique = c_json
-                    if r_json != 0.0: res_avant_impot_cumule_historique = r_json
         except Exception:
             pass
-
-        if ca_cumule_historique == 0.0 and tour_id_precedent > 1 and engine is not None:
-            try:
-                df_sql_hist = pd.read_sql(f"SELECT SUM(CA_Net) as sum_ca, SUM(Resultat_Net) as sum_res FROM Finances_Mensuelles WHERE Tour_ID <= {tour_id_precedent}", engine)
-                if not df_sql_hist.empty:
-                    if df_sql_hist['sum_ca'].iloc[0] is not None: ca_cumule_historique = float(df_sql_hist['sum_ca'].iloc[0])
-                    if df_sql_hist['sum_res'].iloc[0] is not None: res_avant_impot_cumule_historique = float(df_sql_hist['sum_res'].iloc[0])
-            except Exception: pass
 
         st.markdown("##### 📁 Saisie des Décisions Administration / Finance")
         tab_f1, tab_f2, tab_f3, tab_f4, tab_f5 = st.tabs(["Compte épargne", "Ordres de bourse", "Assurances", "Actionnariat", "Charges Fixes & Structure"])
@@ -1278,18 +1248,26 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         achats_titres = (a_a1 * 224.58) + (a_a2 * 200.64) + (a_a3 * 163.84) + (a_o1 * 109.09) + (a_o2 * 114.89) + (a_o3 * 114.78)
         ventes_titres = (v_a1 * 224.58) + (v_a2 * 200.64) + (v_a3 * 163.84) + (v_o1 * 109.09) + (v_o2 * 114.89) + (v_o3 * 114.78)
         
+        # 🎯 GESTION DE LA TVA SUR IMMOBILISATIONS (Règle Subakoua : 20% de TVA sur investissements)
         if "Crédit Fournisseur" in mode_financement_machines:
-            nouvelle_dette_fournisseur = cout_invest_machines * 0.70
-            decaissement_machines = cout_invest_machines * 0.30
+            decaissement_machines = cout_invest_machines * 0.30 * 1.20 # Acompte TTC
+            nouvelle_dette_fournisseur = cout_invest_machines * 0.70 * 1.20 # Reste dû TTC
         else:
+            decaissement_machines = cout_invest_machines * 1.20 # Total TTC
             nouvelle_dette_fournisseur = 0.0
-            decaissement_machines = cout_invest_machines
 
-        variation_bfr_commercial = ((ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim) * 0.15)
+        # 🎯 CALCUL DU BFR NORMATIF SUBAKOUA
+        stock_matieres_prev = cout_achats_total_sim * 0.15
+        stock_produits_prev = ca_prev_sim * 0.20
+        creances_clients_prev = ca_prev_sim * 0.55
+        dettes_fournisseurs_prev = cout_achats_total_sim * 0.40
         
-        # 🎯 CALCUL NORMATIF DE LA TRÉSORERIE (Méthode de la CAF & BFR Subakoua)
+        bfr_simule = stock_matieres_prev + stock_produits_prev + creances_clients_prev - dettes_fournisseurs_prev
+        variation_bfr = bfr_simule - bfr_precedent_m1
+        
+        # 🎯 FLUX DE TRÉSORERIE CONSOLIDÉS (Méthode CAF & BFR)
         caf_prev = res_net_prev + dotations_totales + depreciations_prev
-        flux_treso_exploitation = caf_prev - variation_bfr_commercial
+        flux_treso_exploitation = caf_prev - variation_bfr
         flux_treso_investissement = - decaissement_machines
         flux_treso_financement = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div + nouvelle_dette_fournisseur - 21503.51
         
@@ -1300,9 +1278,9 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.markdown("##### 📈 Produits & Charges")
             st.metric("Chiffre d'Affaires Prévisionnel (CA)", f"{ca_prev_sim:,.2f} €")
             st.metric("Total des Charges d'Exploitation", f"{total_charges:,.2f} €")
-            st.metric("Achat Nouvelles Machines", f"{-cout_invest_machines:,.2f} €")
+            st.metric("Achat Nouvelles Machines (TTC)", f"{-decaissement_machines:,.2f} €")
             
-            st.markdown("##### 🏛️️ Fiscalité & Impôts")
+            st.markdown("##### 🏛️ Fiscalité & Impôts")
             if deficit_cumule < 0: 
                 st.caption(f"🛡 *Bouclier fiscal actif : Pertes reportées de {deficit_cumule:,.2f} €.*")
             st.metric("Impôt sur les Sociétés (IS)", f"{-impot_is:,.2f} €")
@@ -1322,6 +1300,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
         st.divider()
         st.markdown("##### 🏦 Situation de l'Entreprise")
+        st.caption(f"Solde Bancaire Initial de référence (M-1) : {treso_initiale:,.2f} €")
         if treso_finale >= 0: 
             st.info(f"Trésorerie Fin de Mois Estimée : **{treso_finale:,.2f} €**")
         else: 
