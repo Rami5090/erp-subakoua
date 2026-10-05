@@ -1067,6 +1067,10 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         treso_initiale = float(donnees_fin_act.get('Disponibilites_Banque', get_h('Tresorerie_Initiale', 0.0)))
         capitaux_propres = float(donnees_fin_act.get('Total_Capitaux_Propres', 0.0))
         
+        # Nouvelles variables pour scanner l'ERP automatiquement
+        aace_historique = float(donnees_fin_act.get('Autres_Charges_Externes', 1104787.0))
+        deprec_historique = 793362.66 
+        
         report_a_nouveau = 0.0
         resultat_exercice_cumule = res_net_historique
         ca_cumule_historique = 0.0
@@ -1088,6 +1092,33 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 df_ec = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'expert_comptable' AND type_donnee = 'etat_actuel'", engine)
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
+                    
+                    # --- EXTRACTION AUTOMATIQUE DES CHARGES FIXES DEPUIS LE JSON DU COMPTE DE RÉSULTAT ---
+                    def search_cr_value(data, keywords):
+                        if isinstance(data, dict):
+                            vals_str = [str(v).lower() for v in data.values()]
+                            if any(any(kw in v for kw in keywords) for v in vals_str):
+                                for v in data.values():
+                                    val = parse_french_float(v)
+                                    if val != 0.0 and val != 1.0: 
+                                        return val
+                            for v in data.values():
+                                res = search_cr_value(v, keywords)
+                                if res != 0.0: return res
+                        elif isinstance(data, list):
+                            for item in data:
+                                res = search_cr_value(item, keywords)
+                                if res != 0.0: return res
+                        return 0.0
+
+                    v_aace = search_cr_value(data_ec, ["autres achats et charges externes"])
+                    if v_aace != 0.0: aace_historique = v_aace
+                    
+                    v_dep = search_cr_value(data_ec, ["dotations aux dépréciations", "dotations aux depreciations"])
+                    v_aut = search_cr_value(data_ec, ["autres charges d'exploitation et pertes", "autres charges d'exploitation"])
+                    if v_dep != 0.0 or v_aut != 0.0:
+                        deprec_historique = v_dep + v_aut
+                    # ----------------------------------------------------------------------------------------
                     
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                     for row in tab_treso:
@@ -1198,10 +1229,10 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.metric("Total dividendes versés", f"{total_div:,.2f} €")
             
         with tab_f5:
-            st.info("💡 Saisissez ici les coûts fixes incompressibles pour coller à la réalité de votre compte de résultat.")
-            aace_fixes = sim_number("AACE Fixes (Loyers, énergie, transports...)", "sim_aace_fixes", 1000000.0, step=10000.0)
-            depreciations_prev = sim_number("Dotations aux dépréciations & Autres charges", "sim_deprec_prev", 790000.0, step=10000.0)
-            st.metric("Total Charges de structure ajoutées", f"{aace_fixes + depreciations_prev:,.2f} €")
+            st.info("🤖 **Automatisé** : L'ERP a récupéré vos charges fixes incompressibles depuis le compte de résultat du mois précédent.")
+            aace_fixes = sim_number("AACE Fixes (Loyers, énergie, transports...)", "sim_aace_fixes", aace_historique, step=10000.0)
+            depreciations_prev = sim_number("Dotations aux dépréciations & Autres charges", "sim_deprec_prev", deprec_historique, step=10000.0)
+            st.metric("Total Charges de structure fixes", f"{aace_fixes + depreciations_prev:,.2f} €")
 
         st.divider()
         st.markdown("##### 💶 Synthèse Financière & Situation Globale de l'Entreprise")
@@ -1210,14 +1241,13 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         charges_sociales_prev = ms_prev_brute * 0.50 
         budget_mkg_prev = budget_pub_marque + sum(budgets_p_dict.values())
         
-        # Sécurité : Si les dotations historiques n'ont pas été trouvées, on met une base réaliste
         dotations_base = dotations_prev if dotations_prev > 0 else 250000.0
         dotations_totales = dotations_base + (cout_invest_machines / 60)
 
         taux_maintenance_mensuel = 0.005
         maintenance_nouvelles_machines = cout_invest_machines * taux_maintenance_mensuel
 
-        # 🎯 Nouveau calcul incluant les AACE fixes et les dépréciations
+        # 🎯 IMPACT SUR LE RÉSULTAT : Les charges fixes sont maintenant massivement déduites
         total_charges = (
             cout_achats_total_sim + 
             ms_prev_brute + 
@@ -1251,17 +1281,19 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         achats_titres = (a_a1 * 224.58) + (a_a2 * 200.64) + (a_a3 * 163.84) + (a_o1 * 109.09) + (a_o2 * 114.89) + (a_o3 * 114.78)
         ventes_titres = (v_a1 * 224.58) + (v_a2 * 200.64) + (v_a3 * 163.84) + (v_o1 * 109.09) + (v_o2 * 114.89) + (v_o3 * 114.78)
         
+        # 🎯 IMPACT SUR LA TRÉSORERIE : Logique parfaite des Flux de Trésorerie
         if "Crédit Fournisseur" in mode_financement_machines:
-            decaissement_immediat = cout_invest_machines * 0.30
-            augmentation_dette_fournisseur = cout_invest_machines * 0.70
+            nouvelle_dette_fournisseur = cout_invest_machines * 0.70
         else:
-            decaissement_immediat = cout_invest_machines
-            augmentation_dette_fournisseur = 0.0
+            nouvelle_dette_fournisseur = 0.0
 
-        variation_bfr = ((ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim) * 0.15) + augmentation_dette_fournisseur
+        variation_bfr_commercial = ((ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim) * 0.15)
         
-        flux_financier = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div
-        treso_finale = treso_initiale + (res_net_prev + dotations_totales - variation_bfr) + flux_financier - decaissement_immediat
+        flux_treso_exploitation = res_net_prev + dotations_totales - variation_bfr_commercial
+        flux_treso_investissement = - cout_invest_machines
+        flux_treso_financement = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div + nouvelle_dette_fournisseur
+        
+        treso_finale = treso_initiale + flux_treso_exploitation + flux_treso_investissement + flux_treso_financement
         
         col_f1, col_f2 = st.columns(2)
         with col_f1:
