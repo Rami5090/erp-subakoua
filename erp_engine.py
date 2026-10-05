@@ -1211,7 +1211,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             tva_deductible_immobilisations_mois=tva_immo_mois,
             tva_nette_ouverture_a_payer=tva_ouverture_a_payer,
             dette_fiscale_sociale_hors_tva_ouverture=dette_fiscale_sociale_hors_tva_ouverture,
-            nouvelles_charges_fiscales_sociales=charges_sociales_prev + float(projection_pre.impot_is),
+            nouvelles_charges_fiscales_sociales=charges_sociales_prev,
             paiements_fiscaux_sociaux_hors_tva=paiement_social + paiement_is,
         )
 
