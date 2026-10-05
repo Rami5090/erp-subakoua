@@ -1,76 +1,62 @@
-# ERP Subakoua — Streamlit + Aiven MySQL
+# ERP Subakoua — version en ligne avec scraper intégré
 
-## Application
-- `erp_engine.py` : application Streamlit / cockpit stratégique
-- `finance_engine.py` : moteur financier
-- `requirements.txt` : dépendances du déploiement Streamlit
-- `.streamlit/config.toml` : configuration Streamlit
+Cette version conserve l'ERP Streamlit et ajoute une page `🕷️ Scraper` dans le même déploiement.
 
-## Scénarios
-Le simulateur permet maintenant de :
-- sauvegarder un scénario pour un Tour ;
-- recharger toutes les décisions d'un scénario ;
-- supprimer définitivement le scénario sélectionné, avec confirmation ;
-- conserver les scénarios des autres Tours.
+## Ce qui est ajouté
 
-## Secrets Streamlit Cloud
-Dans Streamlit Community Cloud → App → Settings → Secrets :
+- Sélection interactive des périodes à scraper.
+- Bouton de découverte des périodes directement depuis Subakoua.
+- Préréglages `Toutes`, `Année 1`, `Année 2` ou sélection personnalisée.
+- Sélection des modules.
+- Mode incrémental par défaut pour éviter de rescraper les couples période/module déjà valides.
+- Option de re-scraping forcé.
+- Aperçu de la couverture déjà présente dans `erp_donnees` avant lancement.
+- Progression et logs du scraping affichés dans l'interface.
+- Synchronisation Aiven au fur et à mesure des modules.
+- Chromium système utilisé sur Streamlit Cloud.
+- Connexion Subakoua via Secrets Streamlit ou saisie temporaire dans l'interface.
+
+## Secrets Streamlit
+
+Dans `Settings → Secrets` de l'application Streamlit :
 
 ```toml
 [mysql]
-host = "TON_HOST_AIVEN"
-port = TON_PORT_AIVEN
-user = "TON_UTILISATEUR_AIVEN"
-password = "TON_MOT_DE_PASSE_AIVEN"
-database = "TON_NOM_DE_BASE_AIVEN"
+host = "xxxxx.aivencloud.com"
+port = 12345
+user = "avnadmin"
+password = "..."
+database = "defaultdb"
+ssl = true
+
+[subakoua]
+user = "..."
+password = "..."
+login_url = "https://login.arkhe.com/"
+dashboard_url = "https://subakoua.arkhe.com/companies"
 ```
 
-Le port et le nom de base doivent être ceux affichés dans Aiven > Overview > Connection information.
-Ne jamais pousser `.streamlit/secrets.toml` ni les dumps de données sur GitHub.
+Ne committe jamais de `.env` ou de mot de passe dans GitHub.
 
-## Scraper
-`scraper_subakoua.py` est un outil local séparé : il automatise l'extraction Subakoua puis synchronise les données dans MySQL/Aiven.
-Il ne doit pas être lancé depuis Streamlit Cloud.
+## Déploiement
 
-### Installation locale
+Le dépôt doit être déployé avec `erp_engine.py` comme fichier principal.
+Le dossier `pages/` ajoute automatiquement la page du scraper dans la navigation Streamlit.
+
+Le fichier `packages.txt` installe Chromium sur l'environnement Linux de Streamlit Community Cloud.
+`playwright` est épinglé à une version compatible avec l'environnement Cloud utilisé par ce projet.
+
+## Utilisation locale du scraper
+
 ```bash
 python -m pip install -r requirements-scraper.txt
 python -m playwright install chromium
-```
-
-Copier `.env.example` vers `.env` puis renseigner les identifiants Subakoua et MySQL.
-
-Depuis la version 2.1.0, si `SUBAKOUA_USER` / `SUBAKOUA_PASS` ne sont pas présents, le scraper les demande directement dans le terminal (`getpass` pour le mot de passe). Le mot de passe n'est jamais écrit dans les logs. Le `.env` est recherché à côté de `scraper_subakoua.py`, même si le programme est lancé depuis un autre dossier.
-
-### Exemples
-```bash
-# Janvier à Mars
 python scraper_subakoua.py --periods 1,2,3
-
-# Toute l'année 1 + année 2 disponible
-python scraper_subakoua.py --all
-
-# Refaire une extraction complète même si les données existent déjà
-python scraper_subakoua.py --periods 1-15 --force
-
-# Uniquement certains modules
-python scraper_subakoua.py --periods 1-5 --modules finance,banque_assurance
-
-# Afficher le navigateur pour diagnostiquer une page
-python scraper_subakoua.py --periods 1 --show-browser
 ```
 
-### Améliorations du scraper
-- mode incrémental : les périodes déjà présentes sont ignorées, sauf données `SPECIMEN` ;
-- synchronisation MySQL après chaque module pour éviter de perdre toute une extraction si le robot s'arrête ;
-- retries automatiques sur navigation et extraction ;
-- session Playwright réutilisable via `scraper_output/auth_state.json` ;
-- détection de connexion expirée ;
-- timeout configurables ;
-- screenshots + HTML de diagnostic en cas d'erreur ;
-- extraction des nombres français plus robuste (`1 234,56`, `1.234,56`, parenthèses, valeurs négatives) ;
-- liens de documents dédupliqués et normalisés en URLs absolues ;
-- modules, périodes, mode headless et force pilotables en ligne de commande ;
-- journal horodaté dans `scraper_output/scraper.log` et rapport JSON par exécution.
+Le fichier `.env` local peut contenir les identifiants Subakoua et Aiven.
 
-Les fichiers de session et sorties du scraper restent locaux et sont ignorés par Git.
+## Vérification
+
+- 24 tests financiers passent.
+- Compilation Python validée pour l'ERP, le moteur financier, le scraper et la page Streamlit.

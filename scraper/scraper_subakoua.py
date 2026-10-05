@@ -59,7 +59,7 @@ load_dotenv()
 URL_CONNEXION = os.getenv("SUBAKOUA_LOGIN_URL", "https://login.arkhe.com/")
 URL_DASHBOARD = os.getenv("SUBAKOUA_DASHBOARD_URL", "https://subakoua.arkhe.com/companies")
 DOMAINE_BASE = f"{urlparse(URL_DASHBOARD).scheme}://{urlparse(URL_DASHBOARD).netloc}"
-EXTRACTOR_VERSION = "2.3.0"
+EXTRACTOR_VERSION = "2.2.0"
 
 MODULES_A_VISITER = [
     ("Marketing", "marketing"),
@@ -815,65 +815,6 @@ def login(page: Page, context: BrowserContext, config: ScraperConfig, logger: lo
         logger.warning("Sauvegarde de session impossible : %s", exc)
 
 
-def find_chromium_executable() -> str | None:
-    """Cherche Chromium système (utile sur Streamlit Cloud) avant le navigateur bundle Playwright."""
-    candidates = [
-        os.getenv("CHROMIUM_EXECUTABLE", "").strip(),
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-    return None
-
-
-def launch_browser(playwright, config: ScraperConfig, logger: logging.Logger):
-    """Lance Chromium avec un binaire système si disponible, sinon le bundle Playwright."""
-    kwargs: dict[str, Any] = {
-        "headless": config.headless,
-        "slow_mo": config.slow_mo_ms,
-        "args": ["--disable-dev-shm-usage"],
-    }
-    executable = find_chromium_executable()
-    if executable:
-        kwargs["executable_path"] = executable
-        # Les environnements cloud peuvent ne pas permettre le sandbox Chromium.
-        kwargs["args"] = ["--disable-dev-shm-usage", "--no-sandbox"]
-        logger.info("Chromium système utilisé : %s", executable)
-    else:
-        logger.info("Aucun Chromium système détecté : utilisation du navigateur Playwright installé.")
-    return playwright.chromium.launch(**kwargs)
-
-
-def discover_available_periods(page: Page, config: ScraperConfig, logger: logging.Logger) -> list[str]:
-    """Lit les périodes réellement proposées par le sélecteur du portail après connexion."""
-    selector = "okw-select-period span[role='combobox']"
-    loc = page.locator(selector).first
-    loc.wait_for(state="visible", timeout=config.timeout_ms)
-    loc.click()
-    page.wait_for_timeout(250)
-    labels = page.locator("div.p-select-option-label").all_inner_texts()
-    periods: list[str] = []
-    seen: set[str] = set()
-    for raw in labels:
-        value = re.sub(r"\s+", " ", str(raw)).strip()
-        if value and value not in seen:
-            seen.add(value)
-            periods.append(value)
-    try:
-        loc.press("Escape")
-    except Exception:
-        pass
-    if periods:
-        logger.info("Périodes découvertes sur Subakoua : %s", ", ".join(periods))
-    else:
-        logger.warning("Aucune période n'a été détectée dans le sélecteur live.")
-    return periods
-
-
 def create_context(browser, config: ScraperConfig, logger: logging.Logger) -> BrowserContext:
     kwargs: dict[str, Any] = {
         "viewport": {"width": 1440, "height": 1000},
@@ -1158,80 +1099,73 @@ def lancer_robot_global(
     }
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    connection = None
-    browser = None
-    context = None
-    try:
-        connection = connect_mysql(config)
-        has_unique_key = ensure_erp_table(connection, logger)
+    connection = connect_mysql(config)
+    has_unique_key = ensure_erp_table(connection, logger)
 
-        with sync_playwright() as p:
-            browser = launch_browser(p, config, logger)
-            context = create_context(browser, config, logger)
-            page = context.new_page()
-            page.set_default_timeout(config.timeout_ms)
-            page.set_default_navigation_timeout(config.timeout_ms)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=config.headless, slow_mo=config.slow_mo_ms)
+        context = create_context(browser, config, logger)
+        page = context.new_page()
+        page.set_default_timeout(config.timeout_ms)
+        page.set_default_navigation_timeout(config.timeout_ms)
 
-            try:
-                login(page, context, config, logger)
-                revenir_au_dashboard(page, config)
+        try:
+            login(page, context, config, logger)
+            revenir_au_dashboard(page, config)
 
-                for mot_cle, cle_dict in modules:
-                    logger.info("===== MODULE %s (%s) =====", mot_cle, cle_dict)
-                    result_mod = {
-                        "module": cle_dict,
-                        "display": mot_cle,
-                        "scraped_periods": [],
-                        "skipped_periods": [],
-                        "errors": [],
-                    }
+            for mot_cle, cle_dict in modules:
+                logger.info("===== MODULE %s (%s) =====", mot_cle, cle_dict)
+                result_mod = {
+                    "module": cle_dict,
+                    "display": mot_cle,
+                    "scraped_periods": [],
+                    "skipped_periods": [],
+                    "errors": [],
+                }
+                try:
+                    # Mode incrémental : on rescrape les absents / SPECIMEN / erreurs.
+                    a_traiter: list[str] = []
+                    if config.incremental:
+                        for mois in liste_mois:
+                            existing = existing_module_data(connection, mois, cle_dict)
+                            if existing is None or contains_specimen(existing) or contains_scraper_error(existing):
+                                a_traiter.append(mois)
+                            else:
+                                result_mod["skipped_periods"].append(mois)
+                        if not a_traiter:
+                            logger.info("Aucun changement à aspirer pour %s", cle_dict)
+                            summary["module_results"].append(result_mod)
+                            continue
+                    else:
+                        a_traiter = liste_mois
+
+                    ouvrir_module(page, mot_cle, config, logger)
+                    donnees_multi_mois = aspirer_structure_intelligente(page, a_traiter, config, logger)
+
+                    # Synchronisation immédiate après le module : un crash plus tard
+                    # ne fait pas perdre tout le travail déjà réalisé.
+                    synchroniser_module(connection, cle_dict, donnees_multi_mois, logger, has_unique_key)
+                    result_mod["scraped_periods"] = list(a_traiter)
+                    revenir_au_dashboard(page, config)
+                except Exception as exc:
+                    result_mod["errors"].append(str(exc))
+                    logger.exception("Module en erreur | %s", cle_dict)
+                    maybe_save_debug(page, config, f"module_{cle_dict}", logger)
                     try:
-                        a_traiter: list[str] = []
-                        if config.incremental:
-                            for mois in liste_mois:
-                                existing = existing_module_data(connection, mois, cle_dict)
-                                if existing is None or contains_specimen(existing) or contains_scraper_error(existing):
-                                    a_traiter.append(mois)
-                                else:
-                                    result_mod["skipped_periods"].append(mois)
-                            if not a_traiter:
-                                logger.info("Aucun changement à aspirer pour %s", cle_dict)
-                                summary["module_results"].append(result_mod)
-                                continue
-                        else:
-                            a_traiter = liste_mois
-
-                        ouvrir_module(page, mot_cle, config, logger)
-                        donnees_multi_mois = aspirer_structure_intelligente(page, a_traiter, config, logger)
-                        synchroniser_module(connection, cle_dict, donnees_multi_mois, logger, has_unique_key)
-                        result_mod["scraped_periods"] = list(a_traiter)
                         revenir_au_dashboard(page, config)
-                    except Exception as exc:
-                        result_mod["errors"].append(str(exc))
-                        logger.exception("Module en erreur | %s", cle_dict)
-                        maybe_save_debug(page, config, f"module_{cle_dict}", logger)
-                        try:
-                            revenir_au_dashboard(page, config)
-                        except Exception:
-                            pass
-                    summary["module_results"].append(result_mod)
-
-                summary["status"] = "completed" if not any(r["errors"] for r in summary["module_results"]) else "completed_with_errors"
-            finally:
-                if context is not None:
-                    try:
-                        context.storage_state(path=str(config.state_file))
                     except Exception:
                         pass
-                    context.close()
-                if browser is not None:
-                    browser.close()
-    finally:
-        if connection is not None:
+                summary["module_results"].append(result_mod)
+
+            # Export local complet du run.
+            summary["status"] = "completed" if not any(r["errors"] for r in summary["module_results"]) else "completed_with_errors"
+        finally:
             try:
-                connection.close()
+                context.storage_state(path=str(config.state_file))
             except Exception:
                 pass
+            context.close()
+            browser.close()
 
     summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
     summary["duration_seconds"] = (
@@ -1241,6 +1175,7 @@ def lancer_robot_global(
     json_path = config.output_dir / f"run_{run_id}.json"
     json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("Run terminé | %s | rapport=%s", summary["status"], json_path)
+    connection.close()
     return summary
 
 
