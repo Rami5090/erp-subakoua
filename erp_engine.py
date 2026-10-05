@@ -1157,7 +1157,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             except Exception: pass
 
         st.markdown("##### 📁 Saisie des Décisions Administration / Finance")
-        tab_f1, tab_f2, tab_f3, tab_f4 = st.tabs(["Compte épargne", "Ordres de bourse", "Assurances", "Actionnariat"])
+        tab_f1, tab_f2, tab_f3, tab_f4, tab_f5 = st.tabs(["Compte épargne", "Ordres de bourse", "Assurances", "Actionnariat", "Charges Fixes & Structure"])
         
         with tab_f1:
             solde_initial_ep = sim_number("Solde initial", "sim_solde_ep", 1500000.0, step=1000.0)
@@ -1196,6 +1196,12 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             div_par_part = sim_number("Dividende versé par part (€)", "sim_div_part", 0.0, step=0.50)
             total_div = div_par_part * 40000
             st.metric("Total dividendes versés", f"{total_div:,.2f} €")
+            
+        with tab_f5:
+            st.info("💡 Saisissez ici les coûts fixes incompressibles pour coller à la réalité de votre compte de résultat.")
+            aace_fixes = sim_number("AACE Fixes (Loyers, énergie, transports...)", "sim_aace_fixes", 1000000.0, step=10000.0)
+            depreciations_prev = sim_number("Dotations aux dépréciations & Autres charges", "sim_deprec_prev", 790000.0, step=10000.0)
+            st.metric("Total Charges de structure ajoutées", f"{aace_fixes + depreciations_prev:,.2f} €")
 
         st.divider()
         st.markdown("##### 💶 Synthèse Financière & Situation Globale de l'Entreprise")
@@ -1203,13 +1209,27 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         ms_prev_brute = tot_p + tot_a + tot_f
         charges_sociales_prev = ms_prev_brute * 0.50 
         budget_mkg_prev = budget_pub_marque + sum(budgets_p_dict.values())
-        dotations_totales = dotations_prev + (cout_invest_machines / 60)
+        
+        # Sécurité : Si les dotations historiques n'ont pas été trouvées, on met une base réaliste
+        dotations_base = dotations_prev if dotations_prev > 0 else 250000.0
+        dotations_totales = dotations_base + (cout_invest_machines / 60)
 
-        # 🛠️ Maintenance des nouvelles machines acquises incluse dans l'exploitation
-        taux_maintenance_mensuel = 0.005  # 0.5% par mois de la valeur d'acquisition
+        taux_maintenance_mensuel = 0.005
         maintenance_nouvelles_machines = cout_invest_machines * taux_maintenance_mensuel
 
-        total_charges = cout_achats_total_sim + ms_prev_brute + charges_sociales_prev + budget_mkg_prev + dotations_totales + cout_assurances + maintenance_nouvelles_machines
+        # 🎯 Nouveau calcul incluant les AACE fixes et les dépréciations
+        total_charges = (
+            cout_achats_total_sim + 
+            ms_prev_brute + 
+            charges_sociales_prev + 
+            budget_mkg_prev + 
+            dotations_totales + 
+            cout_assurances + 
+            maintenance_nouvelles_machines + 
+            aace_fixes + 
+            depreciations_prev
+        )
+        
         res_financier = (solde_initial_ep * (0.012 / 12)) - (dette_bancaire * 0.005)
         res_avant_impot = (ca_prev_sim - total_charges) + res_financier
         
@@ -1231,7 +1251,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         achats_titres = (a_a1 * 224.58) + (a_a2 * 200.64) + (a_a3 * 163.84) + (a_o1 * 109.09) + (a_o2 * 114.89) + (a_o3 * 114.78)
         ventes_titres = (v_a1 * 224.58) + (v_a2 * 200.64) + (v_a3 * 163.84) + (v_o1 * 109.09) + (v_o2 * 114.89) + (v_o3 * 114.78)
         
-        # 🎯 Intégration de la dette fournisseur pour l'investissement
         if "Crédit Fournisseur" in mode_financement_machines:
             decaissement_immediat = cout_invest_machines * 0.30
             augmentation_dette_fournisseur = cout_invest_machines * 0.70
@@ -1239,7 +1258,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             decaissement_immediat = cout_invest_machines
             augmentation_dette_fournisseur = 0.0
 
-        # L'augmentation de la dette fournisseur annule une partie du besoin de financement (BFR) du mois
         variation_bfr = ((ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim) * 0.15) + augmentation_dette_fournisseur
         
         flux_financier = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div
