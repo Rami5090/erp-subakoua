@@ -919,7 +919,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         elif val_controle == 2 and score_rh_prod > 80: regime_temps = 'minimum'
         else: regime_temps = 'normal'
 
-        st.caption(f"⚙️ Barème actif nomenclature : **{regime_matiere.upper()}** | Barème temps : **{regime_temps.upper()}**")
+        st.caption(f"⚙️️ Barème actif nomenclature : **{regime_matiere.upper()}** | Barème temps : **{regime_temps.upper()}**")
         st.divider()
 
         ord_s3 = sim_number("Prod S3", "ord_s3", 50)
@@ -1076,7 +1076,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         treso_initiale = float(donnees_fin_act.get('Disponibilites_Banque', get_h('Tresorerie_Initiale', 0.0)))
         capitaux_propres = float(donnees_fin_act.get('Total_Capitaux_Propres', 0.0))
         
-        # Nouvelles variables pour scanner l'ERP automatiquement
+        # Valeurs par défaut si le scan échoue
         aace_historique = float(donnees_fin_act.get('Autres_Charges_Externes', 1104787.0))
         deprec_historique = 793362.66 
         
@@ -1102,32 +1102,35 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
                     
-                    # --- EXTRACTION AUTOMATIQUE DES CHARGES FIXES DEPUIS LE JSON DU COMPTE DE RÉSULTAT ---
-                    def search_cr_value(data, keywords):
-                        if isinstance(data, dict):
-                            vals_str = [str(v).lower() for v in data.values()]
-                            if any(any(kw in v for kw in keywords) for v in vals_str):
-                                for v in data.values():
-                                    val = parse_french_float(v)
-                                    if val != 0.0 and val != 1.0: 
-                                        return val
-                            for v in data.values():
-                                res = search_cr_value(v, keywords)
-                                if res != 0.0: return res
-                        elif isinstance(data, list):
-                            for item in data:
-                                res = search_cr_value(item, keywords)
-                                if res != 0.0: return res
-                        return 0.0
-
-                    v_aace = search_cr_value(data_ec, ["autres achats et charges externes"])
-                    if v_aace != 0.0: aace_historique = v_aace
+                    # --- EXTRACTION AUTOMATIQUE CIBLÉE DES CHARGES FIXES ---
+                    cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat détaillé", {}).get("Tableau_1", [])
+                    if not cr_lignes:
+                        cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat simplifié", {}).get("Tableau_1", [])
                     
-                    v_dep = search_cr_value(data_ec, ["dotations aux dépréciations", "dotations aux depreciations"])
-                    v_aut = search_cr_value(data_ec, ["autres charges d'exploitation et pertes", "autres charges d'exploitation"])
-                    if v_dep != 0.0 or v_aut != 0.0:
-                        deprec_historique = v_dep + v_aut
-                    # ----------------------------------------------------------------------------------------
+                    v_aace = 0.0
+                    v_deprec = 0.0
+                    
+                    for row in cr_lignes:
+                        libelle = str(row.get("Colonne_0", "")).lower()
+                        # On récupère la valeur numérique de la ligne
+                        montant = 0.0
+                        for key, val in row.items():
+                            if key != "Colonne_0":
+                                m = parse_french_float(val)
+                                if m != 0.0:
+                                    montant = m
+                                    break
+                                    
+                        if "autres achats et charges externes" in libelle:
+                            v_aace = montant
+                        elif "dotations aux dépréciations" in libelle or "dotations aux provisions et dépréciations" in libelle:
+                            v_deprec += montant
+                        elif "autres charges d'exploitation" in libelle:
+                            v_deprec += montant
+
+                    if v_aace != 0.0: aace_historique = v_aace
+                    if v_deprec != 0.0: deprec_historique = v_deprec
+                    # --------------------------------------------------------
                     
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                     for row in tab_treso:
@@ -1239,13 +1242,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             
         with tab_f5:
             st.info("🤖 **Automatisé** : L'ERP a récupéré vos charges fixes incompressibles depuis le compte de résultat du mois précédent.")
-            
-            with st.expander("🔍 DEBUG : AFFICHER LE JSON DU COMPTE DE RÉSULTAT"):
-                try:
-                    st.json(data_ec)
-                except Exception:
-                    st.warning("JSON non disponible pour le moment.")
-
             aace_fixes = sim_number("AACE Fixes (Loyers, énergie, transports...)", "sim_aace_fixes", aace_historique, step=10000.0)
             depreciations_prev = sim_number("Dotations aux dépréciations & Autres charges", "sim_deprec_prev", deprec_historique, step=10000.0)
             st.metric("Total Charges de structure fixes", f"{aace_fixes + depreciations_prev:,.2f} €")
