@@ -1087,12 +1087,10 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
         try:
             if engine is not None:
-                # Récupération GARANTIE du dernier document comptable généré (peu importe son nom ou sa période)
                 df_ec = pd.read_sql("SELECT contenu FROM erp_donnees WHERE module = 'expert_comptable' ORDER BY id DESC LIMIT 1", engine)
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
                     
-                    # --- EXTRACTION AUTOMATIQUE CIBLÉE DES CHARGES FIXES ---
                     cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat détaillé", {}).get("Tableau_1", [])
                     if not cr_lignes:
                         cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat simplifié", {}).get("Tableau_1", [])
@@ -1112,10 +1110,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                         elif "autres charges d'exploitation" in libelle:
                             v_deprec += montant
 
-                    # Si le Json a renvoyé des vraies valeurs, on les prend, sinon on garde la sécu
                     if v_aace > 0.0: aace_historique = v_aace
                     if v_deprec > 0.0: deprec_historique = v_deprec
-                    # --------------------------------------------------------
                     
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                     for row in tab_treso:
@@ -1228,8 +1224,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         with tab_f5:
             st.info("🤖 **Automatisé** : L'ERP a récupéré vos charges fixes incompressibles depuis le compte de résultat du mois précédent.")
             
-            # --- SUPPRESSION TOTALE DES CHAMPS DE SAISIE ICI ---
-            # (Pour empêcher Streamlit d'écraser les valeurs avec le "0" des anciennes sauvegardes)
             aace_fixes = aace_historique
             depreciations_prev = deprec_historique
             
@@ -1251,7 +1245,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_maintenance_mensuel = 0.005
         maintenance_nouvelles_machines = cout_invest_machines * taux_maintenance_mensuel
 
-        # 🎯 IMPACT SUR LE RÉSULTAT : Les charges fixes sont maintenant IMPOSÉES au calcul
         total_charges = (
             cout_achats_total_sim + 
             ms_prev_brute + 
@@ -1292,7 +1285,9 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
         variation_bfr_commercial = ((ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim) * 0.15)
         
-        flux_treso_exploitation = res_net_prev + dotations_totales - variation_bfr_commercial
+        # 🎯 IMPACT SUR LA TRÉSORERIE (MÉTHODE INDIRECTE / CAF)
+        # On réintègre les charges "calculées" (non décaissées) : Amortissements ET Dépréciations
+        flux_treso_exploitation = res_net_prev + dotations_totales + depreciations_prev - variation_bfr_commercial
         flux_treso_investissement = - cout_invest_machines
         flux_treso_financement = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div + nouvelle_dette_fournisseur
         
