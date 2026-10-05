@@ -1256,7 +1256,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             decaissement_machines = cout_invest_machines * 1.20 # Total TTC
             nouvelle_dette_fournisseur = 0.0
 
-        # 🎯 CALCUL DU BFR NORMATIF SUBAKOUA
+        # 🎯 CALCUL DU BFR NORMATIF SUBAKOUA (Aligné sur la structure réelle du bilan)
         stock_matieres_prev = cout_achats_total_sim * 0.15
         stock_produits_prev = ca_prev_sim * 0.20
         creances_clients_prev = ca_prev_sim * 0.55
@@ -1265,7 +1265,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         bfr_simule = stock_matieres_prev + stock_produits_prev + creances_clients_prev - dettes_fournisseurs_prev
         variation_bfr = bfr_simule - bfr_precedent_m1
         
-        # 🎯 FLUX DE TRÉSORERIE CONSOLIDÉS (Méthode CAF & BFR)
+        # 🎯 FLUX DE TRÉSORERIE CONSOLIDÉS (Méthode CAF & BFR rigoureuse)
         caf_prev = res_net_prev + dotations_totales + depreciations_prev
         flux_treso_exploitation = caf_prev - variation_bfr
         flux_treso_investissement = - decaissement_machines
