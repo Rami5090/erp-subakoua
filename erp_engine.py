@@ -23,20 +23,20 @@ def init_connection():
 
 #engine = init_connection()
 
-#def init_db_simu():
-   # try:
-     #   with engine.begin() as conn:
-     #       conn.execute(text("""
-        #    CREATE TABLE IF NOT EXISTS simulations_seeds (
-         #       Token_Seed VARCHAR(50),
-          #      Tour_ID INT,
-           #     Nom_Scenario VARCHAR(100),
-             #   Parametres_JSON JSON,
-             #   PRIMARY KEY (Token_Seed, Tour_ID)
-          #  )
-          #  """))
-#   except Exception:
-      #  pass
+def init_db_simu():
+   try:
+       with engine.begin() as conn:
+           conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS simulations_seeds (
+               Token_Seed VARCHAR(50),
+               Tour_ID INT,
+               Nom_Scenario VARCHAR(100),
+               Parametres_JSON JSON,
+               PRIMARY KEY (Token_Seed, Tour_ID)
+           )
+           """))
+  except Exception:
+       pass
 
 #init_db_simu()
 
