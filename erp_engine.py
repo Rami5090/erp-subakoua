@@ -1208,7 +1208,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_maintenance_mensuel = 0.005
         maintenance_nouvelles_machines = cout_invest_machines * taux_maintenance_mensuel
 
-        # 🎯 CORRECTION MAJEURE : Les charges fixes incompressibles (AACE + Dépréciations) SONT MAINTENANT INCLUSES DANS LES CHARGES GLOBALES
+        # 🎯 CALCUL IMPÉRATIF : Addition de TOUTES les charges (Variables de simulation + Fixes incompressibles du bilan)
         total_charges = (
             cout_achats_total_sim + 
             ms_prev_brute + 
@@ -1217,8 +1217,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             dotations_totales + 
             cout_assurances + 
             maintenance_nouvelles_machines + 
-            aace_fixes + 
-            depreciations_prev
+            aace_historique + 
+            deprec_historique
         )
         
         res_financier = (solde_initial_ep * (0.012 / 12)) - (dette_bancaire * 0.005)
