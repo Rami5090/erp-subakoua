@@ -5,8 +5,12 @@ import json
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
+# Chargement optionnel du fichier .env pour le local
 load_dotenv()
 
+# ==========================================
+# 1. CONFIGURATION ET CONNEXION BDD (UNIVERSELLE)
+# ==========================================
 st.set_page_config(page_title="ERP Subakoua - Cockpit Stratégique", layout="wide", initial_sidebar_state="expanded")
 
 @st.cache_resource
@@ -42,6 +46,81 @@ def init_connection():
 
 engine = init_connection()
 
+def init_db_simu():
+    if engine is None: return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS simulations_seeds (
+                Token_Seed VARCHAR(50),
+                Tour_ID INT,
+                Nom_Scenario VARCHAR(100),
+                Parametres_JSON JSON,
+                PRIMARY KEY (Token_Seed, Tour_ID)
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Historique_Equipe (
+                Tour_ID INT PRIMARY KEY,
+                Stock_Neo3 FLOAT, Stock_Neo5 FLOAT, Stock_Neo7 FLOAT, 
+                Stock_Renforts FLOAT, Stock_Manchons FLOAT, Stock_Fermetures FLOAT, 
+                Tresorerie_Initiale FLOAT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Parc_Machines_Mensuel (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                Nb_Machines_Decoupe INT, Nb_Machines_Assemblage INT, Nb_Machines_Cond INT,
+                Acquisition_Faite INT, Acq_Decoupe INT, Acq_Assemblage INT, Acq_Cond INT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Ventes_Historique (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                Ventes_S3 INT, Ventes_I3 INT, Ventes_S5 INT, Ventes_I5 INT, Ventes_I7 INT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Decisions_Marketing (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                Prix_S3 FLOAT, Prix_I3 FLOAT, Prix_S5 FLOAT, Prix_I5 FLOAT, Prix_I7 FLOAT,
+                Budget_Marque FLOAT, Axe_Principal VARCHAR(100), Axe_Accessoire VARCHAR(100),
+                Pub_S3 FLOAT, Pub_I3 FLOAT, Pub_S5 FLOAT, Pub_I5 FLOAT, Pub_I7 FLOAT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Decisions_RH_Mensuel (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                Eff_Employes_Prod INT, Sal_Employes_Prod FLOAT, Eff_Cadres_Prod INT, Sal_Cadres_Prod FLOAT, Eff_Directeurs_Prod INT, Sal_Directeurs_Prod FLOAT,
+                Eff_Employes_Appro INT, Sal_Employes_Appro FLOAT, Eff_Cadres_Appro INT, Sal_Cadres_Appro FLOAT, Eff_Directeurs_Appro INT, Sal_Directeurs_Appro FLOAT,
+                Eff_Employes_Admin INT, Sal_Employes_Admin FLOAT, Eff_Cadres_Admin INT, Sal_Cadres_Admin FLOAT, Eff_Directeurs_Admin INT, Sal_Directeurs_Admin FLOAT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Finances_Mensuelles (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                CA_Net FLOAT, Achats_Matieres FLOAT, Autres_Charges_Externes FLOAT, Remuneration_Personnel FLOAT, Charges_Sociales FLOAT, 
+                Dotations_Amortissements FLOAT, Resultat_Net FLOAT, Total_Actif_Immobilise FLOAT, Total_Actif_Circulant FLOAT, 
+                Total_Capitaux_Propres FLOAT, Emprunts_Bancaires FLOAT, Disponibilites_Banque FLOAT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS erp_donnees (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                periode VARCHAR(50),
+                type_donnee VARCHAR(50),
+                module VARCHAR(50),
+                contenu JSON
+            )
+            """))
+    except Exception:
+        pass
+
+init_db_simu()
+
+# ==========================================
+# 2. CHARGEMENT BDD & FONCTIONS UTILITAIRES
+# ==========================================
 def parse_french_float(val):
     if isinstance(val, (int, float)): return float(val)
     try:
@@ -191,6 +270,57 @@ def sauvegarder_scenario_seed(token_seed, tour_id, nom, parametres_dict):
     except Exception as e:
         st.error(f"Erreur sauvegarde seed : {e}")
 
+# Fonctions d'affichage pour l'État des Lieux Global
+def afficher_tableau_dynamique(donnees):
+    try:
+        if isinstance(donnees, list) and len(donnees) > 0 and isinstance(donnees[0], dict):
+            df = pd.DataFrame(donnees)
+            for col in df.select_dtypes(include=['object']).columns: df[col] = df[col].astype(str)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            return True
+        if isinstance(donnees, dict) and all(isinstance(v, (list, int, float, str)) for v in donnees.values()):
+            df = pd.DataFrame.from_dict(donnees, orient='index')
+            for col in df.select_dtypes(include=['object']).columns: df[col] = df[col].astype(str)
+            st.dataframe(df, use_container_width=True)
+            return True
+    except Exception: pass
+    return False
+
+def parcourir_structure_json(donnees, niveau=4):
+    if afficher_tableau_dynamique(donnees): return
+    if isinstance(donnees, dict):
+        for titre, sous_donnees in donnees.items():
+            if not str(titre).startswith("Tableau_") and titre != "Général":
+                if niveau == 4: st.markdown(f"#### {titre}")
+                elif niveau == 5: st.markdown(f"##### {titre}")
+                else: st.markdown(f"**{titre}**")
+            parcourir_structure_json(sous_donnees, niveau + 1)
+    else: st.write(donnees)
+
+def rendre_module_etat_des_lieux(donnees_module):
+    if not donnees_module:
+        st.info("Aucune donnée disponible pour cette sélection.")
+        return
+    if donnees_module == "SPECIMEN":
+        st.warning("🚫 Ce document n'a pas encore été acheté (SPECIMEN). Données non disponibles.")
+        return
+    if not isinstance(donnees_module, dict):
+        st.write(donnees_module)
+        return
+    noms_onglets = list(donnees_module.keys())
+    if not noms_onglets:
+        st.info("Structure JSON vide.")
+        return
+    tabs = st.tabs(noms_onglets)
+    for i, nom_onglet in enumerate(noms_onglets):
+        with tabs[i]:
+            contenu_onglet = donnees_module[nom_onglet]
+            if contenu_onglet == "SPECIMEN": st.warning("🚫 Document non acheté (SPECIMEN).")
+            else:
+                st.markdown("<br>", unsafe_allow_html=True)
+                parcourir_structure_json(contenu_onglet, niveau=4)
+
+# Utilitaires Simulateur
 def sim_number(label, key, default_val, step=None):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.number_input(label, key=key, step=step)
@@ -287,6 +417,9 @@ def calculer_score_rh_prod_dynamique(donnees_rh_defaut, ratio_opt):
     s_disp_p = max(0.0, 100.0 - abs(1.0 - ind_p_actuel) * 200.0)
     return (s_ms_p + s_disp_p) / 2.0
 
+# ==========================================
+# 4. NAVIGATION & PILOTAGE TEMPOREL
+# ==========================================
 st.sidebar.title("🏢 ERP Subakoua")
 
 mois_mapping = {
@@ -314,6 +447,9 @@ module_principal = st.sidebar.radio("Choisissez le module :", [
     "🧠 Simulateur & Décision Stratégique"
 ])
 
+# ==========================================
+# MODULE 1 : ÉTAT DES LIEUX GLOBAL
+# ==========================================
 if module_principal == "📊 État des lieux global":
     st.title("📊 Tableaux de Bord & État des Lieux de l'ERP")
     st.info(f"Analyse des données extraites pour la période : **{periode_db}**")
@@ -334,14 +470,22 @@ if module_principal == "📊 État des lieux global":
         else:
             liste_modules_ui = sorted(list(modules_disponibles_dict.keys()))
             module_choisi = st.selectbox("Sélectionnez le département / module à consulter :", liste_modules_ui, format_func=lambda x: x.replace('_', ' ').capitalize())
+            
             st.divider()
             donnee_json_brute = modules_disponibles_dict.get(module_choisi, {})
+            
             if isinstance(donnee_json_brute, str):
                 try: donnees_module = json.loads(donnee_json_brute)
-                except Exception: donnees_module = {}
+                except Exception: 
+                    st.error("❌ Le fichier JSON extrait pour ce mois est corrompu et illisible.")
+                    donnees_module = {}
             else: donnees_module = donnee_json_brute
+
             rendre_module_etat_des_lieux(donnees_module)
 
+# ==========================================
+# MODULE 2 : SAISIE DES DONNÉES RÉELLES
+# ==========================================
 elif module_principal == "📥 Saisie des Données Réelles":
     st.title("📥 Saisie & Alimentation des Données Réelles")
     mois_saisie = st.selectbox("Sélectionnez le mois à renseigner :", list(mois_mapping.keys()))
@@ -362,13 +506,80 @@ elif module_principal == "📥 Saisie des Données Réelles":
     def get_rh_v(k, def_v): return float(d_rh.get(k, def_v))
     def get_rh_e(k, def_v): return int(d_rh.get(k, def_v))
 
-    st.info("Module de saisie active.")
+    tab_r1, tab_r2, tab_r3, tab_r4, tab_r5, tab_r6 = st.tabs(["📦 Stocks", "🏭 Machines", "👥 RH", "🎯 Marketing", "📈 Ventes Réelles", "💶 Finance"])
+    
+    with tab_r1:
+        with st.form("f_stocks"):
+            st.subheader("Saisie des Stocks & Trésorerie")
+            s_neo3 = st.number_input("Néoprène 3", value=get_h('Stock_Neo3', 2.36))
+            s_neo5 = st.number_input("Néoprène 5", value=get_h('Stock_Neo5', 1.33))
+            s_neo7 = st.number_input("Néoprène 7", value=get_h('Stock_Neo7', 0.80))
+            s_renf = st.number_input("Renforts", value=get_h('Stock_Renforts', 1458.0))
+            s_man = st.number_input("Manchons", value=get_h('Stock_Manchons', 113.0))
+            s_ferm = st.number_input("Fermetures", value=get_h('Stock_Fermetures', 539.0))
+            treso = st.number_input("Trésorerie", value=get_h('Tresorerie_Initiale', 100000.0))
+            if st.form_submit_button("Enregistrer les Stocks"):
+                if engine:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"INSERT INTO Historique_Equipe (Tour_ID, Stock_Neo3, Stock_Neo5, Stock_Neo7, Stock_Renforts, Stock_Manchons, Stock_Fermetures, Tresorerie_Initiale) VALUES ({tour_saisie}, {s_neo3}, {s_neo5}, {s_neo7}, {s_renf}, {s_man}, {s_ferm}, {treso}) ON DUPLICATE KEY UPDATE Stock_Neo3={s_neo3}, Stock_Neo5={s_neo5}, Stock_Neo7={s_neo7}, Stock_Renforts={s_renf}, Stock_Manchons={s_man}, Stock_Fermetures={s_ferm}, Tresorerie_Initiale={treso}"))
+                    st.success("Stocks enregistrés !")
 
+    with tab_r2:
+        with st.form("f_mach"):
+            st.subheader("Saisie du Parc Machines & Immobilisations")
+            m_dec = st.number_input("Total Découpe", value=get_m('Nb_Machines_Decoupe', 10), step=1)
+            m_ass = st.number_input("Total Assemblage", value=get_m('Nb_Machines_Assemblage', 16), step=1)
+            m_cond = st.number_input("Total Conditionnement", value=get_m('Nb_Machines_Cond', 4), step=1)
+            acquis_check = st.checkbox("Des machines ont-elles été acquises ce mois-ci ?", value=bool(get_m('Acquisition_Faite', 0)))
+            acq_dec = st.number_input("Nombre de machines Découpe acquises", value=get_m('Acq_Decoupe', 0), step=1)
+            acq_ass = st.number_input("Nombre de machines Assemblage acquises", value=get_m('Acq_Assemblage', 0), step=1)
+            acq_cond = st.number_input("Nombre de machines Conditionnement acquises", value=get_m('Acq_Cond', 0), step=1)
+            if st.form_submit_button("Enregistrer les Machines et Acquisitions"):
+                acquis_val = 1 if acquis_check else 0
+                if engine:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"INSERT INTO Parc_Machines_Mensuel (Tour_ID, Mois, Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond, Acquisition_Faite, Acq_Decoupe, Acq_Assemblage, Acq_Cond) VALUES ({tour_saisie}, '{mois_saisie}', {m_dec}, {m_ass}, {m_cond}, {acquis_val}, {acq_dec}, {acq_ass}, {acq_cond}) ON DUPLICATE KEY UPDATE Nb_Machines_Decoupe={m_dec}, Nb_Machines_Assemblage={m_ass}, Nb_Machines_Cond={m_cond}, Acquisition_Faite={acquis_val}, Acq_Decoupe={acq_dec}, Acq_Assemblage={acq_ass}, Acq_Cond={acq_cond};"))
+                    st.success("✅ Parc machines et acquisitions enregistrés !")
+
+    with tab_r3:
+        with st.form("form_saisie_rh_reel"):
+            st.subheader("Saisie des Effectifs et Salaires par Catégorie")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                eff_ep = st.number_input("Nb Employés Prod", value=get_rh_e('Eff_Employes_Prod', 15), step=1)
+                sal_ep = st.number_input("Sal. Employé Prod (€)", value=get_rh_v('Sal_Employes_Prod', 2000.0), step=100.0)
+                eff_cp = st.number_input("Nb Cadres Prod", value=get_rh_e('Eff_Cadres_Prod', 3), step=1)
+                sal_cp = st.number_input("Sal. Cadre Prod (€)", value=get_rh_v('Sal_Cadres_Prod', 3333.33), step=100.0)
+                eff_dp = st.number_input("Nb Directeurs Prod", value=get_rh_e('Eff_Directeurs_Prod', 1), step=1)
+                sal_dp = st.number_input("Sal. Directeur Prod (€)", value=get_rh_v('Sal_Directeurs_Prod', 4500.0), step=100.0)
+            with c2:
+                eff_ea = st.number_input("Nb Employés Appro", value=get_rh_e('Eff_Employes_Appro', 7), step=1)
+                sal_ea = st.number_input("Sal. Employé Appro (€)", value=get_rh_v('Sal_Employes_Appro', 2000.0), step=100.0)
+                eff_ca = st.number_input("Nb Cadres Appro", value=get_rh_e('Eff_Cadres_Appro', 2), step=1)
+                sal_ca = st.number_input("Sal. Cadre Appro (€)", value=get_rh_v('Sal_Cadres_Appro', 2250.0), step=100.0)
+                eff_da = st.number_input("Nb Directeurs Appro", value=get_rh_e('Eff_Directeurs_Appro', 1), step=1)
+                sal_da = st.number_input("Sal. Directeur Appro (€)", value=get_rh_v('Sal_Directeurs_Appro', 2000.0), step=100.0)
+            with c3:
+                eff_ef = st.number_input("Nb Employés Admin", value=get_rh_e('Eff_Employes_Admin', 7), step=1)
+                sal_ef = st.number_input("Sal. Employé Admin (€)", value=get_rh_v('Sal_Employes_Admin', 2000.0), step=100.0)
+                eff_cf = st.number_input("Nb Cadres Admin", value=get_rh_e('Eff_Cadres_Admin', 2), step=1)
+                sal_cf = st.number_input("Sal. Cadre Admin (€)", value=get_rh_v('Sal_Cadres_Admin', 2200.0), step=100.0)
+                eff_df = st.number_input("Nb Directeurs Admin", value=get_rh_e('Eff_Directeurs_Admin', 1), step=1)
+                sal_df = st.number_input("Sal. Directeur Admin (€)", value=get_rh_v('Sal_Directeurs_Admin', 2000.0), step=100.0)
+            if st.form_submit_button("💾 Enregistrer la Pyramide RH"):
+                if engine:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"INSERT INTO Decisions_RH_Mensuel (Tour_ID, Mois, Eff_Employes_Prod, Sal_Employes_Prod, Eff_Cadres_Prod, Sal_Cadres_Prod, Eff_Directeurs_Prod, Sal_Directeurs_Prod, Eff_Employes_Appro, Sal_Employes_Appro, Eff_Cadres_Appro, Sal_Cadres_Appro, Eff_Directeurs_Appro, Sal_Directeurs_Appro, Eff_Employes_Admin, Sal_Employes_Admin, Eff_Cadres_Admin, Sal_Cadres_Admin, Eff_Directeurs_Admin, Sal_Directeurs_Admin) VALUES ({tour_saisie}, '{mois_saisie}', {eff_ep}, {sal_ep}, {eff_cp}, {sal_cp}, {eff_dp}, {sal_dp}, {eff_ea}, {sal_ea}, {eff_ca}, {sal_ca}, {eff_da}, {sal_da}, {eff_ef}, {sal_ef}, {eff_cf}, {sal_cf}, {eff_df}, {sal_df}) ON DUPLICATE KEY UPDATE Eff_Employes_Prod={eff_ep}, Sal_Employes_Prod={sal_ep}, Eff_Cadres_Prod={eff_cp}, Sal_Cadres_Prod={sal_cp}, Eff_Directeurs_Prod={eff_dp}, Sal_Directeurs_Prod={sal_dp}, Eff_Employes_Appro={eff_ea}, Sal_Employes_Appro={sal_ea}, Eff_Cadres_Appro={eff_ca}, Sal_Cadres_Appro={sal_ca}, Eff_Directeurs_Appro={eff_da}, Sal_Directeurs_Appro={sal_da}, Eff_Employes_Admin={eff_ef}, Sal_Employes_Admin={sal_ef}, Eff_Cadres_Admin={eff_cf}, Sal_Cadres_Admin={sal_cf}, Eff_Directeurs_Admin={eff_df}, Sal_Directeurs_Admin={sal_df};"))
+                    st.success("Pyramide RH enregistrée !")
+
+# ==========================================
+# MODULE 3 : SIMULATEUR & DÉCISION STRATÉGIQUE
+# ==========================================
 elif module_principal == "🧠 Simulateur & Décision Stratégique":
     st.title("🧠 Simulateur Stratégique & Interconnectivité (Seed Engine)")
     
     tour_id_precedent = max(1, tour_id_actif - 1)
-    st.info(f"Simulation interactive pour le mois : **{mois_selectionne}** (Basée sur l'état de l'entreprise au Tour ID {tour_id_precedent})")
+    st.info(f"Simulation interactive pour le mois : **{mois_selectionne}** (Basée sur l'entreprise au Tour ID {tour_id_precedent})")
 
     if engine is not None:
         try:
@@ -457,13 +668,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         elif score_mixte_matiere < 60: regime_matiere = 'maximum'
         else: regime_matiere = 'normal'
 
-        val_controle = {"Allégé": 1, "Standard": 2, "Renforcé": 3}[niveau_controle]
-        if val_controle == 3 and score_rh_prod < 50: regime_temps = 'maximum'
-        elif val_controle == 1 and score_rh_prod > 65: regime_temps = 'minimum'
-        elif val_controle == 2 and score_rh_prod < 40: regime_temps = 'maximum'
-        elif val_controle == 2 and score_rh_prod > 80: regime_temps = 'minimum'
-        else: regime_temps = 'normal'
-
         ord_s3 = sim_number("Prod S3", "ord_s3", 50)
         ord_i3 = sim_number("Prod I3", "ord_i3", 500)
         ord_s5 = sim_number("Prod S5", "ord_s5", 100)
@@ -504,16 +708,12 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
     with tab_sim_rh:
         st.subheader("4. Pilotage RH Interconnecté")
-        def calculer_indice_structure(ms_emp, ms_cad, ms_dir, cible):
-            return (ms_cad + ms_dir) / ms_emp / cible if ms_emp > 0 else 2.0
-
         sim_ep_eff = sim_number("Nb Employés Prod", 'sp_e', get_rh_e('Eff_Employes_Prod', 15))
         sim_ep_sal = sim_number("Sal. Employé Prod (€)", 'sp_es', get_rh_v('Sal_Employes_Prod', 2000.0), step=100.0)
         sim_cp_eff = sim_number("Nb Cadres Prod", 'sp_c', get_rh_e('Eff_Cadres_Prod', 3))
         sim_cp_sal = sim_number("Sal. Cadre Prod (€)", 'sp_cs', get_rh_v('Sal_Cadres_Prod', 3333.33), step=100.0)
         sim_dp_eff = sim_number("Nb Directeurs Prod", 'sp_d', get_rh_e('Eff_Directeurs_Prod', 1))
         sim_dp_sal = sim_number("Sal. Directeur Prod (€)", 'sp_ds', get_rh_v('Sal_Directeurs_Prod', 4500.0), step=100.0)
-        
         tot_p = (sim_ep_eff * sim_ep_sal) + (sim_cp_eff * sim_cp_sal) + (sim_dp_eff * sim_dp_sal)
 
         sim_ea_eff = sim_number("Nb Employés Appro", 'sa_e', get_rh_e('Eff_Employes_Appro', 7))
@@ -522,7 +722,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         sim_ca_sal = sim_number("Sal. Cadre Appro (€)", 'sa_cs', get_rh_v('Sal_Cadres_Appro', 2250.0), step=100.0)
         sim_da_eff = sim_number("Nb Directeurs Appro", 'sa_d', get_rh_e('Eff_Directeurs_Appro', 1))
         sim_da_sal = sim_number("Sal. Directeur Appro (€)", 'sa_ds', get_rh_v('Sal_Directeurs_Appro', 2000.0), step=100.0)
-        
         tot_a = (sim_ea_eff * sim_ea_sal) + (sim_ca_eff * sim_ca_sal) + (sim_da_eff * sim_da_sal)
 
         sim_ef_eff = sim_number("Nb Employés Admin", 'sf_e', get_rh_e('Eff_Employes_Admin', 7))
@@ -531,7 +730,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         sim_cf_sal = sim_number("Sal. Cadre Admin (€)", 'sf_cs', get_rh_v('Sal_Cadres_Admin', 2200.0), step=100.0)
         sim_df_eff = sim_number("Nb Directeurs Admin", 'sf_d', get_rh_e('Eff_Directeurs_Admin', 1))
         sim_df_sal = sim_number("Sal. Directeur Admin (€)", 'sf_ds', get_rh_v('Sal_Directeurs_Admin', 2000.0), step=100.0)
-        
         tot_f = (sim_ef_eff * sim_ef_sal) + (sim_cf_eff * sim_cf_sal) + (sim_df_eff * sim_df_sal)
 
     with tab_sim_fin:
@@ -544,6 +742,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         treso_initiale = float(donnees_fin_act.get('Disponibilites_Banque', get_h('Tresorerie_Initiale', 0.0)))
         capitaux_propres = float(donnees_fin_act.get('Total_Capitaux_Propres', 0.0))
         
+        # Initialisation par défaut sécurisée
         aace_historique = 1104787.0
         deprec_historique = 793362.66 
         report_a_nouveau = 0.0
@@ -557,6 +756,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 df_ec = pd.read_sql("SELECT contenu FROM erp_donnees WHERE module = 'expert_comptable' ORDER BY id DESC LIMIT 1", engine)
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
+                    
+                    # 1. Extraction stricte des charges fixes réelles depuis le Bilan / Compte de résultat JSON
                     cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat détaillé", {}).get("Tableau_1", [])
                     if not cr_lignes:
                         cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat simplifié", {}).get("Tableau_1", [])
@@ -573,6 +774,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     if v_aace > 0.0: aace_historique = v_aace
                     if v_deprec > 0.0: deprec_historique = v_deprec
                     
+                    # 2. Extraction du BFR et du solde initial M-1
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                     for row in tab_treso:
                         rub = str(row.get("Rubrique", row.get("Colonne_0", ""))).lower()
@@ -584,6 +786,15 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                         if "montant du bfr" in rub:
                             val_bfr = parse_french_float(row.get("Colonne_5", row.get("Colonne_6", 0.0)))
                             if val_bfr != 0.0: bfr_precedent_m1 = val_bfr
+
+                    # 3. Extraction des données CUMULÉES réelles depuis le JSON de l'expert-comptable
+                    ratios_section = data_ec.get("Synthèse", {}).get("Ratios", {}).get("Ratios et Indicateurs", {})
+                    if ratios_section:
+                        cumul_list = ratios_section.get("Indicateurs_CUMULÉ", ratios_section.get("Indicateurs_CUMULE", []))
+                        if cumul_list and isinstance(cumul_list, list):
+                            c_item = cumul_list[0]
+                            ca_cumule_historique = parse_french_float(c_item.get("Chiffre d'affaires", 0.0))
+                            res_avant_impot_cumule_historique = parse_french_float(c_item.get("Résultat avant impôt", 0.0))
         except Exception: pass
 
         solde_initial_ep = sim_number("Solde initial", "sim_solde_ep", 1500000.0, step=1000.0)
@@ -623,7 +834,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_maintenance_mensuel = 0.005
         maintenance_nouvelles_machines = cout_invest_machines * taux_maintenance_mensuel
 
-        # 🎯 FORÇAGE ABSOLU DE L'ADDITION DES CHARGES FIXES DANS LE TOTAL DES CHARGES
+        # 🎯 CALCUL MAÎTRE : INCLUSION FORCÉE ET EXPLICITE DES CHARGES FIXES EXTRAITES DU BILAN (1.17 M€)
         total_charges = (
             cout_achats_total_sim + 
             ms_prev_brute + 
@@ -649,7 +860,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_profitabilite = (res_avant_impot / ca_prev_sim * 100) if ca_prev_sim > 0 else 0.0
         taux_rentabilite = (res_avant_impot / capitaux_propres * 100) if capitaux_propres > 0 else 0.0
 
-        # 🎯 CALCULS CUMULÉS CORRECTS (Basés sur l'historique de la base de données)
+        # 🎯 CALCULS CUMULÉS ROBUSTES ET DISTINCTS
         ca_cumule_sim = ca_cumule_historique + ca_prev_sim
         res_avant_impot_cumule_sim = res_avant_impot_cumule_historique + res_avant_impot
         taux_profitabilite_cumule = (res_avant_impot_cumule_sim / ca_cumule_sim * 100) if ca_cumule_sim > 0 else taux_profitabilite
