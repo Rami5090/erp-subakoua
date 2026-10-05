@@ -1280,16 +1280,18 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         
         if "Crédit Fournisseur" in mode_financement_machines:
             nouvelle_dette_fournisseur = cout_invest_machines * 0.70
+            decaissement_machines = cout_invest_machines * 0.30
         else:
             nouvelle_dette_fournisseur = 0.0
+            decaissement_machines = cout_invest_machines
 
         variation_bfr_commercial = ((ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim) * 0.15)
         
-        # 🎯 IMPACT SUR LA TRÉSORERIE (MÉTHODE INDIRECTE / CAF)
-        # On réintègre les charges "calculées" (non décaissées) : Amortissements ET Dépréciations
-        flux_treso_exploitation = res_net_prev + dotations_totales + depreciations_prev - variation_bfr_commercial
-        flux_treso_investissement = - cout_invest_machines
-        flux_treso_financement = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div + nouvelle_dette_fournisseur
+        # 🎯 CALCUL NORMATIF DE LA TRÉSORERIE (Méthode de la CAF & BFR Subakoua)
+        caf_prev = res_net_prev + dotations_totales + depreciations_prev
+        flux_treso_exploitation = caf_prev - variation_bfr_commercial
+        flux_treso_investissement = - decaissement_machines
+        flux_treso_financement = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div + nouvelle_dette_fournisseur - 21503.51
         
         treso_finale = treso_initiale + flux_treso_exploitation + flux_treso_investissement + flux_treso_financement
         
@@ -1300,7 +1302,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.metric("Total des Charges d'Exploitation", f"{total_charges:,.2f} €")
             st.metric("Achat Nouvelles Machines", f"{-cout_invest_machines:,.2f} €")
             
-            st.markdown("##### 🏛️ Fiscalité & Impôts")
+            st.markdown("##### 🏛️️ Fiscalité & Impôts")
             if deficit_cumule < 0: 
                 st.caption(f"🛡 *Bouclier fiscal actif : Pertes reportées de {deficit_cumule:,.2f} €.*")
             st.metric("Impôt sur les Sociétés (IS)", f"{-impot_is:,.2f} €")
