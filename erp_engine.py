@@ -4,6 +4,7 @@ import pandas as pd
 import json
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL
 from finance_engine import (
     TOURS_PERIODES,
     NOMBRE_PARTS,
@@ -28,36 +29,81 @@ st.set_page_config(page_title="ERP Subakoua - Cockpit Stratégique", layout="wid
 
 @st.cache_resource
 def init_connection():
+    """Initialise la connexion MySQL et renvoie (engine, diagnostic).
+
+    Le code accepte les variables d'environnement ou les secrets Streamlit
+    [mysql]. Une URL SQLAlchemy complète peut également être fournie via
+    [mysql].url. Le mot de passe n'est jamais affiché dans le diagnostic.
+    """
+    host = user = password = database = None
+    port = None
     try:
+        # 1) Variables d'environnement (utile pour un déploiement générique)
         host = os.getenv("DB_HOST")
         user = os.getenv("DB_USER")
         password = os.getenv("DB_PASSWORD")
-        database = os.getenv("DB_NAME", "subakoua_erp")
-        port = int(os.getenv("DB_PORT", 16869))
-        
-        if not host and "mysql" in st.secrets:
-            host = st.secrets["mysql"]["host"]
-            user = st.secrets["mysql"]["user"]
-            password = st.secrets["mysql"]["password"]
-            database = st.secrets["mysql"].get("database", "subakoua_erp")
-            port = int(st.secrets["mysql"].get("port", 16869))
-            
-        if not host or not password:
-            return None
-        
-        engine = create_engine(
-            f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}",
-            connect_args={'ssl': {}},
-            pool_pre_ping=True, 
-            pool_recycle=3600   
-        )
-        with engine.connect() as conn:
-            pass
-        return engine
-    except Exception:
-        return None
+        database = os.getenv("DB_NAME")
+        port_raw = os.getenv("DB_PORT")
 
-engine = init_connection()
+        # 2) Secrets Streamlit [mysql] (Community Cloud)
+        if not host and "mysql" in st.secrets:
+            cfg = st.secrets["mysql"]
+            # Supporte user et username pour éviter les erreurs de nommage.
+            host = cfg.get("host")
+            user = cfg.get("user") or cfg.get("username")
+            password = cfg.get("password")
+            database = cfg.get("database") or cfg.get("db_name")
+            port_raw = cfg.get("port")
+
+            # Cas encore plus simple : on peut fournir directement l'URL.
+            direct_url = cfg.get("url")
+        else:
+            direct_url = None
+
+        if direct_url:
+            engine = create_engine(
+                str(direct_url),
+                connect_args={"ssl": {}},
+                pool_pre_ping=True,
+                pool_recycle=3600,
+            )
+        else:
+            # Aucun port/base par défaut pour éviter de pointer silencieusement
+            # vers une mauvaise base Aiven.
+            if not host or not user or not password or not database or not port_raw:
+                return None, (
+                    "Configuration MySQL incomplète. Dans Streamlit Cloud, "
+                    "renseigne [mysql] avec host, port, user/username, password et database."
+                )
+            port = int(port_raw)
+            url = URL.create(
+                drivername="mysql+pymysql",
+                username=str(user),
+                password=str(password),
+                host=str(host),
+                port=port,
+                database=str(database),
+            )
+            engine = create_engine(
+                url,
+                connect_args={"ssl": {}},
+                pool_pre_ping=True,
+                pool_recycle=3600,
+            )
+
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return engine, None
+
+    except Exception as exc:
+        # Diagnostic non sensible : le mot de passe est masqué s'il apparaît
+        # exceptionnellement dans le message du driver.
+        msg = f"{type(exc).__name__}: {exc}"
+        if password:
+            msg = msg.replace(str(password), "***")
+        return None, msg
+
+engine, db_error = init_connection()
 
 def init_db_simu():
     if engine is None: return
@@ -570,6 +616,12 @@ if module_principal == "📊 État des lieux global":
 
     if engine is None:
         st.warning("Système hors ligne : Impossible d'afficher les données Cloud.")
+        if db_error:
+            st.error(f"Diagnostic connexion MySQL : {db_error}")
+        st.info(
+            "Vérifie dans Streamlit Cloud → Settings → Secrets que [mysql] contient "
+            "les valeurs exactes affichées dans Aiven (host, port, user, password, database)."
+        )
     else:
         try:
             query_erp = f"SELECT module, contenu FROM erp_donnees WHERE periode = '{periode_db}' AND type_donnee = 'etat_actuel'"
@@ -1159,8 +1211,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             tva_deductible_immobilisations_mois=tva_immo_mois,
             tva_nette_ouverture_a_payer=tva_ouverture_a_payer,
             dette_fiscale_sociale_hors_tva_ouverture=dette_fiscale_sociale_hors_tva_ouverture,
-            # Premier passage : l'IS n'est pas encore calculé.
-            nouvelles_charges_fiscales_sociales=charges_sociales_prev,
+            nouvelles_charges_fiscales_sociales=charges_sociales_prev + float(projection_pre.impot_is),
             paiements_fiscaux_sociaux_hors_tva=paiement_social + paiement_is,
         )
 
