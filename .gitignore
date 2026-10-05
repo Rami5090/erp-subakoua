@@ -1,21 +1,12 @@
-# Secrets / local config
 .env
-.streamlit/secrets.toml
-
-# Python
+.env.*
+.venv/
+venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-
-# Local data / dumps / backups
-*.json
-*.csv
 *.log
-*.bak
-*.backup
-
-# IDE / OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
+.streamlit/secrets.toml
+subakoua_full_database_dump.json
+*.before_*.py
+retrotest_*.csv

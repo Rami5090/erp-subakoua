@@ -437,9 +437,9 @@ def sim_text(label, key, default_val):
 def sim_select(label, options, key, default_val):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.selectbox(label, options, key=key)
-def sim_radio(label, options, key, default_val, horizontal=False):
+def sim_radio(label, options, key, default_val, horizontal=False, **kwargs):
     if key not in st.session_state: st.session_state[key] = default_val
-    return st.radio(label, options, key=key, horizontal=horizontal)
+    return st.radio(label, options, key=key, horizontal=horizontal, **kwargs)
 def sim_slider(label, min_v, max_v, key, default_val, step=None):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.slider(label, min_value=min_v, max_value=max_v, key=key, step=step)
