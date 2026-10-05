@@ -1,0 +1,21 @@
+# Secrets / local config
+.env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local data / dumps / backups
+*.json
+*.csv
+*.log
+*.bak
+*.backup
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
