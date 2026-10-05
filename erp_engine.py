@@ -1076,7 +1076,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         treso_initiale = float(donnees_fin_act.get('Disponibilites_Banque', get_h('Tresorerie_Initiale', 0.0)))
         capitaux_propres = float(donnees_fin_act.get('Total_Capitaux_Propres', 0.0))
         
-        # Valeurs par défaut sécurisées
+        # Valeurs par défaut blindées
         aace_historique = 1104787.0
         deprec_historique = 793362.66 
         
@@ -1088,12 +1088,11 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
         try:
             if engine is not None:
-                # 1. Récupération stricte du dernier état comptable M-1
                 df_ec = pd.read_sql("SELECT contenu FROM erp_donnees WHERE module = 'expert_comptable' ORDER BY id DESC LIMIT 1", engine)
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
                     
-                    # Extraction des charges fixes
+                    # Extraction inconditionnelle des charges fixes depuis le JSON (et non les seeds)
                     cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat détaillé", {}).get("Tableau_1", [])
                     if not cr_lignes:
                         cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat simplifié", {}).get("Tableau_1", [])
@@ -1116,7 +1115,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     if v_aace > 0.0: aace_historique = v_aace
                     if v_deprec > 0.0: deprec_historique = v_deprec
                     
-                    # Extraction du véritable Solde Bancaire Initial (tb) depuis le tableau de trésorerie M-1
+                    # Extraction rigoureuse du solde de trésorerie initial (tb) et du BFR M-1
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                     for row in tab_treso:
                         rub = str(row.get("Rubrique", row.get("Colonne_0", ""))).lower()
@@ -1126,10 +1125,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                                 treso_initiale = val_tb
                         if "résultat net" in rub: res_net_historique = parse_french_float(row.get("Montant (€)", res_net_historique))
                         if "dotations aux amortissements" in rub: dotations_prev = parse_french_float(row.get("Montant (€)", dotations_prev))
-
-                    # Extraction du BFR du mois précédent pour calcul exact de la variation
-                    for row in tab_treso:
-                        rub = str(row.get("Colonne_0", "")).lower()
                         if "montant du bfr" in rub:
                             val_bfr = parse_french_float(row.get("Colonne_5", row.get("Colonne_6", 0.0)))
                             if val_bfr != 0.0: bfr_precedent_m1 = val_bfr
@@ -1192,8 +1187,9 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.metric("Total dividendes versés", f"{total_div:,.2f} €")
             
         with tab_f5:
-            st.info("🤖 **Automatisé** : L'ERP a récupéré vos charges fixes incompressibles depuis le compte de résultat du mois précédent.")
+            st.info("🤖 **Automatisé et Sanctuarisé** : Ces valeurs proviennent directement du dernier bilan comptable scanné.")
             
+            # Forçage inconditionnel basé sur l'historique extrait (immunisé contre le cache des seeds)
             aace_fixes = aace_historique
             depreciations_prev = deprec_historique
             
@@ -1256,7 +1252,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             decaissement_machines = cout_invest_machines * 1.20 # Total TTC
             nouvelle_dette_fournisseur = 0.0
 
-        # 🎯 CALCUL DU BFR NORMATIF SUBAKOUA (Aligné sur la structure réelle du bilan)
+        # 🎯 CALCUL NORMATIF DU BFR ET DE SA VARIATION (Modèle Subakoua)
         stock_matieres_prev = cout_achats_total_sim * 0.15
         stock_produits_prev = ca_prev_sim * 0.20
         creances_clients_prev = ca_prev_sim * 0.55
