@@ -1,0 +1,5 @@
+streamlit
+pandas
+SQLAlchemy
+PyMySQL
+python-dotenv
