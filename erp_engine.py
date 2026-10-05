@@ -1076,8 +1076,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         treso_initiale = float(donnees_fin_act.get('Disponibilites_Banque', get_h('Tresorerie_Initiale', 0.0)))
         capitaux_propres = float(donnees_fin_act.get('Total_Capitaux_Propres', 0.0))
         
-        # Nouvelles variables pour scanner l'ERP automatiquement
-        aace_historique = float(donnees_fin_act.get('Autres_Charges_Externes', 1104787.0))
+        # Valeurs par défaut ultra sécurisées
+        aace_historique = 1104787.0
         deprec_historique = 793362.66 
         
         report_a_nouveau = 0.0
@@ -1086,19 +1086,9 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         res_avant_impot_cumule_historique = 0.0
 
         try:
-            periode_m1_nom_ui = [k for k, v in tour_mapping_id.items() if v == tour_id_precedent][0]
-            periode_m1_db = mois_mapping[periode_m1_nom_ui]
-            
             if engine is not None:
-                df_bq = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'banque_assurance' AND type_donnee = 'etat_actuel'", engine)
-                if not df_bq.empty:
-                    data_bq = json.loads(df_bq.iloc[0]['contenu'])
-                    if "Soldes bancaires" in data_bq:
-                        for acc in data_bq["Soldes bancaires"]:
-                            if "Solde final" in acc:
-                                treso_initiale = parse_french_float(acc["Solde final"])
-                
-                df_ec = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'expert_comptable' AND type_donnee = 'etat_actuel'", engine)
+                # Récupération GARANTIE du dernier document comptable généré (peu importe son nom ou sa période)
+                df_ec = pd.read_sql("SELECT contenu FROM erp_donnees WHERE module = 'expert_comptable' ORDER BY id DESC LIMIT 1", engine)
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
                     
@@ -1112,7 +1102,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     
                     for row in cr_lignes:
                         libelle = str(row.get("Colonne_0", "")).lower()
-                        # On récupère la valeur numérique de la ligne avec les clés que vous m'avez fournies
                         val_brute = row.get("Colonne_1", row.get("Montants (€)", 0.0))
                         montant = parse_french_float(val_brute)
                                     
@@ -1123,8 +1112,9 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                         elif "autres charges d'exploitation" in libelle:
                             v_deprec += montant
 
-                    if v_aace != 0.0: aace_historique = v_aace
-                    if v_deprec != 0.0: deprec_historique = v_deprec
+                    # Si le Json a renvoyé des vraies valeurs, on les prend, sinon on garde la sécu
+                    if v_aace > 0.0: aace_historique = v_aace
+                    if v_deprec > 0.0: deprec_historique = v_deprec
                     # --------------------------------------------------------
                     
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
@@ -1238,14 +1228,15 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         with tab_f5:
             st.info("🤖 **Automatisé** : L'ERP a récupéré vos charges fixes incompressibles depuis le compte de résultat du mois précédent.")
             
-            # --- SUPPRESSION DES CHAMPS DE SAISIE POUR CONTOURNER LE CACHE DE STREAMLIT ---
+            # --- SUPPRESSION TOTALE DES CHAMPS DE SAISIE ICI ---
+            # (Pour empêcher Streamlit d'écraser les valeurs avec le "0" des anciennes sauvegardes)
             aace_fixes = aace_historique
             depreciations_prev = deprec_historique
             
             c_fix1, c_fix2 = st.columns(2)
             c_fix1.metric("AACE Fixes (Loyers, énergie, transports...)", f"{aace_fixes:,.2f} €")
             c_fix2.metric("Dotations aux dépréciations & Autres charges", f"{depreciations_prev:,.2f} €")
-            st.metric("Total Charges de structure fixes", f"{aace_fixes + depreciations_prev:,.2f} €")
+            st.metric("Total Charges de structure fixes ajoutées au calcul", f"{aace_fixes + depreciations_prev:,.2f} €")
 
         st.divider()
         st.markdown("##### 💶 Synthèse Financière & Situation Globale de l'Entreprise")
