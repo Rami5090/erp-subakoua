@@ -236,6 +236,14 @@ def charger_donnees_mkg_bdd(tour_id):
     except Exception: pass
     return {}
 
+def charger_donnees_fin_bdd(tour_id):
+    if engine is None: return {}
+    try:
+        df = pd.read_sql(f"SELECT * FROM Finances_Mensuelles WHERE Tour_ID = {tour_id}", engine)
+        if not df.empty: return df.iloc[0].to_dict()
+    except Exception: pass
+    return {}
+
 def lister_scenarios(tour_id):
     if engine is None: return []
     try:
@@ -266,7 +274,7 @@ def sauvegarder_scenario_seed(token_seed, tour_id, nom, parametres_dict):
     except Exception as e:
         st.error(f"Erreur sauvegarde seed : {e}")
 
-# Fonctions d'aide globale sécurisées (Portée générale)
+# Fonctions d'aide globale sécurisées
 def get_rh_v(donnees_rh, k, def_v): return float(donnees_rh.get(k, def_v))
 def get_rh_e(donnees_rh, k, def_v): return int(donnees_rh.get(k, def_v))
 
@@ -502,7 +510,7 @@ elif module_principal == "📥 Saisie des Données Réelles":
         except Exception: pass
 
     def get_h(col, def_v): return float(df_h[col].iloc[0]) if not df_h.empty and col in df_h.columns else def_v
-    def get_m(col, def_v): return int(df_m[col].iloc[0]) if not df_m.empty and col in df_m.columns else def_v
+    def get_m(col, def_v=0): return int(df_m[col].iloc[0]) if not df_m.empty and col in df_m.columns else def_v
 
     tab_r1, tab_r2, tab_r3, tab_r4, tab_r5, tab_r6 = st.tabs(["📦 Stocks", "🏭 Machines", "👥 RH", "🎯 Marketing", "📈 Ventes Réelles", "💶 Finance"])
     
