@@ -1092,7 +1092,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
                     
-                    # Extraction inconditionnelle des charges fixes depuis le JSON (et non les seeds)
                     cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat détaillé", {}).get("Tableau_1", [])
                     if not cr_lignes:
                         cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat simplifié", {}).get("Tableau_1", [])
@@ -1115,7 +1114,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     if v_aace > 0.0: aace_historique = v_aace
                     if v_deprec > 0.0: deprec_historique = v_deprec
                     
-                    # Extraction rigoureuse du solde de trésorerie initial (tb) et du BFR M-1
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                     for row in tab_treso:
                         rub = str(row.get("Rubrique", row.get("Colonne_0", ""))).lower()
@@ -1189,7 +1187,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         with tab_f5:
             st.info("🤖 **Automatisé et Sanctuarisé** : Ces valeurs proviennent directement du dernier bilan comptable scanné.")
             
-            # Forçage inconditionnel basé sur l'historique extrait (immunisé contre le cache des seeds)
             aace_fixes = aace_historique
             depreciations_prev = deprec_historique
             
@@ -1211,6 +1208,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_maintenance_mensuel = 0.005
         maintenance_nouvelles_machines = cout_invest_machines * taux_maintenance_mensuel
 
+        # 🎯 CORRECTION MAJEURE : Les charges fixes incompressibles (AACE + Dépréciations) SONT MAINTENANT INCLUSES DANS LES CHARGES GLOBALES
         total_charges = (
             cout_achats_total_sim + 
             ms_prev_brute + 
@@ -1244,15 +1242,15 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         achats_titres = (a_a1 * 224.58) + (a_a2 * 200.64) + (a_a3 * 163.84) + (a_o1 * 109.09) + (a_o2 * 114.89) + (a_o3 * 114.78)
         ventes_titres = (v_a1 * 224.58) + (v_a2 * 200.64) + (v_a3 * 163.84) + (v_o1 * 109.09) + (v_o2 * 114.89) + (v_o3 * 114.78)
         
-        # 🎯 GESTION DE LA TVA SUR IMMOBILISATIONS (Règle Subakoua : 20% de TVA sur investissements)
+        # 🎯 GESTION DE LA TVA SUR IMMOBILISATIONS (20% sur investissements)
         if "Crédit Fournisseur" in mode_financement_machines:
-            decaissement_machines = cout_invest_machines * 0.30 * 1.20 # Acompte TTC
-            nouvelle_dette_fournisseur = cout_invest_machines * 0.70 * 1.20 # Reste dû TTC
+            decaissement_machines = cout_invest_machines * 0.30 * 1.20
+            nouvelle_dette_fournisseur = cout_invest_machines * 0.70 * 1.20
         else:
-            decaissement_machines = cout_invest_machines * 1.20 # Total TTC
+            decaissement_machines = cout_invest_machines * 1.20
             nouvelle_dette_fournisseur = 0.0
 
-        # 🎯 CALCUL NORMATIF DU BFR ET DE SA VARIATION (Modèle Subakoua)
+        # 🎯 CALCUL DU BFR NORMATIF
         stock_matieres_prev = cout_achats_total_sim * 0.15
         stock_produits_prev = ca_prev_sim * 0.20
         creances_clients_prev = ca_prev_sim * 0.55
@@ -1261,7 +1259,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         bfr_simule = stock_matieres_prev + stock_produits_prev + creances_clients_prev - dettes_fournisseurs_prev
         variation_bfr = bfr_simule - bfr_precedent_m1
         
-        # 🎯 FLUX DE TRÉSORERIE CONSOLIDÉS (Méthode CAF & BFR rigoureuse)
+        # 🎯 FLUX DE TRÉSORERIE CONSOLIDÉS
         caf_prev = res_net_prev + dotations_totales + depreciations_prev
         flux_treso_exploitation = caf_prev - variation_bfr
         flux_treso_investissement = - decaissement_machines
