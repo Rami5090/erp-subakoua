@@ -2,6 +2,7 @@ import os
 import streamlit as st
 import pandas as pd
 import json
+import hashlib
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
@@ -26,6 +27,38 @@ from finance_engine import (
 load_dotenv()
 
 st.set_page_config(page_title="ERP Subakoua - Cockpit Stratégique", layout="wide", initial_sidebar_state="expanded")
+
+# ---------------------------------------------------------------------------
+# UI / ergonomie
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+    .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+    div[data-testid="stMetric"] { padding: 0.45rem 0.55rem; border-radius: 0.65rem; border: 1px solid rgba(128,128,128,.20); }
+    div[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 0.8rem; }
+    .ui-kicker { font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; opacity: .68; margin-bottom: .15rem; }
+    .ui-title { font-size: 1.65rem; font-weight: 700; margin-bottom: .15rem; }
+    .ui-help { font-size: .92rem; opacity: .78; }
+    .ui-badge { display: inline-block; padding: .22rem .55rem; border-radius: 999px; border: 1px solid rgba(128,128,128,.25); font-size: .78rem; margin-right: .3rem; }
+</style>
+""", unsafe_allow_html=True)
+
+SIM_STATE_PREFIXES = (
+    "sim_", "sp_", "sa_", "sf_", "ord_", "qual_", "ctrl_", "radio_",
+    "slider_",
+)
+
+def reinitialiser_decisions_simulation():
+    for _key in list(st.session_state.keys()):
+        if _key.startswith(SIM_STATE_PREFIXES):
+            del st.session_state[_key]
+
+def fmt_eur(value):
+    try:
+        return f"{float(value):,.0f} €".replace(",", " ")
+    except Exception:
+        return "—"
+
 
 @st.cache_resource
 def init_connection():
@@ -579,7 +612,8 @@ def charger_etat_financier_m1(tour_id_precedent, tour_id_cible):
 # ==========================================
 # 4. NAVIGATION & PILOTAGE TEMPOREL
 # ==========================================
-st.sidebar.title("🏢 ERP Subakoua")
+st.sidebar.markdown("<div class='ui-kicker'>Cockpit stratégique</div><div class='ui-title'>🏢 ERP Subakoua</div>", unsafe_allow_html=True)
+st.sidebar.caption("Simulation intégrée : marché → production → achats → RH → finance")
 
 mois_mapping = {
     "Janvier N+1": "Année 1 - Janvier", "Février N+1": "Année 1 - Février", "Mars N+1": "Année 1 - Mars", 
@@ -600,11 +634,31 @@ tour_mapping_id = {
 tour_id_actif = tour_mapping_id[mois_selectionne]
 
 st.sidebar.divider()
-module_principal = st.sidebar.radio("Choisissez le module :", [
-    "📊 État des lieux global", 
-    "📥 Saisie des Données Réelles", 
-    "🧠 Simulateur & Décision Stratégique"
-])
+if engine is not None:
+    st.sidebar.success("🟢 Base Cloud connectée", icon="✅")
+else:
+    st.sidebar.error("🔴 Base Cloud indisponible", icon="⚠️")
+
+module_principal = st.sidebar.radio(
+    "Espace de travail",
+    [
+        "📊 État des lieux",
+        "📥 Données réelles",
+        "🧠 Centre de décision",
+    ],
+    captions=[
+        "Voir les données du mois",
+        "Alimenter l'historique",
+        "Piloter les leviers et simuler",
+    ],
+)
+
+if module_principal == "📊 État des lieux":
+    module_principal = "📊 État des lieux global"
+elif module_principal == "📥 Données réelles":
+    module_principal = "📥 Saisie des Données Réelles"
+else:
+    module_principal = "🧠 Simulateur & Décision Stratégique"
 
 # ==========================================
 # MODULE 1 : ÉTAT DES LIEUX GLOBAL
@@ -739,10 +793,42 @@ elif module_principal == "📥 Saisie des Données Réelles":
 # MODULE 3 : SIMULATEUR & DÉCISION STRATÉGIQUE
 # ==========================================
 elif module_principal == "🧠 Simulateur & Décision Stratégique":
-    st.title("🧠 Simulateur Stratégique & Interconnectivité (Seed Engine)")
-    
+    st.markdown("<div class='ui-kicker'>Centre de décision</div><div class='ui-title'>🧠 Simulateur stratégique</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='ui-help'>Pilotez les décisions du <b>{mois_selectionne}</b> depuis un seul écran. "
+        "Les onglets suivent l'ordre naturel d'une décision : marché → production → achats → RH → trésorerie.</div>",
+        unsafe_allow_html=True,
+    )
+
     tour_id_precedent = max(1, tour_id_actif - 1)
-    st.info(f"Simulation interactive pour le mois : **{mois_selectionne}** (Basée sur l'entreprise au Tour ID {tour_id_precedent})")
+    st.caption(f"Référence : Tour {tour_id_precedent} • période source : {period_for_tour(tour_id_precedent)}")
+
+    with st.container(border=True):
+        c_mode, c_reset, c_guide = st.columns([1.1, 1.0, 2.5])
+        with c_mode:
+            mode_pilotage = st.radio(
+                "Mode d'affichage",
+                ["🎯 Pilote", "🔧 Expert"],
+                key="ui_mode_pilotage",
+                horizontal=True,
+                help="Pilote = réglages essentiels visibles. Expert = tous les réglages détaillés.",
+            )
+        with c_reset:
+            st.write(" ")
+            st.button(
+                "↺ Réinitialiser les décisions",
+                use_container_width=True,
+                on_click=reinitialiser_decisions_simulation,
+                help="Réinitialise les décisions du simulateur vers les valeurs par défaut / M-1.",
+            )
+        with c_guide:
+            st.markdown(
+                "**Mode Pilote** : concentrez-vous sur les prix, volumes, production, investissements et financement. "
+                "**Mode Expert** : accédez en plus aux échéances, TVA, BFR, portefeuille, assurances et paramètres RH détaillés.",
+            )
+
+    # Placeholder rempli après calcul pour garder les KPI stratégiques visibles en haut.
+    kpi_header = st.empty()
 
     if engine is not None:
         try:
@@ -764,82 +850,121 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     nb_m_ass_actuel = get_m('Nb_Machines_Assemblage', 16)
     nb_m_cond_actuel = get_m('Nb_Machines_Cond', 4)
 
-    col_m1, col_m2, col_m3 = st.columns(3)
-    with col_m1:
-        achat_dec = sim_number(f"Découpe (Actuel: {nb_m_dec_actuel})", "sim_ach_dec", 0, step=1)
-        prix_unit_dec = sim_number("Prix HT Découpe (€/u)", "sim_p_dec", 500000.0, step=1000.0)
-    with col_m2:
-        achat_ass = sim_number(f"Assemblage (Actuel: {nb_m_ass_actuel})", "sim_ach_ass", 0, step=1)
-        prix_unit_ass = sim_number("Prix HT Assemblage (€/u)", "sim_p_ass", 600000.0, step=1000.0)
-    with col_m3:
-        achat_cond = sim_number(f"Conditionnement (Actuel: {nb_m_cond_actuel})", "sim_ach_cond", 0, step=1)
-        prix_unit_cond = sim_number("Prix HT Conditionnement (€/u)", "sim_p_cond", 160000.0, step=1000.0)
-
-    cout_invest_machines = (achat_dec * prix_unit_dec) + (achat_ass * prix_unit_ass) + (achat_cond * prix_unit_cond)
-    nb_m_dec_sim = nb_m_dec_actuel + achat_dec
-    nb_m_ass_sim = nb_m_ass_actuel + achat_ass
-    nb_m_cond_sim = nb_m_cond_actuel + achat_cond
-
-    mode_financement_machines = sim_radio(
-        "Mode de règlement des nouvelles machines :", 
-        ["Comptant (Impact immédiat sur la trésorerie)", "Crédit Fournisseur / Dette d'investissement (Acompte 30%)"],
-        "sim_mode_reglement_mach",
-        "Comptant (Impact immédiat sur la trésorerie)",
-        horizontal=True
-    )
+    # -------------------------------------------------------------------
+    # Scénarios : enregistrer / recharger une décision complète en 1 clic.
+    # -------------------------------------------------------------------
+    with st.container(border=True):
+        st.markdown("**💾 Scénarios de décision**")
+        sc1, sc2, sc3, sc4 = st.columns([2.15, 0.85, 1.35, 0.85])
+        scenarios_existants = lister_scenarios(tour_id_actif)
+        options_scenarios = ["— Aucun scénario —"] + [
+            f"{row['Token_Seed']} · {row['Nom_Scenario']}" for row in scenarios_existants
+        ]
+        scenario_selection = sc1.selectbox(
+            "Scénario enregistré", options_scenarios, key="ui_scenario_selection",
+            label_visibility="collapsed",
+        )
+        nom_scenario = st.session_state.get("ui_nom_scenario", "Scénario de travail")
+        with sc2:
+            if st.button("📂 Charger", use_container_width=True, disabled=scenario_selection == "— Aucun scénario —"):
+                token = scenario_selection.split(" · ", 1)[0]
+                data_scenario = charger_scenario_seed(token, tour_id_actif)
+                raw_params = data_scenario.get("Parametres_JSON", {}) if data_scenario else {}
+                if isinstance(raw_params, str):
+                    try:
+                        raw_params = json.loads(raw_params)
+                    except Exception:
+                        raw_params = {}
+                if isinstance(raw_params, dict):
+                    for key, value in raw_params.items():
+                        st.session_state[key] = value
+                    st.success("Scénario chargé.")
+                    st.rerun()
+        with sc3:
+            st.session_state["ui_nom_scenario"] = st.text_input(
+                "Nom", value=nom_scenario, key="ui_nom_scenario_input", label_visibility="collapsed",
+                placeholder="Nom du scénario…",
+            )
+        with sc4:
+            if st.button("💾 Sauver", use_container_width=True, disabled=engine is None):
+                nom = str(st.session_state.get("ui_nom_scenario", "Scénario de travail")).strip() or "Scénario de travail"
+                token_seed = hashlib.sha1(f"{tour_id_actif}:{nom}".encode("utf-8")).hexdigest()[:16]
+                parametres_sim = {
+                    key: value for key, value in st.session_state.items()
+                    if key.startswith(SIM_STATE_PREFIXES)
+                }
+                sauvegarder_scenario_seed(token_seed, tour_id_actif, nom, parametres_sim)
+                st.success("Scénario enregistré.")
 
     tab_sim_marche, tab_sim_prod, tab_sim_appro, tab_sim_rh, tab_sim_fin = st.tabs([
-        "🎯 1. Marketing & Ventes", "🏭 2. Production & Ateliers", "📦 3. MRP2 & Achats", "👥 4. Pilotage & Scores RH", "💶 5. Budget & Situation d'Entreprise"
+        "🎯 1. Marché & Ventes", "🏭 2. Production", "📦 3. Achats & MRP", "👥 4. RH", "💶 5. Finance & Cash"
     ])
 
     with tab_sim_marche:
-        st.subheader("1. Politique de Prix & Marketing")
-        c_m1, c_m2 = st.columns(2)
-        with c_m1:
-            prix_s3 = sim_number("Prix Shorty 3 (€)", "sim_pm_s3", float(donnees_mkg.get('Prix_S3', 115.0)))
-            prix_i3 = sim_number("Prix Integral 3 (€)", "sim_pm_i3", float(donnees_mkg.get('Prix_I3', 190.0)))
-            prix_s5 = sim_number("Prix Shorty 5 (€)", "sim_pm_s5", float(donnees_mkg.get('Prix_S5', 220.0)))
-        with c_m2:
-            prix_i5 = sim_number("Prix Integral 5 (€)", "sim_pm_i5", float(donnees_mkg.get('Prix_I5', 280.0)))
-            prix_i7 = sim_number("Prix Integral 7 (€)", "sim_pm_i7", float(donnees_mkg.get('Prix_I7', 375.0)))
+        st.subheader("1. Marché, prix & ventes")
+        st.caption("Leviers cœur : prix de vente, budget de marque, PLV et volumes vendus.")
+        with st.container(border=True):
+            st.markdown("**💰 Prix catalogue**")
+            c_m1, c_m2, c_m3, c_m4, c_m5 = st.columns(5)
+            prix_s3 = c_m1.number_input("Shorty 3 (€)", key="sim_pm_s3", value=float(donnees_mkg.get('Prix_S3', 115.0)))
+            prix_i3 = c_m2.number_input("Integral 3 (€)", key="sim_pm_i3", value=float(donnees_mkg.get('Prix_I3', 190.0)))
+            prix_s5 = c_m3.number_input("Shorty 5 (€)", key="sim_pm_s5", value=float(donnees_mkg.get('Prix_S5', 220.0)))
+            prix_i5 = c_m4.number_input("Integral 5 (€)", key="sim_pm_i5", value=float(donnees_mkg.get('Prix_I5', 280.0)))
+            prix_i7 = c_m5.number_input("Integral 7 (€)", key="sim_pm_i7", value=float(donnees_mkg.get('Prix_I7', 375.0)))
 
-        budget_pub_marque = sim_number("Budget Pub Marque HT (€)", "sim_pm_pub_marque", float(donnees_mkg.get('Budget_Marque', 60500.0)), step=500.0)
-        pub_s3 = sim_number("Shorty 3 PLV (€)", "sim_pub_s3", float(donnees_mkg.get('Pub_S3', 3100.0)), step=100.0)
-        pub_i3 = sim_number("Integral 3 PLV (€)", "sim_pub_i3", float(donnees_mkg.get('Pub_I3', 4100.0)), step=100.0)
-        pub_s5 = sim_number("Shorty 5 PLV (€)", "sim_pub_s5", float(donnees_mkg.get('Pub_S5', 3200.0)), step=100.0)
-        pub_i5 = sim_number("Integral 5 PLV (€)", "sim_pub_i5", float(donnees_mkg.get('Pub_I5', 4200.0)), step=100.0)
-        pub_i7 = sim_number("Integral 7 PLV (€)", "sim_pub_i7", float(donnees_mkg.get('Pub_I7', 3500.0)), step=100.0)
+        with st.container(border=True):
+            st.markdown("**📣 Marketing**")
+            budget_pub_marque = sim_number("Budget Pub Marque HT (€)", "sim_pm_pub_marque", float(donnees_mkg.get('Budget_Marque', 60500.0)), step=500.0)
+            c_pub1, c_pub2, c_pub3, c_pub4, c_pub5 = st.columns(5)
+            pub_s3 = c_pub1.number_input("PLV S3 (€)", key="sim_pub_s3", value=float(donnees_mkg.get('Pub_S3', 3100.0)), step=100.0)
+            pub_i3 = c_pub2.number_input("PLV I3 (€)", key="sim_pub_i3", value=float(donnees_mkg.get('Pub_I3', 4100.0)), step=100.0)
+            pub_s5 = c_pub3.number_input("PLV S5 (€)", key="sim_pub_s5", value=float(donnees_mkg.get('Pub_S5', 3200.0)), step=100.0)
+            pub_i5 = c_pub4.number_input("PLV I5 (€)", key="sim_pub_i5", value=float(donnees_mkg.get('Pub_I5', 4200.0)), step=100.0)
+            pub_i7 = c_pub5.number_input("PLV I7 (€)", key="sim_pub_i7", value=float(donnees_mkg.get('Pub_I7', 3500.0)), step=100.0)
 
         budgets_p_dict = {'Shorty 3': pub_s3, 'Integral 3': pub_i3, 'Shorty 5': pub_s5, 'Integral 5': pub_i5, 'Integral 7': pub_i7}
 
-        col_vs1, col_vs2, col_vs3, col_vs4, col_vs5 = st.columns(5)
-        sim_v_s3 = col_vs1.number_input("Shorty 3 (u)", key="sim_s3", value=st.session_state.setdefault("sim_s3", 50))
-        sim_v_i3 = col_vs2.number_input("Integral 3 (u)", key="sim_i3", value=st.session_state.setdefault("sim_i3", 500))
-        sim_v_s5 = col_vs3.number_input("Shorty 5 (u)", key="sim_s5", value=st.session_state.setdefault("sim_s5", 100))
-        sim_v_i5 = col_vs4.number_input("Integral 5 (u)", key="sim_i5", value=st.session_state.setdefault("sim_i5", 1500))
-        sim_v_i7 = col_vs5.number_input("Integral 7 (u)", key="sim_i7", value=st.session_state.setdefault("sim_i7", 2500))
-        
-        ca_prev_sim = (sim_v_s3 * prix_s3) + (sim_v_i3 * prix_i3) + (sim_v_s5 * prix_s5) + (sim_v_i5 * prix_i5) + (sim_v_i7 * prix_i7)
+        with st.container(border=True):
+            st.markdown("**📦 Volumes vendus prévisionnels**")
+            col_vs1, col_vs2, col_vs3, col_vs4, col_vs5 = st.columns(5)
+            sim_v_s3 = col_vs1.number_input("Shorty 3 (u)", key="sim_s3", value=st.session_state.setdefault("sim_s3", 50), min_value=0)
+            sim_v_i3 = col_vs2.number_input("Integral 3 (u)", key="sim_i3", value=st.session_state.setdefault("sim_i3", 500), min_value=0)
+            sim_v_s5 = col_vs3.number_input("Shorty 5 (u)", key="sim_s5", value=st.session_state.setdefault("sim_s5", 100), min_value=0)
+            sim_v_i5 = col_vs4.number_input("Integral 5 (u)", key="sim_i5", value=st.session_state.setdefault("sim_i5", 1500), min_value=0)
+            sim_v_i7 = col_vs5.number_input("Integral 7 (u)", key="sim_i7", value=st.session_state.setdefault("sim_i7", 2500), min_value=0)
+            ca_prev_sim = (sim_v_s3 * prix_s3) + (sim_v_i3 * prix_i3) + (sim_v_s5 * prix_s5) + (sim_v_i5 * prix_i5) + (sim_v_i7 * prix_i7)
+            st.metric("CA prévisionnel issu du mix prix × volumes", fmt_eur(ca_prev_sim))
 
     with tab_sim_prod:
         st.subheader("2. Production & Ateliers")
-        qualite_strategique = sim_select("Qualité Matière (Achats)", [35, 50, 70], "qual_mat_prod", 50)
-        niveau_controle = sim_select("Niveau de Contrôle", ["Allégé", "Standard", "Renforcé"], "ctrl_usine", "Standard")
-        
-        score_mixte_matiere = qualite_strategique + (score_rh_prod * 0.5) 
-        if score_mixte_matiere > 90: regime_matiere = 'minimum'
-        elif score_mixte_matiere < 60: regime_matiere = 'maximum'
-        else: regime_matiere = 'normal'
-
-        ord_s3 = sim_number("Prod S3", "ord_s3", 50)
-        ord_i3 = sim_number("Prod I3", "ord_i3", 500)
-        ord_s5 = sim_number("Prod S5", "ord_s5", 100)
-        ord_i5 = sim_number("Prod I5", "ord_i5", 1500)
-        ord_i7 = sim_number("Prod I7", "ord_i7", 2500)
-        ordres_prod_dict = {'Shorty 3': ord_s3, 'Integral 3': ord_i3, 'Shorty 5': ord_s5, 'Integral 5': ord_i5, 'Integral 7': ord_i7}
+        st.caption("Leviers cœur : qualité matière, niveau de contrôle et quantités à produire.")
+        with st.container(border=True):
+            c_prod1, c_prod2, c_prod3 = st.columns([1, 1, 2])
+            with c_prod1:
+                qualite_strategique = sim_select("Qualité matière", [35, 50, 70], "qual_mat_prod", 50)
+            with c_prod2:
+                niveau_controle = sim_select("Niveau de contrôle", ["Allégé", "Standard", "Renforcé"], "ctrl_usine", "Standard")
+            with c_prod3:
+                score_mixte_matiere = qualite_strategique + (score_rh_prod * 0.5)
+                if score_mixte_matiere > 90: regime_matiere = 'minimum'
+                elif score_mixte_matiere < 60: regime_matiere = 'maximum'
+                else: regime_matiere = 'normal'
+                st.metric("Régime matière calculé", regime_matiere.upper())
+                st.caption(f"Score qualité/matière indicatif : {score_mixte_matiere:.1f}")
+        with st.container(border=True):
+            st.markdown("**🏭 Quantités à produire**")
+            c_q1, c_q2, c_q3, c_q4, c_q5 = st.columns(5)
+            ord_s3 = c_q1.number_input("Shorty 3", key="ord_s3", value=50, min_value=0, step=10)
+            ord_i3 = c_q2.number_input("Integral 3", key="ord_i3", value=500, min_value=0, step=10)
+            ord_s5 = c_q3.number_input("Shorty 5", key="ord_s5", value=100, min_value=0, step=10)
+            ord_i5 = c_q4.number_input("Integral 5", key="ord_i5", value=1500, min_value=0, step=10)
+            ord_i7 = c_q5.number_input("Integral 7", key="ord_i7", value=2500, min_value=0, step=10)
+            ordres_prod_dict = {'Shorty 3': ord_s3, 'Integral 3': ord_i3, 'Shorty 5': ord_s5, 'Integral 5': ord_i5, 'Integral 7': ord_i7}
+            st.metric("Volume total à produire", f"{sum(ordres_prod_dict.values()):,.0f} unités".replace(",", " "))
 
     with tab_sim_appro:
         st.subheader("3. MRP2 & Achats")
+        st.caption("Le moteur transforme les volumes de production en besoins nets puis en propositions fournisseurs.")
         pct_vente_couvert = sim_slider("Part de la prod dédiée à la couverture (%)", 0, 100, "slider_pct_vente", 100, step=5)
         coeff_stock_secu = sim_slider("Coefficient stock de sécurité", 0.0, 2.0, "slider_coeff_secu", 1.0, step=0.1)
 
@@ -884,34 +1009,101 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                         'montant_ht': cout_ht,
                     })
 
+        with st.container(border=True):
+            st.markdown("**🧾 Plan d'approvisionnement calculé**")
+            if achats_fournisseurs_detail:
+                achats_view = pd.DataFrame(achats_fournisseurs_detail)
+                achats_view['montant_ht'] = achats_view['montant_ht'].map(lambda x: round(float(x), 2))
+                achats_view = achats_view.rename(columns={
+                    'matiere': 'Matière', 'fournisseur': 'Fournisseur',
+                    'delai_mois': 'Délai (mois)', 'montant_ht': 'Montant HT (€)'
+                })
+                st.dataframe(achats_view, use_container_width=True, hide_index=True)
+            else:
+                st.info("Aucun achat net à déclencher avec les paramètres actuels.")
+            c_ach1, c_ach2 = st.columns(2)
+            c_ach1.metric("Achats matières HT", fmt_eur(cout_achats_total_sim))
+            c_ach2.metric("Achats immédiats (délai 0)", fmt_eur(achats_fournisseurs_par_echeance[0]))
+
     with tab_sim_rh:
-        st.subheader("4. Pilotage RH Interconnecté")
-        sim_ep_eff = sim_number("Nb Employés Prod", 'sp_e', get_rh_e(donnees_rh, 'Eff_Employes_Prod', 15))
-        sim_ep_sal = sim_number("Sal. Employé Prod (€)", 'sp_es', get_rh_v(donnees_rh, 'Sal_Employes_Prod', 2000.0), step=100.0)
-        sim_cp_eff = sim_number("Nb Cadres Prod", 'sp_c', get_rh_e(donnees_rh, 'Eff_Cadres_Prod', 3))
-        sim_cp_sal = sim_number("Sal. Cadre Prod (€)", 'sp_cs', get_rh_v(donnees_rh, 'Sal_Cadres_Prod', 3333.33), step=100.0)
-        sim_dp_eff = sim_number("Nb Directeurs Prod", 'sp_d', get_rh_e(donnees_rh, 'Eff_Directeurs_Prod', 1))
-        sim_dp_sal = sim_number("Sal. Directeur Prod (€)", 'sp_ds', get_rh_v(donnees_rh, 'Sal_Directeurs_Prod', 4500.0), step=100.0)
-        tot_p = (sim_ep_eff * sim_ep_sal) + (sim_cp_eff * sim_cp_sal) + (sim_dp_eff * sim_dp_sal)
+        st.subheader("4. RH : effectifs, masse salariale & score")
+        st.caption("Levier cœur : structure des équipes. Les salaires et effectifs détaillés restent modifiables.")
+        with st.container(border=True):
+            c_rh_p, c_rh_a, c_rh_f = st.columns(3)
 
-        sim_ea_eff = sim_number("Nb Employés Appro", 'sa_e', get_rh_e(donnees_rh, 'Eff_Employes_Appro', 7))
-        sim_ea_sal = sim_number("Sal. Employé Appro (€)", 'sa_es', get_rh_v(donnees_rh, 'Sal_Employes_Appro', 2000.0), step=100.0)
-        sim_ca_eff = sim_number("Nb Cadres Appro", 'sa_c', get_rh_e(donnees_rh, 'Eff_Cadres_Appro', 2))
-        sim_ca_sal = sim_number("Sal. Cadre Appro (€)", 'sa_cs', get_rh_v(donnees_rh, 'Sal_Cadres_Appro', 2250.0), step=100.0)
-        sim_da_eff = sim_number("Nb Directeurs Appro", 'sa_d', get_rh_e(donnees_rh, 'Eff_Directeurs_Appro', 1))
-        sim_da_sal = sim_number("Sal. Directeur Appro (€)", 'sa_ds', get_rh_v(donnees_rh, 'Sal_Directeurs_Appro', 2000.0), step=100.0)
-        tot_a = (sim_ea_eff * sim_ea_sal) + (sim_ca_eff * sim_ca_sal) + (sim_da_eff * sim_da_sal)
+            with c_rh_p:
+                st.markdown("**🏭 Production**")
+                sim_ep_eff = sim_number("Employés", 'sp_e', get_rh_e(donnees_rh, 'Eff_Employes_Prod', 15), step=1)
+                sim_ep_sal = sim_number("Salaire employé (€)", 'sp_es', get_rh_v(donnees_rh, 'Sal_Employes_Prod', 2000.0), step=100.0)
+                sim_cp_eff = sim_number("Cadres", 'sp_c', get_rh_e(donnees_rh, 'Eff_Cadres_Prod', 3), step=1)
+                sim_cp_sal = sim_number("Salaire cadre (€)", 'sp_cs', get_rh_v(donnees_rh, 'Sal_Cadres_Prod', 3333.33), step=100.0)
+                sim_dp_eff = sim_number("Directeurs", 'sp_d', get_rh_e(donnees_rh, 'Eff_Directeurs_Prod', 1), step=1)
+                sim_dp_sal = sim_number("Salaire directeur (€)", 'sp_ds', get_rh_v(donnees_rh, 'Sal_Directeurs_Prod', 4500.0), step=100.0)
+                tot_p = (sim_ep_eff * sim_ep_sal) + (sim_cp_eff * sim_cp_sal) + (sim_dp_eff * sim_dp_sal)
+                st.metric("Masse salariale Prod", fmt_eur(tot_p))
 
-        sim_ef_eff = sim_number("Nb Employés Admin", 'sf_e', get_rh_e(donnees_rh, 'Eff_Employes_Admin', 7))
-        sim_ef_sal = sim_number("Sal. Employé Admin (€)", 'sf_es', get_rh_v(donnees_rh, 'Sal_Employes_Admin', 2000.0), step=100.0)
-        sim_cf_eff = sim_number("Nb Cadres Admin", 'sf_c', get_rh_e(donnees_rh, 'Eff_Cadres_Admin', 2))
-        sim_cf_sal = sim_number("Sal. Cadre Admin (€)", 'sf_cs', get_rh_v(donnees_rh, 'Sal_Cadres_Admin', 2200.0), step=100.0)
-        sim_df_eff = sim_number("Nb Directeurs Admin", 'sf_d', get_rh_e(donnees_rh, 'Eff_Directeurs_Admin', 1))
-        sim_df_sal = sim_number("Sal. Directeur Admin (€)", 'sf_ds', get_rh_v(donnees_rh, 'Sal_Directeurs_Admin', 2000.0), step=100.0)
-        tot_f = (sim_ef_eff * sim_ef_sal) + (sim_cf_eff * sim_cf_sal) + (sim_df_eff * sim_df_sal)
+            with c_rh_a:
+                st.markdown("**📦 Approvisionnement**")
+                sim_ea_eff = sim_number("Employés", 'sa_e', get_rh_e(donnees_rh, 'Eff_Employes_Appro', 7), step=1)
+                sim_ea_sal = sim_number("Salaire employé (€)", 'sa_es', get_rh_v(donnees_rh, 'Sal_Employes_Appro', 2000.0), step=100.0)
+                sim_ca_eff = sim_number("Cadres", 'sa_c', get_rh_e(donnees_rh, 'Eff_Cadres_Appro', 2), step=1)
+                sim_ca_sal = sim_number("Salaire cadre (€)", 'sa_cs', get_rh_v(donnees_rh, 'Sal_Cadres_Appro', 2250.0), step=100.0)
+                sim_da_eff = sim_number("Directeurs", 'sa_d', get_rh_e(donnees_rh, 'Eff_Directeurs_Appro', 1), step=1)
+                sim_da_sal = sim_number("Salaire directeur (€)", 'sa_ds', get_rh_v(donnees_rh, 'Sal_Directeurs_Appro', 2000.0), step=100.0)
+                tot_a = (sim_ea_eff * sim_ea_sal) + (sim_ca_eff * sim_ca_sal) + (sim_da_eff * sim_da_sal)
+                st.metric("Masse salariale Appro", fmt_eur(tot_a))
+
+            with c_rh_f:
+                st.markdown("**🗂️ Administration**")
+                sim_ef_eff = sim_number("Employés", 'sf_e', get_rh_e(donnees_rh, 'Eff_Employes_Admin', 7), step=1)
+                sim_ef_sal = sim_number("Salaire employé (€)", 'sf_es', get_rh_v(donnees_rh, 'Sal_Employes_Admin', 2000.0), step=100.0)
+                sim_cf_eff = sim_number("Cadres", 'sf_c', get_rh_e(donnees_rh, 'Eff_Cadres_Admin', 2), step=1)
+                sim_cf_sal = sim_number("Salaire cadre (€)", 'sf_cs', get_rh_v(donnees_rh, 'Sal_Cadres_Admin', 2200.0), step=100.0)
+                sim_df_eff = sim_number("Directeurs", 'sf_d', get_rh_e(donnees_rh, 'Eff_Directeurs_Admin', 1), step=1)
+                sim_df_sal = sim_number("Salaire directeur (€)", 'sf_ds', get_rh_v(donnees_rh, 'Sal_Directeurs_Admin', 2000.0), step=100.0)
+                tot_f = (sim_ef_eff * sim_ef_sal) + (sim_cf_eff * sim_cf_sal) + (sim_df_eff * sim_df_sal)
+                st.metric("Masse salariale Admin", fmt_eur(tot_f))
+
+        total_effectif_sim = int(sim_ep_eff + sim_cp_eff + sim_dp_eff + sim_ea_eff + sim_ca_eff + sim_da_eff + sim_ef_eff + sim_cf_eff + sim_df_eff)
+        total_masse_sim = float(tot_p + tot_a + tot_f)
+        c_rh_k1, c_rh_k2, c_rh_k3 = st.columns(3)
+        c_rh_k1.metric("Effectif simulé", f"{total_effectif_sim} personnes")
+        c_rh_k2.metric("Masse salariale brute", fmt_eur(total_masse_sim))
+        c_rh_k3.metric("Score RH Production", f"{score_rh_prod:.1f} / 100")
 
     with tab_sim_fin:
-        st.subheader("5. Décisions Financières & Situation de l'Entreprise")
+        st.subheader("5. Finance & trésorerie")
+        st.caption("Leviers cœur : investissement, financement, épargne, fiscalité, BFR et politique de dividendes.")
+
+        # Investissements machines : regroupés ici avec leur mode de financement pour éviter
+        # de séparer une décision et son impact de trésorerie.
+        with st.container(border=True):
+            st.markdown("**🏭 Investissements machines**")
+            c_inv1, c_inv2, c_inv3 = st.columns(3)
+            with c_inv1:
+                achat_dec = sim_number(f"Découpe · + machines (actuel {nb_m_dec_actuel})", "sim_ach_dec", 0, step=1)
+                prix_unit_dec = sim_number("Prix HT / machine Découpe (€)", "sim_p_dec", 500000.0, step=1000.0)
+            with c_inv2:
+                achat_ass = sim_number(f"Assemblage · + machines (actuel {nb_m_ass_actuel})", "sim_ach_ass", 0, step=1)
+                prix_unit_ass = sim_number("Prix HT / machine Assemblage (€)", "sim_p_ass", 600000.0, step=1000.0)
+            with c_inv3:
+                achat_cond = sim_number(f"Conditionnement · + machines (actuel {nb_m_cond_actuel})", "sim_ach_cond", 0, step=1)
+                prix_unit_cond = sim_number("Prix HT / machine Conditionnement (€)", "sim_p_cond", 160000.0, step=1000.0)
+
+            cout_invest_machines = (achat_dec * prix_unit_dec) + (achat_ass * prix_unit_ass) + (achat_cond * prix_unit_cond)
+            nb_m_dec_sim = nb_m_dec_actuel + achat_dec
+            nb_m_ass_sim = nb_m_ass_actuel + achat_ass
+            nb_m_cond_sim = nb_m_cond_actuel + achat_cond
+
+            mode_financement_machines = sim_radio(
+                "Règlement des machines",
+                ["Comptant · 100 % TTC immédiat", "Crédit fournisseur · 30 % TTC immédiat"],
+                "sim_mode_reglement_mach",
+                "Comptant · 100 % TTC immédiat",
+                horizontal=True,
+                help="En crédit fournisseur, 70 % TTC crée une dette et ne constitue pas une entrée de trésorerie.",
+            )
+            st.metric("Investissement HT", fmt_eur(cout_invest_machines))
 
         # ================================================================
         # PONT FINANCIER M-1 -> MOIS SIMULÉ
@@ -970,37 +1162,49 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
         # Compte épargne : repris de M-1, avec possibilité de décision dans le simulateur.
         solde_epargne_defaut = solde_epargne_source if solde_epargne_source is not None else 0.0
-        solde_epargne_initial = sim_number(
-            f"Solde compte épargne initial (M-1 : {periode_m1})",
-            "sim_solde_ep",
-            float(solde_epargne_defaut),
-            step=1000.0,
-        )
-        placement_ep = sim_number("Placement", "sim_plac_ep", 0.0, step=1000.0)
-        retrait_ep = sim_number("Retrait", "sim_retr_ep", 0.0, step=1000.0)
+        with st.expander("🏦 Trésorerie, épargne & placements", expanded=True):
+            c_t1, c_t2, c_t3 = st.columns(3)
+            solde_epargne_initial = c_t1.number_input(
+                f"Épargne initiale (M-1 : {periode_m1})",
+                key="sim_solde_ep",
+                value=float(solde_epargne_defaut),
+                step=1000.0,
+            )
+            placement_ep = c_t2.number_input("Placement vers épargne (€)", key="sim_plac_ep", value=0.0, step=1000.0)
+            retrait_ep = c_t3.number_input("Retrait depuis épargne (€)", key="sim_retr_ep", value=0.0, step=1000.0)
 
-        a_a1 = sim_number("Achat A1", "sim_ach_a1", 0)
-        v_a1 = sim_number("Vente A1", "sim_ven_a1", 0)
-        a_a2 = sim_number("Achat A2", "sim_ach_a2", 0)
-        v_a2 = sim_number("Vente A2", "sim_ven_a2", 0)
-        a_a3 = sim_number("Achat A3", "sim_ach_a3", 0)
-        v_a3 = sim_number("Vente A3", "sim_ven_a3", 0)
-        a_o1 = sim_number("Achat O1", "sim_ach_o1", 0)
-        v_o1 = sim_number("Vente O1", "sim_ven_o1", 0)
-        a_o2 = sim_number("Achat O2", "sim_ach_o2", 0)
-        v_o2 = sim_number("Vente O2", "sim_ven_o2", 0)
-        a_o3 = sim_number("Achat O3", "sim_ach_o3", 0)
-        v_o3 = sim_number("Vente O3", "sim_ven_o3", 0)
+        with st.expander("📊 Portefeuille de titres", expanded=(mode_pilotage == "🔧 Expert")):
+            st.caption("Saisissez uniquement les quantités achetées/vendues. Les prix unitaires restent ceux du moteur.")
+            st.markdown("**Actions A1 / A2 / A3**")
+            a_a1, v_a1, a_a2, v_a2, a_a3, v_a3 = st.columns(6)
+            a_a1 = a_a1.number_input("Achat A1", key="sim_ach_a1", value=0, min_value=0)
+            v_a1 = v_a1.number_input("Vente A1", key="sim_ven_a1", value=0, min_value=0)
+            a_a2 = a_a2.number_input("Achat A2", key="sim_ach_a2", value=0, min_value=0)
+            v_a2 = v_a2.number_input("Vente A2", key="sim_ven_a2", value=0, min_value=0)
+            a_a3 = a_a3.number_input("Achat A3", key="sim_ach_a3", value=0, min_value=0)
+            v_a3 = v_a3.number_input("Vente A3", key="sim_ven_a3", value=0, min_value=0)
+            st.markdown("**Obligations O1 / O2 / O3**")
+            a_o1, v_o1, a_o2, v_o2, a_o3, v_o3 = st.columns(6)
+            a_o1 = a_o1.number_input("Achat O1", key="sim_ach_o1", value=0, min_value=0)
+            v_o1 = v_o1.number_input("Vente O1", key="sim_ven_o1", value=0, min_value=0)
+            a_o2 = a_o2.number_input("Achat O2", key="sim_ach_o2", value=0, min_value=0)
+            v_o2 = v_o2.number_input("Vente O2", key="sim_ven_o2", value=0, min_value=0)
+            a_o3 = a_o3.number_input("Achat O3", key="sim_ach_o3", value=0, min_value=0)
+            v_o3 = v_o3.number_input("Vente O3", key="sim_ven_o3", value=0, min_value=0)
 
-        ass_rc = sim_checkbox("Responsabilité civile", "sim_ass_rc", True)
-        ass_db = sim_checkbox("Dommages aux biens", "sim_ass_db", True)
-        ass_pe = sim_checkbox("Pertes d'exploitation", "sim_ass_pe", True)
-        cout_assurances = (2000 if ass_rc else 0) + (2000 if ass_db else 0) + (2000 if ass_pe else 0)
-        if ass_rc and ass_db and ass_pe:
-            cout_assurances -= 1000
-
-        div_par_part = sim_number("Dividende versé par part (€)", "sim_div_part", 0.0, step=0.50)
-        total_div = div_par_part * float(NOMBRE_PARTS)
+        with st.expander("🛡️ Assurances & dividendes", expanded=(mode_pilotage == "🔧 Expert")):
+            ca1, ca2, ca3 = st.columns(3)
+            ass_rc = ca1.checkbox("Responsabilité civile", key="sim_ass_rc", value=True)
+            ass_db = ca2.checkbox("Dommages aux biens", key="sim_ass_db", value=True)
+            ass_pe = ca3.checkbox("Pertes d'exploitation", key="sim_ass_pe", value=True)
+            cout_assurances = (2000 if ass_rc else 0) + (2000 if ass_db else 0) + (2000 if ass_pe else 0)
+            if ass_rc and ass_db and ass_pe:
+                cout_assurances -= 1000
+            div_par_part = sim_number("Dividende par part (€)", "sim_div_part", 0.0, step=0.50)
+            total_div = div_par_part * float(NOMBRE_PARTS)
+            cdiv1, cdiv2 = st.columns(2)
+            cdiv1.metric("Coût assurances", fmt_eur(cout_assurances))
+            cdiv2.metric("Dividendes totaux", fmt_eur(total_div))
 
         ms_prev_brute = tot_p + tot_a + tot_f
         charges_sociales_prev = ms_prev_brute * float(TAUX_CHARGES_SOCIALES)
@@ -1015,7 +1219,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         achats_titres = (a_a1 * 224.58) + (a_a2 * 200.64) + (a_a3 * 163.84) + (a_o1 * 109.09) + (a_o2 * 114.89) + (a_o3 * 114.78)
         ventes_titres = (v_a1 * 224.58) + (v_a2 * 200.64) + (v_a3 * 163.84) + (v_o1 * 109.09) + (v_o2 * 114.89) + (v_o3 * 114.78)
 
-        credit_fournisseur = "Crédit Fournisseur" in mode_financement_machines
+        credit_fournisseur = str(mode_financement_machines).startswith("Crédit fournisseur")
 
         # ================================================================
         # BFR / CASH OPÉRATIONNEL : CLIENTS + FOURNISSEURS PAR ÉCHÉANCE
@@ -1037,7 +1241,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             etat_fin_m1.chiffre_affaires,
         )
 
-        with st.expander("💳 Échéancier clients", expanded=False):
+        with st.expander("💳 Échéancier clients", expanded=(mode_pilotage == "🔧 Expert")):
             st.caption(
                 "Profil initialisé automatiquement depuis les créances clients de M-1. "
                 "Les pourcentages portent sur le CA TTC et sont utilisés uniquement "
@@ -1101,7 +1305,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         dette_fiscale_sociale_hors_tva_ouverture = max(
             0.0, dettes_fiscales_sociales_m1 - tva_collectee_m1
         )
-        with st.expander("🧾 TVA, impôts & charges sociales", expanded=False):
+        with st.expander("🧾 TVA, impôts & charges sociales", expanded=(mode_pilotage == "🔧 Expert")):
             st.caption(
                 "TVA collectée = 20 % du CA HT. La TVA nette d'exploitation du mois "
                 "est réglée le mois suivant, règle observée dans le dump. La TVA sur "
@@ -1141,7 +1345,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             )
 
         # Les postes d'exploitation circulants restent explicites.
-        with st.expander("🧮 BFR prévisionnel détaillé", expanded=False):
+        with st.expander("🧮 BFR prévisionnel détaillé", expanded=(mode_pilotage == "🔧 Expert")):
             st.caption(
                 "Créances et fournisseurs sont issus des échéances ; TVA et passif "
                 "fiscal/social sont désormais reconstruits séparément."
@@ -1268,6 +1472,21 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_rentabilite = (float(projection.resultat_avant_impot) / capitaux_propres * 100) if capitaux_propres > 0 else 0.0
         taux_profitabilite_cumule = (res_avant_impot_cumule_sim / ca_cumule_sim * 100) if ca_cumule_sim > 0 else taux_profitabilite
         taux_rentabilite_cumule = (res_avant_impot_cumule_sim / capitaux_propres * 100) if capitaux_propres > 0 else taux_rentabilite
+
+        # Tableau de bord court injecté en haut de la page via le placeholder.
+        with kpi_header.container(border=True):
+            st.markdown("**⚡ Tableau de bord de décision — résultat de la simulation courante**")
+            k1, k2, k3, k4, k5, k6 = st.columns(6)
+            k1.metric("CA prévisionnel", fmt_eur(ca_prev_sim))
+            k2.metric("Résultat net", fmt_eur(projection.resultat_net), delta=f"{float(projection.resultat_net) - float(resultat_historique or 0.0):+,.0f} € vs M-1".replace(",", " "))
+            k3.metric("Trésorerie finale", fmt_eur(projection.tresorerie_finale))
+            k4.metric("Dette finale", fmt_eur(projection.dette_bancaire_finale))
+            k5.metric("BFR final", fmt_eur(bfr_projection_detail.bfr))
+            k6.metric("Profitabilité", f"{taux_profitabilite:.1f} %")
+            if projection.tresorerie_finale < 0:
+                st.error(f"⚠️ Découvert projeté : {fmt_eur(projection.tresorerie_finale)}")
+            else:
+                st.success("✅ Trésorerie projetée positive.")
 
         st.divider()
         st.markdown("##### 💶 Synthèse Financière & Situation Globale de l'Entreprise")
