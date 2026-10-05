@@ -21,7 +21,7 @@ def init_connection():
         connect_args={'ssl': {}} 
     )
 
-#engine = init_connection()
+engine = init_connection()
 
 def init_db_simu():
    try:
@@ -38,7 +38,7 @@ def init_db_simu():
   except Exception:
        pass
 
-#init_db_simu()
+init_db_simu()
 
 # ==========================================
 # 2. CHARGEMENT BDD & FONCTIONS UTILITAIRES
