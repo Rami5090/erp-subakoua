@@ -10,33 +10,44 @@ st.set_page_config(page_title="ERP Subakoua - Cockpit Stratégique", layout="wid
 
 @st.cache_resource
 def init_connection():
-    user = st.secrets["mysql"]["user"]
-    password = st.secrets["mysql"]["password"]
-    host = st.secrets["mysql"]["host"]
-    database = st.secrets["mysql"]["database"]
-    port = st.secrets["mysql"].get("port", 16869) 
-    
-    return create_engine(
-        f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}",
-        connect_args={'ssl': {}} 
-    )
+    try:
+        user = st.secrets["mysql"]["user"]
+        password = st.secrets["mysql"]["password"]
+        host = st.secrets["mysql"]["host"]
+        database = st.secrets["mysql"]["database"]
+        port = st.secrets["mysql"].get("port", 16869) 
+        
+        engine = create_engine(
+            f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}",
+            connect_args={'ssl': {}},
+            pool_pre_ping=True, # Vérifie si la connexion est vivante avant d'envoyer une requête
+            pool_recycle=3600   # Évite les déconnexions silencieuses d'Aiven
+        )
+        # Test rapide de la connexion
+        with engine.connect() as conn:
+            pass
+        return engine
+    except Exception as e:
+        st.error(f"🔌 Impossible de se connecter à la base de données Aiven. L'application est en mode dégradé. Erreur : {e}")
+        return None
 
 engine = init_connection()
 
 def init_db_simu():
-   try:
-       with engine.begin() as conn:
-           conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS simulations_seeds (
-               Token_Seed VARCHAR(50),
-               Tour_ID INT,
-               Nom_Scenario VARCHAR(100),
-               Parametres_JSON JSON,
-               PRIMARY KEY (Token_Seed, Tour_ID)
-           )
-           """))
-  except Exception:
-       pass
+    if engine is None: return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS simulations_seeds (
+                Token_Seed VARCHAR(50),
+                Tour_ID INT,
+                Nom_Scenario VARCHAR(100),
+                Parametres_JSON JSON,
+                PRIMARY KEY (Token_Seed, Tour_ID)
+            )
+            """))
+    except Exception:
+        pass
 
 init_db_simu()
 
@@ -53,6 +64,7 @@ def parse_french_float(val):
 
 @st.cache_data
 def charger_nomenclature_bdd():
+    if engine is None: return {}
     try:
         query = "SELECT produit, matiere, coeff_min, coeff_normal, coeff_max FROM Parametres_Nomenclature"
         df = pd.read_sql(query, engine)
@@ -70,6 +82,7 @@ def charger_nomenclature_bdd():
 
 @st.cache_data
 def charger_temps_ateliers_bdd():
+    if engine is None: return {}
     try:
         query = "SELECT produit, atelier, temps_min, temps_normal, temps_max FROM Parametres_TempsAteliers"
         df = pd.read_sql(query, engine)
@@ -87,6 +100,7 @@ def charger_temps_ateliers_bdd():
 
 @st.cache_data
 def charger_stocks_securite_bdd():
+    if engine is None: return {}
     try:
         query = "SELECT matiere, stock_securite FROM Parametres_StocksSecurite"
         df = pd.read_sql(query, engine)
@@ -95,6 +109,7 @@ def charger_stocks_securite_bdd():
 
 @st.cache_data
 def charger_parametre_global(nom_param, defaut=0.0):
+    if engine is None: return float(defaut)
     try:
         query = f"SELECT valeur FROM Parametres_Globaux WHERE parametre = '{nom_param}'"
         df = pd.read_sql(query, engine)
@@ -104,6 +119,7 @@ def charger_parametre_global(nom_param, defaut=0.0):
 
 @st.cache_data
 def charger_norme_ms(table_name, activite_actuelle):
+    if engine is None: return 27971.0
     try:
         query = f"SELECT activite_seuil, ms_satisfaisante FROM {table_name} ORDER BY activite_seuil ASC"
         df = pd.read_sql(query, engine)
@@ -123,6 +139,7 @@ def charger_norme_ms(table_name, activite_actuelle):
 
 @st.cache_data
 def optimiser_fournisseur_matiere(matiere, qualite_visee, critere="prix"):
+    if engine is None: return None
     try:
         col_qualite = f"qualite_{qualite_visee}"
         query = f"SELECT fournisseur, {col_qualite} as prix, delai_mois FROM Parametres_TarifsFournisseurs WHERE matiere = '{matiere}' AND {col_qualite} IS NOT NULL"
@@ -134,6 +151,7 @@ def optimiser_fournisseur_matiere(matiere, qualite_visee, critere="prix"):
     except Exception: return None
 
 def charger_donnees_rh_bdd(tour_id):
+    if engine is None: return {}
     try:
         df = pd.read_sql(f"SELECT * FROM Decisions_RH_Mensuel WHERE Tour_ID = {tour_id}", engine)
         if not df.empty: return df.iloc[0].to_dict()
@@ -141,6 +159,7 @@ def charger_donnees_rh_bdd(tour_id):
     return {}
 
 def charger_donnees_mkg_bdd(tour_id):
+    if engine is None: return {}
     try:
         df = pd.read_sql(f"SELECT * FROM Decisions_Marketing WHERE Tour_ID = {tour_id}", engine)
         if not df.empty: return df.iloc[0].to_dict()
@@ -148,6 +167,7 @@ def charger_donnees_mkg_bdd(tour_id):
     return {}
 
 def charger_ventes_bdd(tour_id):
+    if engine is None: return {}
     try:
         df = pd.read_sql(f"SELECT * FROM Ventes_Historique WHERE Tour_ID = {tour_id}", engine)
         if not df.empty: return df.iloc[0].to_dict()
@@ -155,6 +175,7 @@ def charger_ventes_bdd(tour_id):
     return {}
 
 def charger_donnees_fin_bdd(tour_id):
+    if engine is None: return {}
     try:
         df = pd.read_sql(f"SELECT * FROM Finances_Mensuelles WHERE Tour_ID = {tour_id}", engine)
         if not df.empty: return df.iloc[0].to_dict()
@@ -162,12 +183,14 @@ def charger_donnees_fin_bdd(tour_id):
     return {}
 
 def lister_scenarios(tour_id):
+    if engine is None: return []
     try:
         df = pd.read_sql(f"SELECT Token_Seed, Nom_Scenario FROM simulations_seeds WHERE Tour_ID = {tour_id}", engine)
         return df.to_dict('records')
-    except Exception: return {}
+    except Exception: return []
 
 def charger_scenario_seed(token_seed, tour_id):
+    if engine is None: return {}
     try:
         df = pd.read_sql(f"SELECT * FROM simulations_seeds WHERE Token_Seed = '{token_seed}' AND Tour_ID = {tour_id}", engine)
         if not df.empty: return df.iloc[0].to_dict()
@@ -175,6 +198,7 @@ def charger_scenario_seed(token_seed, tour_id):
     return {}
 
 def sauvegarder_scenario_seed(token_seed, tour_id, nom, parametres_dict):
+    if engine is None: return
     try:
         clean_params = {k: v for k, v in parametres_dict.items() if isinstance(v, (int, float, str, bool))}
         json_data = json.dumps(clean_params, ensure_ascii=False).replace("'", "''")
@@ -225,6 +249,9 @@ def rendre_module_etat_des_lieux(donnees_module):
         st.write(donnees_module)
         return
     noms_onglets = list(donnees_module.keys())
+    if not noms_onglets:
+        st.info("Structure JSON vide.")
+        return
     tabs = st.tabs(noms_onglets)
     for i, nom_onglet in enumerate(noms_onglets):
         with tabs[i]:
@@ -234,32 +261,26 @@ def rendre_module_etat_des_lieux(donnees_module):
                 st.markdown("<br>", unsafe_allow_html=True)
                 parcourir_structure_json(contenu_onglet, niveau=4)
 
-# Utilitaires de gestion d'état de session (Simulateur)
+# Utilitaires Simulateur
 def sim_number(label, key, default_val, step=None):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.number_input(label, key=key, step=step)
-
 def sim_text(label, key, default_val):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.text_input(label, key=key)
-
 def sim_select(label, options, key, default_val):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.selectbox(label, options, key=key)
-
 def sim_radio(label, options, key, default_val, horizontal=False):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.radio(label, options, key=key, horizontal=horizontal)
-
 def sim_slider(label, min_v, max_v, key, default_val, step=None):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.slider(label, min_value=min_v, max_value=max_v, key=key, step=step)
-
 def sim_checkbox(label, key, default_val):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.checkbox(label, key=key)
 
-# Chargement en cache des données statiques
 nomenclature_dynamique = charger_nomenclature_bdd()
 temps_dynamique = charger_temps_ateliers_bdd()
 stocks_securite_db = charger_stocks_securite_bdd()
@@ -365,8 +386,7 @@ st.sidebar.divider()
 module_principal = st.sidebar.radio("Choisissez le module :", [
     "📊 État des lieux global", 
     "📥 Saisie des Données Réelles", 
-    "🧠 Simulateur & Décision Stratégique",
-    "📄 Édition des Rapports PDF" # <-- LA NOUVELLE LIGNE
+    "🧠 Simulateur & Décision Stratégique"
 ])
 
 # ==========================================
@@ -377,28 +397,34 @@ if module_principal == "📊 État des lieux global":
     st.info(f"Analyse des données extraites pour la période : **{periode_db}**")
     st.divider()
 
-    try:
-        query_erp = f"SELECT module, contenu FROM erp_donnees WHERE periode = '{periode_db}' AND type_donnee = 'etat_actuel'"
-        df_erp = pd.read_sql(query_erp, engine)
-        modules_disponibles_dict = dict(zip(df_erp['module'], df_erp['contenu'])) if not df_erp.empty else {}
-    except Exception:
-        modules_disponibles_dict = {}
-
-    if not modules_disponibles_dict:
-        st.warning(f"Aucune donnée d'état actuel n'a été trouvée en base de données pour la période **{periode_db}**.")
+    if engine is None:
+        st.warning("Système hors ligne : Impossible d'afficher les données Cloud.")
     else:
-        liste_modules_ui = sorted(list(modules_disponibles_dict.keys()))
-        module_choisi = st.selectbox("Sélectionnez le département / module à consulter :", liste_modules_ui, format_func=lambda x: x.replace('_', ' ').capitalize())
-        
-        st.divider()
-        donnee_json_brute = modules_disponibles_dict.get(module_choisi, {})
-        
-        if isinstance(donnee_json_brute, str):
-            try: donnees_module = json.loads(donnee_json_brute)
-            except Exception: donnees_module = {}
-        else: donnees_module = donnee_json_brute
+        try:
+            query_erp = f"SELECT module, contenu FROM erp_donnees WHERE periode = '{periode_db}' AND type_donnee = 'etat_actuel'"
+            df_erp = pd.read_sql(query_erp, engine)
+            modules_disponibles_dict = dict(zip(df_erp['module'], df_erp['contenu'])) if not df_erp.empty else {}
+        except Exception as e:
+            modules_disponibles_dict = {}
+            st.error(f"Erreur de lecture : La donnée pour cette période est peut-être corrompue. Détail : {e}")
 
-        rendre_module_etat_des_lieux(donnees_module)
+        if not modules_disponibles_dict:
+            st.warning(f"Aucune donnée valide n'a été trouvée en base pour la période **{periode_db}**.")
+        else:
+            liste_modules_ui = sorted(list(modules_disponibles_dict.keys()))
+            module_choisi = st.selectbox("Sélectionnez le département / module à consulter :", liste_modules_ui, format_func=lambda x: x.replace('_', ' ').capitalize())
+            
+            st.divider()
+            donnee_json_brute = modules_disponibles_dict.get(module_choisi, {})
+            
+            if isinstance(donnee_json_brute, str):
+                try: donnees_module = json.loads(donnee_json_brute)
+                except Exception: 
+                    st.error("❌ Le fichier JSON extrait pour ce mois est corrompu et illisible.")
+                    donnees_module = {}
+            else: donnees_module = donnee_json_brute
+
+            rendre_module_etat_des_lieux(donnees_module)
 
 # ==========================================
 # MODULE 2 : SAISIE DES DONNÉES RÉELLES
@@ -408,14 +434,17 @@ elif module_principal == "📥 Saisie des Données Réelles":
     mois_saisie = st.selectbox("Sélectionnez le mois à renseigner :", list(mois_mapping.keys()))
     tour_saisie = tour_mapping_id[mois_saisie]
 
-    try:
-        df_h = pd.read_sql(f"SELECT * FROM Historique_Equipe WHERE Tour_ID = {tour_saisie}", engine)
-        df_m = pd.read_sql(f"SELECT * FROM Parc_Machines_Mensuel WHERE Tour_ID = {tour_saisie}", engine)
-        d_rh = charger_donnees_rh_bdd(tour_saisie)
-        d_mkg = charger_donnees_mkg_bdd(tour_saisie)
-        d_ventes = charger_ventes_bdd(tour_saisie)
-        dfin = charger_donnees_fin_bdd(tour_saisie)
-    except Exception:
+    if engine is not None:
+        try:
+            df_h = pd.read_sql(f"SELECT * FROM Historique_Equipe WHERE Tour_ID = {tour_saisie}", engine)
+            df_m = pd.read_sql(f"SELECT * FROM Parc_Machines_Mensuel WHERE Tour_ID = {tour_saisie}", engine)
+            d_rh = charger_donnees_rh_bdd(tour_saisie)
+            d_mkg = charger_donnees_mkg_bdd(tour_saisie)
+            d_ventes = charger_ventes_bdd(tour_saisie)
+            dfin = charger_donnees_fin_bdd(tour_saisie)
+        except Exception:
+            df_h, df_m, d_rh, d_mkg, d_ventes, dfin = pd.DataFrame(), pd.DataFrame(), {}, {}, {}, {}
+    else:
         df_h, df_m, d_rh, d_mkg, d_ventes, dfin = pd.DataFrame(), pd.DataFrame(), {}, {}, {}, {}
 
     def get_h(col, def_v): return float(df_h[col].iloc[0]) if not df_h.empty and col in df_h.columns else def_v
@@ -436,9 +465,10 @@ elif module_principal == "📥 Saisie des Données Réelles":
             s_ferm = st.number_input("Fermetures", value=get_h('Stock_Fermetures', 539.0))
             treso = st.number_input("Trésorerie", value=get_h('Tresorerie_Initiale', 100000.0))
             if st.form_submit_button("Enregistrer les Stocks"):
-                with engine.begin() as conn:
-                    conn.execute(text(f"INSERT INTO Historique_Equipe (Tour_ID, Stock_Neo3, Stock_Neo5, Stock_Neo7, Stock_Renforts, Stock_Manchons, Stock_Fermetures, Tresorerie_Initiale) VALUES ({tour_saisie}, {s_neo3}, {s_neo5}, {s_neo7}, {s_renf}, {s_man}, {s_ferm}, {treso}) ON DUPLICATE KEY UPDATE Stock_Neo3={s_neo3}, Stock_Neo5={s_neo5}, Stock_Neo7={s_neo7}, Stock_Renforts={s_renf}, Stock_Manchons={s_man}, Stock_Fermetures={s_ferm}, Tresorerie_Initiale={treso}"))
-                st.success("Stocks enregistrés !")
+                if engine:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"INSERT INTO Historique_Equipe (Tour_ID, Stock_Neo3, Stock_Neo5, Stock_Neo7, Stock_Renforts, Stock_Manchons, Stock_Fermetures, Tresorerie_Initiale) VALUES ({tour_saisie}, {s_neo3}, {s_neo5}, {s_neo7}, {s_renf}, {s_man}, {s_ferm}, {treso}) ON DUPLICATE KEY UPDATE Stock_Neo3={s_neo3}, Stock_Neo5={s_neo5}, Stock_Neo7={s_neo7}, Stock_Renforts={s_renf}, Stock_Manchons={s_man}, Stock_Fermetures={s_ferm}, Tresorerie_Initiale={treso}"))
+                    st.success("Stocks enregistrés !")
 
     with tab_r2:
         with st.form("f_mach"):
@@ -447,9 +477,10 @@ elif module_principal == "📥 Saisie des Données Réelles":
             m_ass = st.number_input("Assemblage", value=get_m('Nb_Machines_Assemblage', 13))
             m_cond = st.number_input("Conditionnement", value=get_m('Nb_Machines_Cond', 3))
             if st.form_submit_button("Enregistrer les Machines"):
-                with engine.begin() as conn:
-                    conn.execute(text(f"INSERT INTO Parc_Machines_Mensuel (Tour_ID, Mois, Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond) VALUES ({tour_saisie}, '{mois_saisie}', {m_dec}, {m_ass}, {m_cond}) ON DUPLICATE KEY UPDATE Nb_Machines_Decoupe={m_dec}, Nb_Machines_Assemblage={m_ass}, Nb_Machines_Cond={m_cond}"))
-                st.success("Machines enregistrées !")
+                if engine:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"INSERT INTO Parc_Machines_Mensuel (Tour_ID, Mois, Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond) VALUES ({tour_saisie}, '{mois_saisie}', {m_dec}, {m_ass}, {m_cond}) ON DUPLICATE KEY UPDATE Nb_Machines_Decoupe={m_dec}, Nb_Machines_Assemblage={m_ass}, Nb_Machines_Cond={m_cond}"))
+                    st.success("Machines enregistrées !")
 
     with tab_r3:
         with st.form("form_saisie_rh_reel"):
@@ -481,28 +512,29 @@ elif module_principal == "📥 Saisie des Données Réelles":
                 sal_df = st.number_input("Sal. Directeur Admin (€)", value=get_rh_v('Sal_Directeurs_Admin', 2000.0), step=100.0)
 
             if st.form_submit_button("💾 Enregistrer la Pyramide RH"):
-                try:
-                    query_rh = f"""
-                        INSERT INTO Decisions_RH_Mensuel (
-                            Tour_ID, Mois, 
-                            Eff_Employes_Prod, Sal_Employes_Prod, Eff_Cadres_Prod, Sal_Cadres_Prod, Eff_Directeurs_Prod, Sal_Directeurs_Prod,
-                            Eff_Employes_Appro, Sal_Employes_Appro, Eff_Cadres_Appro, Sal_Cadres_Appro, Eff_Directeurs_Appro, Sal_Directeurs_Appro,
-                            Eff_Employes_Admin, Sal_Employes_Admin, Eff_Cadres_Admin, Sal_Cadres_Admin, Eff_Directeurs_Admin, Sal_Directeurs_Admin
-                        ) VALUES (
-                            {tour_saisie}, '{mois_saisie}', 
-                            {eff_ep}, {sal_ep}, {eff_cp}, {sal_cp}, {eff_dp}, {sal_dp},
-                            {eff_ea}, {sal_ea}, {eff_ca}, {sal_ca}, {eff_da}, {sal_da},
-                            {eff_ef}, {sal_ef}, {eff_cf}, {sal_cf}, {eff_df}, {sal_df}
-                        ) ON DUPLICATE KEY UPDATE 
-                            Eff_Employes_Prod={eff_ep}, Sal_Employes_Prod={sal_ep}, Eff_Cadres_Prod={eff_cp}, Sal_Cadres_Prod={sal_cp}, Eff_Directeurs_Prod={eff_dp}, Sal_Directeurs_Prod={sal_dp},
-                            Eff_Employes_Appro={eff_ea}, Sal_Employes_Appro={sal_ea}, Eff_Cadres_Appro={eff_ca}, Sal_Cadres_Appro={sal_ca}, Eff_Directeurs_Appro={eff_da}, Sal_Directeurs_Appro={sal_da},
-                            Eff_Employes_Admin={eff_ef}, Sal_Employes_Admin={sal_ef}, Eff_Cadres_Admin={eff_cf}, Sal_Cadres_Admin={sal_cf}, Eff_Directeurs_Admin={eff_df}, Sal_Directeurs_Admin={sal_df};
-                    """
-                    with engine.begin() as conn:
-                        conn.execute(text(query_rh))
-                    st.success("Pyramide RH enregistrée !")
-                except Exception as e:
-                    st.error(f"Erreur SQL : {e}")
+                if engine:
+                    try:
+                        query_rh = f"""
+                            INSERT INTO Decisions_RH_Mensuel (
+                                Tour_ID, Mois, 
+                                Eff_Employes_Prod, Sal_Employes_Prod, Eff_Cadres_Prod, Sal_Cadres_Prod, Eff_Directeurs_Prod, Sal_Directeurs_Prod,
+                                Eff_Employes_Appro, Sal_Employes_Appro, Eff_Cadres_Appro, Sal_Cadres_Appro, Eff_Directeurs_Appro, Sal_Directeurs_Appro,
+                                Eff_Employes_Admin, Sal_Employes_Admin, Eff_Cadres_Admin, Sal_Cadres_Admin, Eff_Directeurs_Admin, Sal_Directeurs_Admin
+                            ) VALUES (
+                                {tour_saisie}, '{mois_saisie}', 
+                                {eff_ep}, {sal_ep}, {eff_cp}, {sal_cp}, {eff_dp}, {sal_dp},
+                                {eff_ea}, {sal_ea}, {eff_ca}, {sal_ca}, {eff_da}, {sal_da},
+                                {eff_ef}, {sal_ef}, {eff_cf}, {sal_cf}, {eff_df}, {sal_df}
+                            ) ON DUPLICATE KEY UPDATE 
+                                Eff_Employes_Prod={eff_ep}, Sal_Employes_Prod={sal_ep}, Eff_Cadres_Prod={eff_cp}, Sal_Cadres_Prod={sal_cp}, Eff_Directeurs_Prod={eff_dp}, Sal_Directeurs_Prod={sal_dp},
+                                Eff_Employes_Appro={eff_ea}, Sal_Employes_Appro={sal_ea}, Eff_Cadres_Appro={eff_ca}, Sal_Cadres_Appro={sal_ca}, Eff_Directeurs_Appro={eff_da}, Sal_Directeurs_Appro={sal_da},
+                                Eff_Employes_Admin={eff_ef}, Sal_Employes_Admin={sal_ef}, Eff_Cadres_Admin={eff_cf}, Sal_Cadres_Admin={sal_cf}, Eff_Directeurs_Admin={eff_df}, Sal_Directeurs_Admin={sal_df};
+                        """
+                        with engine.begin() as conn:
+                            conn.execute(text(query_rh))
+                        st.success("Pyramide RH enregistrée !")
+                    except Exception as e:
+                        st.error(f"Erreur SQL : {e}")
 
     with tab_r4:
         with st.form("form_saisie_mkg"):
@@ -528,18 +560,19 @@ elif module_principal == "📥 Saisie des Données Réelles":
                 plv_i7 = st.number_input("PLV I7", value=float(d_mkg.get('Pub_I7', 3500.0)))
             
             if st.form_submit_button("💾 Enregistrer les Décisions Marketing"):
-                try:
-                    q_mkg = f"""
-                        INSERT INTO Decisions_Marketing (Tour_ID, Mois, Prix_S3, Prix_I3, Prix_S5, Prix_I5, Prix_I7, Budget_Marque, Axe_Principal, Axe_Accessoire, Pub_S3, Pub_I3, Pub_S5, Pub_I5, Pub_I7)
-                        VALUES ({tour_saisie}, '{mois_saisie}', {p_s3}, {p_i3}, {p_s5}, {p_i5}, {p_i7}, {b_marq}, '{axe_p}', '{axe_a}', {plv_s3}, {plv_i3}, {plv_s5}, {plv_i5}, {plv_i7})
-                        ON DUPLICATE KEY UPDATE
-                        Prix_S3={p_s3}, Prix_I3={p_i3}, Prix_S5={p_s5}, Prix_I5={p_i5}, Prix_I7={p_i7}, Budget_Marque={b_marq}, Axe_Principal='{axe_p}', Axe_Accessoire='{axe_a}', Pub_S3={plv_s3}, Pub_I3={plv_i3}, Pub_S5={plv_s5}, Pub_I5={plv_i5}, Pub_I7={plv_i7};
-                    """
-                    with engine.begin() as conn:
-                        conn.execute(text(q_mkg))
-                    st.success("Décisions Marketing enregistrées !")
-                except Exception as e:
-                    st.error(f"Erreur SQL : {e}")
+                if engine:
+                    try:
+                        q_mkg = f"""
+                            INSERT INTO Decisions_Marketing (Tour_ID, Mois, Prix_S3, Prix_I3, Prix_S5, Prix_I5, Prix_I7, Budget_Marque, Axe_Principal, Axe_Accessoire, Pub_S3, Pub_I3, Pub_S5, Pub_I5, Pub_I7)
+                            VALUES ({tour_saisie}, '{mois_saisie}', {p_s3}, {p_i3}, {p_s5}, {p_i5}, {p_i7}, {b_marq}, '{axe_p}', '{axe_a}', {plv_s3}, {plv_i3}, {plv_s5}, {plv_i5}, {plv_i7})
+                            ON DUPLICATE KEY UPDATE
+                            Prix_S3={p_s3}, Prix_I3={p_i3}, Prix_S5={p_s5}, Prix_I5={p_i5}, Prix_I7={p_i7}, Budget_Marque={b_marq}, Axe_Principal='{axe_p}', Axe_Accessoire='{axe_a}', Pub_S3={plv_s3}, Pub_I3={plv_i3}, Pub_S5={plv_s5}, Pub_I5={plv_i5}, Pub_I7={plv_i7};
+                        """
+                        with engine.begin() as conn:
+                            conn.execute(text(q_mkg))
+                        st.success("Décisions Marketing enregistrées !")
+                    except Exception as e:
+                        st.error(f"Erreur SQL : {e}")
 
     with tab_r5:
         with st.form("form_saisie_ventes"):
@@ -552,18 +585,19 @@ elif module_principal == "📥 Saisie des Données Réelles":
             v_i7 = c_v5.number_input("Ventes Integral 7 (u)", value=int(d_ventes.get('Ventes_I7', 0)), step=1)
             
             if st.form_submit_button("💾 Enregistrer les Volumes Vendus"):
-                try:
-                    q_ventes = f"""
-                        INSERT INTO Ventes_Historique (Tour_ID, Mois, Ventes_S3, Ventes_I3, Ventes_S5, Ventes_I5, Ventes_I7)
-                        VALUES ({tour_saisie}, '{mois_saisie}', {v_s3}, {v_i3}, {v_s5}, {v_i5}, {v_i7})
-                        ON DUPLICATE KEY UPDATE
-                        Ventes_S3={v_s3}, Ventes_I3={v_i3}, Ventes_S5={v_s5}, Ventes_I5={v_i5}, Ventes_I7={v_i7};
-                    """
-                    with engine.begin() as conn:
-                        conn.execute(text(q_ventes))
-                    st.success("Volumes de ventes enregistrés !")
-                except Exception as e:
-                    st.error(f"Erreur SQL : {e}")
+                if engine:
+                    try:
+                        q_ventes = f"""
+                            INSERT INTO Ventes_Historique (Tour_ID, Mois, Ventes_S3, Ventes_I3, Ventes_S5, Ventes_I5, Ventes_I7)
+                            VALUES ({tour_saisie}, '{mois_saisie}', {v_s3}, {v_i3}, {v_s5}, {v_i5}, {v_i7})
+                            ON DUPLICATE KEY UPDATE
+                            Ventes_S3={v_s3}, Ventes_I3={v_i3}, Ventes_S5={v_s5}, Ventes_I5={v_i5}, Ventes_I7={v_i7};
+                        """
+                        with engine.begin() as conn:
+                            conn.execute(text(q_ventes))
+                        st.success("Volumes de ventes enregistrés !")
+                    except Exception as e:
+                        st.error(f"Erreur SQL : {e}")
 
     with tab_r6:
         with st.form("form_saisie_finance"):
@@ -587,18 +621,19 @@ elif module_principal == "📥 Saisie des Données Réelles":
                 s_bq = st.number_input("Banque (Disponibilités)", value=float(dfin.get('Disponibilites_Banque', 0.0)), step=1000.0)
 
             if st.form_submit_button("💾 Enregistrer les Données Financières"):
-                try:
-                    query_f = f"""
-                        INSERT INTO Finances_Mensuelles (Tour_ID, Mois, CA_Net, Achats_Matieres, Autres_Charges_Externes, Remuneration_Personnel, Charges_Sociales, Dotations_Amortissements, Resultat_Net, Total_Actif_Immobilise, Total_Actif_Circulant, Total_Capitaux_Propres, Emprunts_Bancaires, Disponibilites_Banque) 
-                        VALUES ({tour_saisie}, '{mois_saisie}', {s_ca}, {s_achats}, {s_ace}, {s_remun}, {s_soc}, {s_dot}, {s_rnet}, {s_immo}, {s_circ}, {s_cap}, {s_emp}, {s_bq})
-                        ON DUPLICATE KEY UPDATE 
-                        CA_Net={s_ca}, Achats_Matieres={s_achats}, Autres_Charges_Externes={s_ace}, Remuneration_Personnel={s_remun}, Charges_Sociales={s_soc}, Dotations_Amortissements={s_dot}, Resultat_Net={s_rnet}, Total_Actif_Immobilise={s_immo}, Total_Actif_Circulant={s_circ}, Total_Capitaux_Propres={s_cap}, Emprunts_Bancaires={s_emp}, Disponibilites_Banque={s_bq};
-                    """
-                    with engine.begin() as conn:
-                        conn.execute(text(query_f))
-                    st.success("✅ Données financières enregistrées !")
-                except Exception as e:
-                    st.error(f"Erreur SQL : {e}")
+                if engine:
+                    try:
+                        query_f = f"""
+                            INSERT INTO Finances_Mensuelles (Tour_ID, Mois, CA_Net, Achats_Matieres, Autres_Charges_Externes, Remuneration_Personnel, Charges_Sociales, Dotations_Amortissements, Resultat_Net, Total_Actif_Immobilise, Total_Actif_Circulant, Total_Capitaux_Propres, Emprunts_Bancaires, Disponibilites_Banque) 
+                            VALUES ({tour_saisie}, '{mois_saisie}', {s_ca}, {s_achats}, {s_ace}, {s_remun}, {s_soc}, {s_dot}, {s_rnet}, {s_immo}, {s_circ}, {s_cap}, {s_emp}, {s_bq})
+                            ON DUPLICATE KEY UPDATE 
+                            CA_Net={s_ca}, Achats_Matieres={s_achats}, Autres_Charges_Externes={s_ace}, Remuneration_Personnel={s_remun}, Charges_Sociales={s_soc}, Dotations_Amortissements={s_dot}, Resultat_Net={s_rnet}, Total_Actif_Immobilise={s_immo}, Total_Actif_Circulant={s_circ}, Total_Capitaux_Propres={s_cap}, Emprunts_Bancaires={s_emp}, Disponibilites_Banque={s_bq};
+                        """
+                        with engine.begin() as conn:
+                            conn.execute(text(query_f))
+                        st.success("✅ Données financières enregistrées !")
+                    except Exception as e:
+                        st.error(f"Erreur SQL : {e}")
 
 # ==========================================
 # MODULE 3 : SIMULATEUR & DÉCISION STRATÉGIQUE
@@ -653,12 +688,15 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 sauvegarder_scenario_seed(token_actif, tour_id_actif, nom_scenario, current_state)
                 st.success("Seed sauvegardée avec TOUS les paramètres !")
 
-    try:
-        df_hist = pd.read_sql(f"SELECT * FROM Historique_Equipe WHERE Tour_ID = {tour_id_precedent}", engine)
-        df_machines = pd.read_sql(f"SELECT * FROM Parc_Machines_Mensuel WHERE Tour_ID = {tour_id_precedent}", engine)
-        donnees_rh = charger_donnees_rh_bdd(tour_id_precedent)
-        donnees_mkg = charger_donnees_mkg_bdd(tour_id_precedent)
-    except Exception:
+    if engine is not None:
+        try:
+            df_hist = pd.read_sql(f"SELECT * FROM Historique_Equipe WHERE Tour_ID = {tour_id_precedent}", engine)
+            df_machines = pd.read_sql(f"SELECT * FROM Parc_Machines_Mensuel WHERE Tour_ID = {tour_id_precedent}", engine)
+            donnees_rh = charger_donnees_rh_bdd(tour_id_precedent)
+            donnees_mkg = charger_donnees_mkg_bdd(tour_id_precedent)
+        except Exception:
+            df_hist, df_machines, donnees_rh, donnees_mkg = pd.DataFrame(), pd.DataFrame(), {}, {}
+    else:
         df_hist, df_machines, donnees_rh, donnees_mkg = pd.DataFrame(), pd.DataFrame(), {}, {}
 
     def get_h(col, def_v=0.0): return float(df_hist[col].iloc[0]) if not df_hist.empty and col in df_hist.columns else def_v
@@ -926,78 +964,79 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             periode_m1_nom_ui = [k for k, v in tour_mapping_id.items() if v == tour_id_precedent][0]
             periode_m1_db = mois_mapping[periode_m1_nom_ui]
             
-            df_bq = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'banque_assurance' AND type_donnee = 'etat_actuel'", engine)
-            if not df_bq.empty:
-                data_bq = json.loads(df_bq.iloc[0]['contenu'])
-                if "Soldes bancaires" in data_bq:
-                    for acc in data_bq["Soldes bancaires"]:
-                        if "Solde final" in acc:
-                            treso_initiale = parse_french_float(acc["Solde final"])
-            
-            df_ec = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'expert_comptable' AND type_donnee = 'etat_actuel'", engine)
-            if not df_ec.empty:
-                data_ec = json.loads(df_ec.iloc[0]['contenu'])
+            if engine is not None:
+                df_bq = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'banque_assurance' AND type_donnee = 'etat_actuel'", engine)
+                if not df_bq.empty:
+                    data_bq = json.loads(df_bq.iloc[0]['contenu'])
+                    if "Soldes bancaires" in data_bq:
+                        for acc in data_bq["Soldes bancaires"]:
+                            if "Solde final" in acc:
+                                treso_initiale = parse_french_float(acc["Solde final"])
                 
-                tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
-                for row in tab_treso:
-                    rub = str(row.get("Rubrique", "")).lower()
-                    if "résultat net" in rub: res_net_historique = parse_french_float(row.get("Montant (€)", res_net_historique))
-                    if "dotations aux amortissements" in rub: dotations_prev = parse_french_float(row.get("Montant (€)", dotations_prev))
-                    if "solde de trésorerie final" in rub or "solde de tresorerie final" in rub: treso_initiale = parse_french_float(row.get("Montant (€)", treso_initiale))
-                        
-                tab_bilan = data_ec.get("Synthèse", {}).get("Bilan détaillé", {}).get("Tableau_1", [])
-                for row in tab_bilan:
-                    pas = str(row.get("Passif", "")).lower()
-                    act = str(row.get("Actif", "")).lower()
-                    if "total capitaux propres" in pas: 
-                        val = parse_french_float(row.get("Exercice N", 0.0))
-                        if val != 0.0: capitaux_propres = val
-                    if "report à nouveau" in pas or "report a nouveau" in pas: 
-                        val = parse_french_float(row.get("Exercice N", 0.0))
-                        if val != 0.0: report_a_nouveau = val
-                    if "résultat de l'exercice" in pas or "resultat de l'exercice" in pas:
-                        val = parse_french_float(row.get("Exercice N", 0.0))
-                        if val != 0.0: resultat_exercice_cumule = val
-                    if act.strip() == "banque" or "disponibilités" in act:
-                        val = parse_french_float(row.get("Net exercice N", row.get("Exercice N", 0.0)))
-                        if val != 0.0 and treso_initiale == 0.0: treso_initiale = val
+                df_ec = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'expert_comptable' AND type_donnee = 'etat_actuel'", engine)
+                if not df_ec.empty:
+                    data_ec = json.loads(df_ec.iloc[0]['contenu'])
+                    
+                    tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
+                    for row in tab_treso:
+                        rub = str(row.get("Rubrique", "")).lower()
+                        if "résultat net" in rub: res_net_historique = parse_french_float(row.get("Montant (€)", res_net_historique))
+                        if "dotations aux amortissements" in rub: dotations_prev = parse_french_float(row.get("Montant (€)", dotations_prev))
+                        if "solde de trésorerie final" in rub or "solde de tresorerie final" in rub: treso_initiale = parse_french_float(row.get("Montant (€)", treso_initiale))
+                            
+                    tab_bilan = data_ec.get("Synthèse", {}).get("Bilan détaillé", {}).get("Tableau_1", [])
+                    for row in tab_bilan:
+                        pas = str(row.get("Passif", "")).lower()
+                        act = str(row.get("Actif", "")).lower()
+                        if "total capitaux propres" in pas: 
+                            val = parse_french_float(row.get("Exercice N", 0.0))
+                            if val != 0.0: capitaux_propres = val
+                        if "report à nouveau" in pas or "report a nouveau" in pas: 
+                            val = parse_french_float(row.get("Exercice N", 0.0))
+                            if val != 0.0: report_a_nouveau = val
+                        if "résultat de l'exercice" in pas or "resultat de l'exercice" in pas:
+                            val = parse_french_float(row.get("Exercice N", 0.0))
+                            if val != 0.0: resultat_exercice_cumule = val
+                        if act.strip() == "banque" or "disponibilités" in act:
+                            val = parse_french_float(row.get("Net exercice N", row.get("Exercice N", 0.0)))
+                            if val != 0.0 and treso_initiale == 0.0: treso_initiale = val
 
-                def scan_cumuls_recur(node):
-                    ca, res = 0.0, 0.0
-                    if isinstance(node, dict):
-                        for k, v in node.items():
-                            if "CUMULÉ" in str(k).upper() or "CUMULE" in str(k).upper():
-                                if isinstance(v, list) and len(v) > 0:
-                                    item = v[0]
-                                    if "Chiffre d'affaires" in item: ca = parse_french_float(item["Chiffre d'affaires"])
-                                    if "Résultat avant impôt" in item: res = parse_french_float(item["Résultat avant impôt"])
-                                    return ca, res
-                            sub_ca, sub_res = scan_cumuls_recur(v)
-                            if sub_ca != 0.0: ca = sub_ca
-                            if sub_res != 0.0: res = sub_res
-                    elif isinstance(node, list):
-                        for item in node:
-                            if isinstance(item, dict):
-                                rub = str(item.get("Rubrique", item.get("Libellé", ""))).lower()
-                                if "chiffre d'affaires" in rub:
-                                    for col_k, col_v in item.items():
-                                        if "cumul" in str(col_k).lower() or "exercice" in str(col_k).lower():
-                                            c_val = parse_french_float(col_v)
-                                            if c_val > ca: ca = c_val
-                                if "résultat avant impôt" in rub or "resultat avant impot" in rub:
-                                    for col_k, col_v in item.items():
-                                        if "cumul" in str(col_k).lower() or "exercice" in str(col_k).lower():
-                                            r_val = parse_french_float(col_v)
-                                            if r_val != 0.0: res = r_val
-                    return ca, res
+                    def scan_cumuls_recur(node):
+                        ca, res = 0.0, 0.0
+                        if isinstance(node, dict):
+                            for k, v in node.items():
+                                if "CUMULÉ" in str(k).upper() or "CUMULE" in str(k).upper():
+                                    if isinstance(v, list) and len(v) > 0:
+                                        item = v[0]
+                                        if "Chiffre d'affaires" in item: ca = parse_french_float(item["Chiffre d'affaires"])
+                                        if "Résultat avant impôt" in item: res = parse_french_float(item["Résultat avant impôt"])
+                                        return ca, res
+                                sub_ca, sub_res = scan_cumuls_recur(v)
+                                if sub_ca != 0.0: ca = sub_ca
+                                if sub_res != 0.0: res = sub_res
+                        elif isinstance(node, list):
+                            for item in node:
+                                if isinstance(item, dict):
+                                    rub = str(item.get("Rubrique", item.get("Libellé", ""))).lower()
+                                    if "chiffre d'affaires" in rub:
+                                        for col_k, col_v in item.items():
+                                            if "cumul" in str(col_k).lower() or "exercice" in str(col_k).lower():
+                                                c_val = parse_french_float(col_v)
+                                                if c_val > ca: ca = c_val
+                                    if "résultat avant impôt" in rub or "resultat avant impot" in rub:
+                                        for col_k, col_v in item.items():
+                                            if "cumul" in str(col_k).lower() or "exercice" in str(col_k).lower():
+                                                r_val = parse_french_float(col_v)
+                                                if r_val != 0.0: res = r_val
+                        return ca, res
 
-                c_json, r_json = scan_cumuls_recur(data_ec)
-                if c_json != 0.0: ca_cumule_historique = c_json
-                if r_json != 0.0: res_avant_impot_cumule_historique = r_json
+                    c_json, r_json = scan_cumuls_recur(data_ec)
+                    if c_json != 0.0: ca_cumule_historique = c_json
+                    if r_json != 0.0: res_avant_impot_cumule_historique = r_json
         except Exception:
             pass
 
-        if ca_cumule_historique == 0.0 and tour_id_precedent > 1:
+        if ca_cumule_historique == 0.0 and tour_id_precedent > 1 and engine is not None:
             try:
                 df_sql_hist = pd.read_sql(f"SELECT SUM(CA_Net) as sum_ca, SUM(Resultat_Net) as sum_res FROM Finances_Mensuelles WHERE Tour_ID <= {tour_id_precedent}", engine)
                 if not df_sql_hist.empty:
@@ -1101,125 +1140,3 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.markdown("##### 🏦 Situation de l'Entreprise")
             if treso_finale >= 0: st.info(f"Trésorerie Fin de Mois Estimée : **{treso_finale:,.2f} €**")
             else: st.error(f"⚠️ DÉCOUVERT BANCAIRE ESTIMÉ : **{treso_finale:,.2f} €**")
-
-# ==========================================
-# MODULE 4 : ÉDITION DES RAPPORTS PDF (AUTO-MATCHER INTELLIGENT)
-# ==========================================
-elif module_principal == "📄 Édition des Rapports PDF":
-    import fitz  
-    import io
-    import json
-    
-    st.title("📄 Édition des Rapports Financiers")
-    st.write("Ce module détecte automatiquement les cases du document et y injecte les bons calculs.")
-    
-    mois_export = st.selectbox("Sélectionnez la période à exporter :", list(mois_mapping.keys()))
-    periode_db_export = mois_mapping[mois_export]
-    
-    if st.button("🚀 Générer le rapport PDF", type="primary"):
-        with st.spinner("Analyse du PDF et calcul des ratios en cours..."):
-            try:
-                # 1. Récupération des données depuis l'ERP
-                query = f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_db_export}' AND type_donnee = 'etat_actuel' AND module = 'expert_comptable'"
-                df = pd.read_sql(query, engine)
-                
-                # Variables financières par défaut
-                ca = 0.0
-                res_net = 0.0
-                cap_propres = 0.0
-                dettes_fin = 0.0
-                caf = 0.0
-                compte_banque = 0.0 # Ajout pour la page 4
-                
-                if not df.empty:
-                    donnees = json.loads(df.iloc[0]['contenu'])
-                    
-                    # Radar à données JSON
-                    def chercher_valeur(mots_cles, json_data):
-                        val = 0.0
-                        if isinstance(json_data, dict):
-                            for k, v in json_data.items():
-                                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                                    for item in v:
-                                        rub = str(item.get("Rubrique", item.get("Passif", item.get("Actif", item.get("Libellé", ""))))).lower()
-                                        if any(mc in rub for mc in mots_cles):
-                                            for col in ["Montant (€)", "Exercice N", "Net exercice N", "Cumul", "CUMUL", "Montant"]:
-                                                if col in item:
-                                                    v_float = parse_french_float(item[col])
-                                                    if v_float != 0.0: return v_float
-                                sub_val = chercher_valeur(mots_cles, v)
-                                if sub_val != 0.0: val = sub_val
-                        return val
-
-                    ca = chercher_valeur(["chiffre d'affaires", "ca net"], donnees)
-                    res_net = chercher_valeur(["résultat net", "résultat de l'exercice"], donnees)
-                    cap_propres = chercher_valeur(["total capitaux propres"], donnees)
-                    dettes_fin = chercher_valeur(["emprunts et dettes", "dettes financières"], donnees) 
-                    caf = chercher_valeur(["capacité d'autofinancement", "caf"], donnees)
-                    compte_banque = chercher_valeur(["solde de trésorerie final", "banque", "disponibilités"], donnees)
-
-                # 2. Calcul des Ratios 
-                tx_profitabilite = (res_net / ca * 100) if ca != 0 else 0.0
-                tx_rentabilite = (res_net / cap_propres * 100) if cap_propres != 0 else 0.0
-                ratio_independance = (cap_propres / dettes_fin) if dettes_fin != 0 else 0.0
-                ratio_remboursement = (dettes_fin / caf) if caf != 0 else 0.0
-
-                def fmt_num(v): return f"{v:,.2f}".replace(",", " ").replace(".", ",")
-
-                # 3. Ouverture du PDF
-                doc = fitz.open("service_financier.pdf")
-                champs_remplis = 0
-                
-                # 4. L'AUTO-MATCHER : Le robot lit le nom des champs et décide tout seul
-                for page in doc:
-                    for champ in page.widgets(): 
-                        nom = champ.field_name.lower()
-                        valeur_a_injecter = ""
-
-                        # Analyse heuristique des noms de champs
-                        if "chiffre" in nom or "affaire" in nom:
-                            valeur_a_injecter = fmt_num(ca)
-                        elif "profitabilit" in nom:
-                            valeur_a_injecter = fmt_num(tx_profitabilite)
-                        elif "rentabilit" in nom:
-                            valeur_a_injecter = fmt_num(tx_rentabilite)
-                        elif "independance" in nom or "indépendance" in nom:
-                            valeur_a_injecter = fmt_num(ratio_independance)
-                        elif "autofinancement" in nom and "ratio" in nom:
-                            valeur_a_injecter = fmt_num(ratio_remboursement)
-                        elif "caf" in nom or "autofinancement" in nom:
-                            valeur_a_injecter = fmt_num(caf)
-                        elif "resultat" in nom or "résultat" in nom:
-                            valeur_a_injecter = fmt_num(res_net)
-                        elif "capitaux" in nom or "propre" in nom:
-                            valeur_a_injecter = fmt_num(cap_propres)
-                        elif "dette" in nom and "financi" in nom:
-                            valeur_a_injecter = fmt_num(dettes_fin)
-                        elif "banque" in nom:
-                            valeur_a_injecter = fmt_num(compte_banque)
-                        
-                        # Si on a trouvé une correspondance, on l'injecte
-                        if valeur_a_injecter != "":
-                            champ.field_value = valeur_a_injecter
-                            champ.update()
-                            champs_remplis += 1
-                
-                # 5. Sauvegarde
-                pdf_bytes = io.BytesIO()
-                doc.save(pdf_bytes)
-                doc.close()
-                
-                if champs_remplis > 0:
-                    st.success(f"✅ Formulaire intelligent terminé ! {champs_remplis} cases ont été remplies automatiquement.")
-                else:
-                    st.warning("⚠️ Aucun champ reconnu. Vérifiez que c'est bien le PDF interactif.")
-
-                st.download_button(
-                    label="📥 Télécharger le rapport final",
-                    data=pdf_bytes.getvalue(),
-                    file_name=f"Directeur_Financier_{mois_export.replace(' ', '_')}.pdf",
-                    mime="application/pdf"
-                )
-                
-            except Exception as e:
-                st.error(f"❌ Erreur critique lors du traitement : {e}")
