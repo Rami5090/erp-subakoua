@@ -5,12 +5,8 @@ import json
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-# Chargement optionnel du fichier .env pour le local
 load_dotenv()
 
-# ==========================================
-# 1. CONFIGURATION ET CONNEXION BDD (UNIVERSELLE)
-# ==========================================
 st.set_page_config(page_title="ERP Subakoua - Cockpit Stratégique", layout="wide", initial_sidebar_state="expanded")
 
 @st.cache_resource
@@ -119,7 +115,7 @@ def init_db_simu():
 init_db_simu()
 
 # ==========================================
-# 2. CHARGEMENT BDD & FONCTIONS UTILITAIRES
+# 2. CHARGEMENT BDD & FONCTIONS GLOBALES
 # ==========================================
 def parse_french_float(val):
     if isinstance(val, (int, float)): return float(val)
@@ -269,6 +265,10 @@ def sauvegarder_scenario_seed(token_seed, tour_id, nom, parametres_dict):
             conn.execute(text(query))
     except Exception as e:
         st.error(f"Erreur sauvegarde seed : {e}")
+
+# Fonctions d'aide globale sécurisées (Portée générale)
+def get_rh_v(donnees_rh, k, def_v): return float(donnees_rh.get(k, def_v))
+def get_rh_e(donnees_rh, k, def_v): return int(donnees_rh.get(k, def_v))
 
 # Fonctions d'affichage pour l'État des Lieux Global
 def afficher_tableau_dynamique(donnees):
@@ -503,8 +503,6 @@ elif module_principal == "📥 Saisie des Données Réelles":
 
     def get_h(col, def_v): return float(df_h[col].iloc[0]) if not df_h.empty and col in df_h.columns else def_v
     def get_m(col, def_v): return int(df_m[col].iloc[0]) if not df_m.empty and col in df_m.columns else def_v
-    def get_rh_v(k, def_v): return float(d_rh.get(k, def_v))
-    def get_rh_e(k, def_v): return int(d_rh.get(k, def_v))
 
     tab_r1, tab_r2, tab_r3, tab_r4, tab_r5, tab_r6 = st.tabs(["📦 Stocks", "🏭 Machines", "👥 RH", "🎯 Marketing", "📈 Ventes Réelles", "💶 Finance"])
     
@@ -546,26 +544,26 @@ elif module_principal == "📥 Saisie des Données Réelles":
             st.subheader("Saisie des Effectifs et Salaires par Catégorie")
             c1, c2, c3 = st.columns(3)
             with c1:
-                eff_ep = st.number_input("Nb Employés Prod", value=get_rh_e('Eff_Employes_Prod', 15), step=1)
-                sal_ep = st.number_input("Sal. Employé Prod (€)", value=get_rh_v('Sal_Employes_Prod', 2000.0), step=100.0)
-                eff_cp = st.number_input("Nb Cadres Prod", value=get_rh_e('Eff_Cadres_Prod', 3), step=1)
-                sal_cp = st.number_input("Sal. Cadre Prod (€)", value=get_rh_v('Sal_Cadres_Prod', 3333.33), step=100.0)
-                eff_dp = st.number_input("Nb Directeurs Prod", value=get_rh_e('Eff_Directeurs_Prod', 1), step=1)
-                sal_dp = st.number_input("Sal. Directeur Prod (€)", value=get_rh_v('Sal_Directeurs_Prod', 4500.0), step=100.0)
+                eff_ep = st.number_input("Nb Employés Prod", value=get_rh_e(d_rh, 'Eff_Employes_Prod', 15), step=1)
+                sal_ep = st.number_input("Sal. Employé Prod (€)", value=get_rh_v(d_rh, 'Sal_Employes_Prod', 2000.0), step=100.0)
+                eff_cp = st.number_input("Nb Cadres Prod", value=get_rh_e(d_rh, 'Eff_Cadres_Prod', 3), step=1)
+                sal_cp = st.number_input("Sal. Cadre Prod (€)", value=get_rh_v(d_rh, 'Sal_Cadres_Prod', 3333.33), step=100.0)
+                eff_dp = st.number_input("Nb Directeurs Prod", value=get_rh_e(d_rh, 'Eff_Directeurs_Prod', 1), step=1)
+                sal_dp = st.number_input("Sal. Directeur Prod (€)", value=get_rh_v(d_rh, 'Sal_Directeurs_Prod', 4500.0), step=100.0)
             with c2:
-                eff_ea = st.number_input("Nb Employés Appro", value=get_rh_e('Eff_Employes_Appro', 7), step=1)
-                sal_ea = st.number_input("Sal. Employé Appro (€)", value=get_rh_v('Sal_Employes_Appro', 2000.0), step=100.0)
-                eff_ca = st.number_input("Nb Cadres Appro", value=get_rh_e('Eff_Cadres_Appro', 2), step=1)
-                sal_ca = st.number_input("Sal. Cadre Appro (€)", value=get_rh_v('Sal_Cadres_Appro', 2250.0), step=100.0)
-                eff_da = st.number_input("Nb Directeurs Appro", value=get_rh_e('Eff_Directeurs_Appro', 1), step=1)
-                sal_da = st.number_input("Sal. Directeur Appro (€)", value=get_rh_v('Sal_Directeurs_Appro', 2000.0), step=100.0)
+                eff_ea = st.number_input("Nb Employés Appro", value=get_rh_e(d_rh, 'Eff_Employes_Appro', 7), step=1)
+                sal_ea = st.number_input("Sal. Employé Appro (€)", value=get_rh_v(d_rh, 'Sal_Employes_Appro', 2000.0), step=100.0)
+                eff_ca = st.number_input("Nb Cadres Appro", value=get_rh_e(d_rh, 'Eff_Cadres_Appro', 2), step=1)
+                sal_ca = st.number_input("Sal. Cadre Appro (€)", value=get_rh_v(d_rh, 'Sal_Cadres_Appro', 2250.0), step=100.0)
+                eff_da = st.number_input("Nb Directeurs Appro", value=get_rh_e(d_rh, 'Eff_Directeurs_Appro', 1), step=1)
+                sal_da = st.number_input("Sal. Directeur Appro (€)", value=get_rh_v(d_rh, 'Sal_Directeurs_Appro', 2000.0), step=100.0)
             with c3:
-                eff_ef = st.number_input("Nb Employés Admin", value=get_rh_e('Eff_Employes_Admin', 7), step=1)
-                sal_ef = st.number_input("Sal. Employé Admin (€)", value=get_rh_v('Sal_Employes_Admin', 2000.0), step=100.0)
-                eff_cf = st.number_input("Nb Cadres Admin", value=get_rh_e('Eff_Cadres_Admin', 2), step=1)
-                sal_cf = st.number_input("Sal. Cadre Admin (€)", value=get_rh_v('Sal_Cadres_Admin', 2200.0), step=100.0)
-                eff_df = st.number_input("Nb Directeurs Admin", value=get_rh_e('Eff_Directeurs_Admin', 1), step=1)
-                sal_df = st.number_input("Sal. Directeur Admin (€)", value=get_rh_v('Sal_Directeurs_Admin', 2000.0), step=100.0)
+                eff_ef = st.number_input("Nb Employés Admin", value=get_rh_e(d_rh, 'Eff_Employes_Admin', 7), step=1)
+                sal_ef = st.number_input("Sal. Employé Admin (€)", value=get_rh_v(d_rh, 'Sal_Employes_Admin', 2000.0), step=100.0)
+                eff_cf = st.number_input("Nb Cadres Admin", value=get_rh_e(d_rh, 'Eff_Cadres_Admin', 2), step=1)
+                sal_cf = st.number_input("Sal. Cadre Admin (€)", value=get_rh_v(d_rh, 'Sal_Cadres_Admin', 2200.0), step=100.0)
+                eff_df = st.number_input("Nb Directeurs Admin", value=get_rh_e(d_rh, 'Eff_Directeurs_Admin', 1), step=1)
+                sal_df = st.number_input("Sal. Directeur Admin (€)", value=get_rh_v(d_rh, 'Sal_Directeurs_Admin', 2000.0), step=100.0)
             if st.form_submit_button("💾 Enregistrer la Pyramide RH"):
                 if engine:
                     with engine.begin() as conn:
@@ -708,28 +706,28 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
     with tab_sim_rh:
         st.subheader("4. Pilotage RH Interconnecté")
-        sim_ep_eff = sim_number("Nb Employés Prod", 'sp_e', get_rh_e('Eff_Employes_Prod', 15))
-        sim_ep_sal = sim_number("Sal. Employé Prod (€)", 'sp_es', get_rh_v('Sal_Employes_Prod', 2000.0), step=100.0)
-        sim_cp_eff = sim_number("Nb Cadres Prod", 'sp_c', get_rh_e('Eff_Cadres_Prod', 3))
-        sim_cp_sal = sim_number("Sal. Cadre Prod (€)", 'sp_cs', get_rh_v('Sal_Cadres_Prod', 3333.33), step=100.0)
-        sim_dp_eff = sim_number("Nb Directeurs Prod", 'sp_d', get_rh_e('Eff_Directeurs_Prod', 1))
-        sim_dp_sal = sim_number("Sal. Directeur Prod (€)", 'sp_ds', get_rh_v('Sal_Directeurs_Prod', 4500.0), step=100.0)
+        sim_ep_eff = sim_number("Nb Employés Prod", 'sp_e', get_rh_e(donnees_rh, 'Eff_Employes_Prod', 15))
+        sim_ep_sal = sim_number("Sal. Employé Prod (€)", 'sp_es', get_rh_v(donnees_rh, 'Sal_Employes_Prod', 2000.0), step=100.0)
+        sim_cp_eff = sim_number("Nb Cadres Prod", 'sp_c', get_rh_e(donnees_rh, 'Eff_Cadres_Prod', 3))
+        sim_cp_sal = sim_number("Sal. Cadre Prod (€)", 'sp_cs', get_rh_v(donnees_rh, 'Sal_Cadres_Prod', 3333.33), step=100.0)
+        sim_dp_eff = sim_number("Nb Directeurs Prod", 'sp_d', get_rh_e(donnees_rh, 'Eff_Directeurs_Prod', 1))
+        sim_dp_sal = sim_number("Sal. Directeur Prod (€)", 'sp_ds', get_rh_v(donnees_rh, 'Sal_Directeurs_Prod', 4500.0), step=100.0)
         tot_p = (sim_ep_eff * sim_ep_sal) + (sim_cp_eff * sim_cp_sal) + (sim_dp_eff * sim_dp_sal)
 
-        sim_ea_eff = sim_number("Nb Employés Appro", 'sa_e', get_rh_e('Eff_Employes_Appro', 7))
-        sim_ea_sal = sim_number("Sal. Employé Appro (€)", 'sa_es', get_rh_v('Sal_Employes_Appro', 2000.0), step=100.0)
-        sim_ca_eff = sim_number("Nb Cadres Appro", 'sa_c', get_rh_e('Eff_Cadres_Appro', 2))
-        sim_ca_sal = sim_number("Sal. Cadre Appro (€)", 'sa_cs', get_rh_v('Sal_Cadres_Appro', 2250.0), step=100.0)
-        sim_da_eff = sim_number("Nb Directeurs Appro", 'sa_d', get_rh_e('Eff_Directeurs_Appro', 1))
-        sim_da_sal = sim_number("Sal. Directeur Appro (€)", 'sa_ds', get_rh_v('Sal_Directeurs_Appro', 2000.0), step=100.0)
+        sim_ea_eff = sim_number("Nb Employés Appro", 'sa_e', get_rh_e(donnees_rh, 'Eff_Employes_Appro', 7))
+        sim_ea_sal = sim_number("Sal. Employé Appro (€)", 'sa_es', get_rh_v(donnees_rh, 'Sal_Employes_Appro', 2000.0), step=100.0)
+        sim_ca_eff = sim_number("Nb Cadres Appro", 'sa_c', get_rh_e(donnees_rh, 'Eff_Cadres_Appro', 2))
+        sim_ca_sal = sim_number("Sal. Cadre Appro (€)", 'sa_cs', get_rh_v(donnees_rh, 'Sal_Cadres_Appro', 2250.0), step=100.0)
+        sim_da_eff = sim_number("Nb Directeurs Appro", 'sa_d', get_rh_e(donnees_rh, 'Eff_Directeurs_Appro', 1))
+        sim_da_sal = sim_number("Sal. Directeur Appro (€)", 'sa_ds', get_rh_v(donnees_rh, 'Sal_Directeurs_Appro', 2000.0), step=100.0)
         tot_a = (sim_ea_eff * sim_ea_sal) + (sim_ca_eff * sim_ca_sal) + (sim_da_eff * sim_da_sal)
 
-        sim_ef_eff = sim_number("Nb Employés Admin", 'sf_e', get_rh_e('Eff_Employes_Admin', 7))
-        sim_ef_sal = sim_number("Sal. Employé Admin (€)", 'sf_es', get_rh_v('Sal_Employes_Admin', 2000.0), step=100.0)
-        sim_cf_eff = sim_number("Nb Cadres Admin", 'sf_c', get_rh_e('Eff_Cadres_Admin', 2))
-        sim_cf_sal = sim_number("Sal. Cadre Admin (€)", 'sf_cs', get_rh_v('Sal_Cadres_Admin', 2200.0), step=100.0)
-        sim_df_eff = sim_number("Nb Directeurs Admin", 'sf_d', get_rh_e('Eff_Directeurs_Admin', 1))
-        sim_df_sal = sim_number("Sal. Directeur Admin (€)", 'sf_ds', get_rh_v('Sal_Directeurs_Admin', 2000.0), step=100.0)
+        sim_ef_eff = sim_number("Nb Employés Admin", 'sf_e', get_rh_e(donnees_rh, 'Eff_Employes_Admin', 7))
+        sim_ef_sal = sim_number("Sal. Employé Admin (€)", 'sf_es', get_rh_v(donnees_rh, 'Sal_Employes_Admin', 2000.0), step=100.0)
+        sim_cf_eff = sim_number("Nb Cadres Admin", 'sf_c', get_rh_e(donnees_rh, 'Eff_Cadres_Admin', 2))
+        sim_cf_sal = sim_number("Sal. Cadre Admin (€)", 'sf_cs', get_rh_v(donnees_rh, 'Sal_Cadres_Admin', 2200.0), step=100.0)
+        sim_df_eff = sim_number("Nb Directeurs Admin", 'sf_d', get_rh_e(donnees_rh, 'Eff_Directeurs_Admin', 1))
+        sim_df_sal = sim_number("Sal. Directeur Admin (€)", 'sf_ds', get_rh_v(donnees_rh, 'Sal_Directeurs_Admin', 2000.0), step=100.0)
         tot_f = (sim_ef_eff * sim_ef_sal) + (sim_cf_eff * sim_cf_sal) + (sim_df_eff * sim_df_sal)
 
     with tab_sim_fin:
@@ -742,7 +740,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         treso_initiale = float(donnees_fin_act.get('Disponibilites_Banque', get_h('Tresorerie_Initiale', 0.0)))
         capitaux_propres = float(donnees_fin_act.get('Total_Capitaux_Propres', 0.0))
         
-        # Initialisation par défaut sécurisée
         aace_historique = 1104787.0
         deprec_historique = 793362.66 
         report_a_nouveau = 0.0
@@ -757,7 +754,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 if not df_ec.empty:
                     data_ec = json.loads(df_ec.iloc[0]['contenu'])
                     
-                    # 1. Extraction stricte des charges fixes réelles depuis le Bilan / Compte de résultat JSON
                     cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat détaillé", {}).get("Tableau_1", [])
                     if not cr_lignes:
                         cr_lignes = data_ec.get("Synthèse", {}).get("Compte de résultat simplifié", {}).get("Tableau_1", [])
@@ -774,7 +770,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     if v_aace > 0.0: aace_historique = v_aace
                     if v_deprec > 0.0: deprec_historique = v_deprec
                     
-                    # 2. Extraction du BFR et du solde initial M-1
                     tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
                     for row in tab_treso:
                         rub = str(row.get("Rubrique", row.get("Colonne_0", ""))).lower()
@@ -787,7 +782,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                             val_bfr = parse_french_float(row.get("Colonne_5", row.get("Colonne_6", 0.0)))
                             if val_bfr != 0.0: bfr_precedent_m1 = val_bfr
 
-                    # 3. Extraction des données CUMULÉES réelles depuis le JSON de l'expert-comptable
                     ratios_section = data_ec.get("Synthèse", {}).get("Ratios", {}).get("Ratios et Indicateurs", {})
                     if ratios_section:
                         cumul_list = ratios_section.get("Indicateurs_CUMULÉ", ratios_section.get("Indicateurs_CUMULE", []))
@@ -834,7 +828,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_maintenance_mensuel = 0.005
         maintenance_nouvelles_machines = cout_invest_machines * taux_maintenance_mensuel
 
-        # 🎯 CALCUL MAÎTRE : INCLUSION FORCÉE ET EXPLICITE DES CHARGES FIXES EXTRAITES DU BILAN (1.17 M€)
+        # 🎯 AJOUT EXPLICITE DES CHARGES FIXES DE STRUCTURE DANS LE TOTAL DES CHARGES
         total_charges = (
             cout_achats_total_sim + 
             ms_prev_brute + 
@@ -860,7 +854,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_profitabilite = (res_avant_impot / ca_prev_sim * 100) if ca_prev_sim > 0 else 0.0
         taux_rentabilite = (res_avant_impot / capitaux_propres * 100) if capitaux_propres > 0 else 0.0
 
-        # 🎯 CALCULS CUMULÉS ROBUSTES ET DISTINCTS
         ca_cumule_sim = ca_cumule_historique + ca_prev_sim
         res_avant_impot_cumule_sim = res_avant_impot_cumule_historique + res_avant_impot
         taux_profitabilite_cumule = (res_avant_impot_cumule_sim / ca_cumule_sim * 100) if ca_cumule_sim > 0 else taux_profitabilite
