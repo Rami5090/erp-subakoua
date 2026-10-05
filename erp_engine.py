@@ -1228,8 +1228,14 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             total_div = div_par_part * 40000
             st.metric("Total dividendes versés", f"{total_div:,.2f} €")
             
-        with tab_f5:
-            st.info("🤖 **Automatisé** : L'ERP a récupéré vos charges fixes incompressibles depuis le compte de résultat du mois précédent.")
+       with tab_f5:
+            st.info("🤖 **Automatisé** : L'ERP a récupéré vos charges fixes incompressibles...")
+            
+            # 👇 AJOUTEZ CES DEUX LIGNES ICI POUR LE DEBUG 👇
+            with st.expander("🔍 DEBUG : AFFICHER LE JSON DU COMPTE DE RÉSULTAT"):
+                st.json(data_ec)
+            # 👆 FIN DU DEBUG 👆
+
             aace_fixes = sim_number("AACE Fixes (Loyers, énergie, transports...)", "sim_aace_fixes", aace_historique, step=10000.0)
             depreciations_prev = sim_number("Dotations aux dépréciations & Autres charges", "sim_deprec_prev", deprec_historique, step=10000.0)
             st.metric("Total Charges de structure fixes", f"{aace_fixes + depreciations_prev:,.2f} €")
