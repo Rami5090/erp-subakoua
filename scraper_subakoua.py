@@ -29,7 +29,8 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass, asdict
+import getpass
+from dataclasses import dataclass, asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -49,12 +50,16 @@ import pymysql
 # ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
+SCRIPT_DIR = Path(__file__).resolve().parent
+# Charge en priorité le .env situé à côté du scraper, puis le .env du répertoire courant.
+# Cela évite les erreurs quand le BAT est lancé depuis un autre dossier.
+load_dotenv(SCRIPT_DIR / ".env")
 load_dotenv()
 
 URL_CONNEXION = os.getenv("SUBAKOUA_LOGIN_URL", "https://login.arkhe.com/")
 URL_DASHBOARD = os.getenv("SUBAKOUA_DASHBOARD_URL", "https://subakoua.arkhe.com/companies")
 DOMAINE_BASE = f"{urlparse(URL_DASHBOARD).scheme}://{urlparse(URL_DASHBOARD).netloc}"
-EXTRACTOR_VERSION = "2.0.0"
+EXTRACTOR_VERSION = "2.1.0"
 
 MODULES_A_VISITER = [
     ("Marketing", "marketing"),
@@ -111,9 +116,11 @@ def env_bool(name: str, default: bool) -> bool:
 def load_config(args: argparse.Namespace) -> ScraperConfig:
     output_dir = Path(os.getenv("SCRAPER_OUTPUT_DIR", "scraper_output"))
     state_file = Path(os.getenv("SCRAPER_STATE_FILE", str(output_dir / "auth_state.json")))
+    username = (args.user or os.getenv("SUBAKOUA_USER", "")).strip()
+    password = os.getenv("SUBAKOUA_PASS", "")
     return ScraperConfig(
-        username=os.getenv("SUBAKOUA_USER", "").strip(),
-        password=os.getenv("SUBAKOUA_PASS", ""),
+        username=username,
+        password=password,
         db_host=os.getenv("DB_HOST", "localhost").strip(),
         db_port=int(os.getenv("DB_PORT", "3306")),
         db_user=os.getenv("DB_USER", "root").strip(),
@@ -1003,6 +1010,7 @@ def lancer_robot_global(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Scraper robuste Subakoua ERP")
+    parser.add_argument("--user", help="Identifiant Subakoua (évite de le stocker dans le fichier .env)")
     parser.add_argument("--periods", help="Périodes par index : 1,2,3 ou plage 1-12")
     parser.add_argument("--all", action="store_true", help="Scrape toutes les périodes disponibles")
     parser.add_argument("--modules", default="all", help="Modules par nom/clé séparés par des virgules, ou all")
@@ -1013,18 +1021,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def complete_credentials(config: ScraperConfig, args: argparse.Namespace, logger: logging.Logger) -> ScraperConfig:
+    """Complète les identifiants Subakoua interactivement si absents, sans jamais loguer le mot de passe."""
+    username = config.username
+    password = config.password
+
+    if not username and sys.stdin.isatty():
+        username = input("Identifiant Subakoua : ").strip()
+    if not password and sys.stdin.isatty():
+        password = getpass.getpass("Mot de passe Subakoua : ")
+
+    if username and not config.username:
+        logger.info("Identifiant Subakoua fourni interactivement.")
+    if password and not config.password:
+        logger.info("Mot de passe Subakoua fourni interactivement.")
+
+    return replace(config, username=username, password=password)
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     config = load_config(args)
     logger = build_logger(config.output_dir)
+    config = complete_credentials(config, args, logger)
 
     periods = parse_periods(args)
     modules = parse_modules(args)
     logger.info("Extracteur %s | périodes=%s | modules=%s | mode=%s", EXTRACTOR_VERSION, len(periods), len(modules), "force" if args.force else "incremental")
 
     if not config.username or not config.password:
-        logger.error("Identifiants Subakoua manquants : SUBAKOUA_USER / SUBAKOUA_PASS")
+        logger.error("Identifiants Subakoua absents. Renseigne .env (SUBAKOUA_USER / SUBAKOUA_PASS) ou lance le scraper dans un terminal interactif.")
         return 2
 
     try:

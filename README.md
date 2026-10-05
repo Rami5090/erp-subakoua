@@ -40,6 +40,8 @@ python -m playwright install chromium
 
 Copier `.env.example` vers `.env` puis renseigner les identifiants Subakoua et MySQL.
 
+Depuis la version 2.1.0, si `SUBAKOUA_USER` / `SUBAKOUA_PASS` ne sont pas présents, le scraper les demande directement dans le terminal (`getpass` pour le mot de passe). Le mot de passe n'est jamais écrit dans les logs. Le `.env` est recherché à côté de `scraper_subakoua.py`, même si le programme est lancé depuis un autre dossier.
+
 ### Exemples
 ```bash
 # Janvier à Mars
