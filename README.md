@@ -60,3 +60,35 @@ Le fichier `.env` local peut contenir les identifiants Subakoua et Aiven.
 
 - 24 tests financiers passent.
 - Compilation Python validée pour l'ERP, le moteur financier, le scraper et la page Streamlit.
+
+
+## v2.4 — Optimiseur documentaire de pilotage
+
+Le scraper ne traite plus nécessairement tous les documents. Il peut d'abord explorer le catalogue du portail sans achat, attribuer à chaque document une valeur de pilotage, récupérer son prix lorsqu'il est affiché, puis construire un plan d'achat sous contrainte budgétaire.
+
+Profils disponibles :
+- Pilotage global
+- Finance & trésorerie
+- Commercial & marketing
+- Production & achats
+- RH
+
+Les besoins couverts sont : trésorerie/banque, rentabilité, BFR/TVA/fiscalité, ventes/prix/demande, concurrence, production/capacité/stocks, achats/fournisseurs, RH et investissements.
+
+### Sécurité achat
+
+L'analyse du catalogue ne déclenche aucun achat. L'achat réel nécessite une autorisation explicite dans l'interface et reste plafonné par le budget défini. Un document dont le prix est inconnu n'est jamais acheté automatiquement.
+
+### Mode incrémental documentaire
+
+La présence d'un module dans `erp_donnees` ne suffit plus à considérer le module comme complet lorsque le plan documentaire est actif : le scraper vérifie les documents sélectionnés au niveau de leur titre et ne ré-extrait que les périodes où les documents retenus sont absents, incomplets ou en erreur.
+
+### Test CLI
+
+Exemple de plan + achat contrôlé :
+
+```bash
+python scraper_subakoua.py --periods 1-5 --modules all --pilotage-profile "Pilotage global" --budget-docs 50 --auto-buy
+```
+
+Sans `--auto-buy`, le scraper ne dépense rien.

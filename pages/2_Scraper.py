@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -11,6 +12,7 @@ import pandas as pd
 import streamlit as st
 
 import scraper_subakoua as scraper
+from document_strategy import PILOTAGE_NEEDS, PROFILE_NEEDS, optimize_document_plan
 
 
 st.set_page_config(page_title="Scraper Subakoua", page_icon="🕷️", layout="wide")
@@ -99,6 +101,64 @@ def get_periods_from_db(config: scraper.ScraperConfig, periods: list[str], modul
                 pass
 
 
+def enrich_catalog_with_db_coverage(config: scraper.ScraperConfig, catalog: list[dict[str, Any]], periods: list[str]) -> list[dict[str, Any]]:
+    """Marque comme déjà couvert tout document dont les données sont présentes pour
+    toutes les périodes demandées. Cela évite de considérer comme un nouvel achat
+    une information déjà synchronisée dans Aiven."""
+    if not catalog or not periods:
+        return catalog
+    try:
+        conn = scraper.connect_mysql(config)
+        try:
+            with conn.cursor() as cursor:
+                marks = ",".join(["%s"] * len(periods))
+                cursor.execute(
+                    f"SELECT periode, module, contenu FROM erp_donnees WHERE type_donnee=%s AND periode IN ({marks})",
+                    ["etat_actuel", *periods],
+                )
+                rows = cursor.fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return catalog
+
+    by_period_module = {}
+    for row in rows:
+        content = row.get("contenu")
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except Exception:
+                content = {}
+        by_period_module[(row.get("periode"), row.get("module"))] = content if isinstance(content, dict) else {}
+
+    enriched = []
+    for item in catalog:
+        title_norm = scraper.normalize_document_title(str(item.get("title", "")))
+        covered = True
+        for period in periods:
+            module_content = by_period_module.get((period, item.get("module_key")), {})
+            if not module_content or scraper.contains_specimen(module_content) or scraper.contains_scraper_error(module_content):
+                covered = False
+                break
+            keys = {scraper.normalize_document_title(str(k)) for k in module_content.keys()}
+            match = next((k for k in module_content.keys() if scraper.normalize_document_title(str(k)) == title_norm), None)
+            if title_norm not in keys or match is None or not scraper.payload_is_usable(module_content.get(match)):
+                covered = False
+                break
+        clone = dict(item)
+        clone["db_covered"] = covered
+        if covered:
+            clone["owned"] = True
+            clone["locked"] = False
+            clone["purchase_required"] = False
+            clone["coverage_source"] = "Aiven / erp_donnees"
+        else:
+            clone["coverage_source"] = "Portail Subakoua"
+        enriched.append(clone)
+    return enriched
+
+
 class StreamlitLogHandler(logging.Handler):
     def __init__(self, placeholder):
         super().__init__(level=logging.INFO)
@@ -175,6 +235,25 @@ def discover_periods(config: scraper.ScraperConfig) -> list[str]:
             scraper.login(page, context, config, logging.getLogger("subakoua_scraper"))
             scraper.revenir_au_dashboard(page, config)
             return scraper.discover_available_periods(page, config, logging.getLogger("subakoua_scraper"))
+        finally:
+            try:
+                context.close()
+            finally:
+                browser.close()
+
+
+def discover_document_catalog_live(config: scraper.ScraperConfig, modules: list[tuple[str, str]]):
+    logger = logging.getLogger("subakoua_scraper")
+    with scraper.sync_playwright() as p:
+        browser = scraper.launch_browser(p, config, logger)
+        context = scraper.create_context(browser, config, logger)
+        page = context.new_page()
+        page.set_default_timeout(config.timeout_ms)
+        page.set_default_navigation_timeout(config.timeout_ms)
+        try:
+            scraper.login(page, context, config, logger)
+            scraper.revenir_au_dashboard(page, config)
+            return scraper.discover_document_catalog(page, modules, config, logger)
         finally:
             try:
                 context.close()
@@ -304,6 +383,138 @@ with st.expander("⚙️ Options avancées", expanded=False):
     timeout_ms = st.number_input("Timeout navigation / extraction (ms)", min_value=10000, max_value=120000, value=30000, step=5000)
     retries = st.number_input("Nombre de tentatives par opération", min_value=1, max_value=6, value=3, step=1)
 
+st.subheader("🧠 Optimiseur d'achats documentaires")
+st.caption(
+    "Le scraper explore d'abord le catalogue sans acheter. Il note chaque document selon les informations réellement utiles au pilotage, puis choisit la meilleure couverture par euro."
+)
+profile = st.selectbox(
+    "Profil de pilotage",
+    list(PROFILE_NEEDS.keys()),
+    index=0,
+    help="Le profil détermine les informations recherchées : trésorerie, rentabilité, BFR/TVA, ventes, concurrence, production, achats, RH et investissements.",
+)
+budget_docs = st.number_input(
+    "Budget maximum d'achat documentaire (€)",
+    min_value=0.0, value=50.0, step=5.0,
+    help="Le plan n'autorisera jamais un dépassement de ce montant. Un prix inconnu n'est jamais acheté automatiquement."
+)
+
+plan_col1, plan_col2 = st.columns([1, 1])
+with plan_col1:
+    build_plan = st.button(
+        "🔎 Analyser le catalogue et construire le plan",
+        type="secondary", use_container_width=True,
+        disabled=(not selected_modules or not sub_user or not sub_pass or not db_host or not db_name or not db_user),
+    )
+with plan_col2:
+    if st.session_state.get("document_catalog"):
+        st.success(f"Catalogue chargé : {len(st.session_state['document_catalog'])} document(s).")
+    else:
+        st.info("Aucun catalogue analysé pour le moment.")
+
+if build_plan:
+    try:
+        cfg_plan = make_config(sub_user, sub_pass, force=False)
+        with st.spinner("Analyse des documents disponibles (aucun achat)…"):
+            catalog = discover_document_catalog_live(cfg_plan, selected_modules)
+            catalog_rows = [c.to_dict() for c in catalog]
+            catalog_rows = enrich_catalog_with_db_coverage(cfg_plan, catalog_rows, selected_periods)
+            from document_strategy import make_candidate
+            catalog = [make_candidate(x.get("module_display", ""), x.get("module_key", ""), x) for x in catalog_rows]
+        plan = optimize_document_plan(catalog, profile=profile, budget=float(budget_docs))
+        st.session_state["document_catalog"] = [c.to_dict() for c in catalog]
+        st.session_state["document_plan"] = plan
+        st.session_state["document_plan_profile"] = profile
+        st.session_state["document_plan_budget"] = float(budget_docs)
+        st.rerun()
+    except Exception as exc:
+        st.error(f"Impossible d'analyser le catalogue documentaire : {exc}")
+
+plan = st.session_state.get("document_plan")
+if plan:
+    st.markdown("##### 📋 Plan recommandé")
+    cpl1, cpl2, cpl3 = st.columns(3)
+    cpl1.metric("Couverture des besoins", f"{plan.get('coverage_ratio', 0):.0%}")
+    cpl2.metric("Coût estimé", f"{plan.get('spent_estimate', 0):,.2f} €")
+    cpl3.metric("Budget restant", "—" if plan.get('remaining_budget') is None else f"{plan.get('remaining_budget', 0):,.2f} €")
+
+    selected_items = plan.get("selected", [])
+    owned_selected = [x for x in selected_items if x.get("owned") is True]
+    candidate_map = {(str(x.get("module_key")), str(x.get("title"))): x for x in selected_items if x.get("owned") is not True}
+    all_catalog = st.session_state.get("document_catalog", [])
+
+    catalog_options = [
+        (str(x.get("module_key")), str(x.get("title")))
+        for x in all_catalog
+        if float(x.get("score", 0) or 0) > 0 and x.get("owned") is not True
+    ]
+    default_keys = [k for k in candidate_map if k in catalog_options]
+    selected_keys = st.multiselect(
+        "Documents à retenir (tu peux ajuster la recommandation)",
+        options=catalog_options,
+        default=default_keys,
+        format_func=lambda x: f"{x[1]} — {x[0]}",
+        key="document_plan_selection",
+    )
+
+    chosen = list(owned_selected)
+    catalog_lookup = {(str(x.get("module_key")), str(x.get("title"))): x for x in all_catalog}
+    for key in selected_keys:
+        if key in catalog_lookup:
+            chosen.append(catalog_lookup[key])
+    # Déduplication tout en préservant l'ordre du plan.
+    dedup = {}
+    for item in chosen:
+        dedup[(str(item.get("module_key")), str(item.get("title")))] = item
+    chosen = list(dedup.values())
+    chosen_plan = dict(plan)
+    chosen_plan["selected"] = chosen
+    chosen_plan["spent_estimate"] = sum(float(x.get("price")) for x in chosen if x.get("price") is not None)
+    chosen_plan["remaining_budget"] = max(0.0, float(budget_docs) - chosen_plan["spent_estimate"])
+    st.session_state["document_plan"] = chosen_plan
+
+    if chosen:
+        rows = []
+        for x in chosen:
+            rows.append({
+                "Priorité": round(float(x.get("score", 0)), 1),
+                "Module": x.get("module_display", x.get("module_key", "")),
+                "Document": x.get("title", ""),
+                "Prix": None if x.get("price") is None else float(x.get("price")),
+                "Valeur/€": None if x.get("price") in (None, 0) else round(float(x.get("score", 0)) / float(x.get("price")), 3),
+                "Besoin couvert": ", ".join(PILOTAGE_NEEDS[n]["label"] for n in x.get("needs", []) if n in PILOTAGE_NEEDS),
+                "Informations utiles": ", ".join(x.get("facts", [])),
+                "Statut": ("Déjà dans Aiven" if x.get("db_covered") else ("Déjà accessible" if x.get("owned") is True else ("A acheter" if x.get("purchase_required") else "A vérifier"))),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    unknown = [x for x in chosen if x.get("price") is None]
+    if unknown:
+        st.warning(f"⚠️ {len(unknown)} document(s) du plan ont un prix inconnu. Ils seront bloqués en achat automatique.")
+
+    confirm_buy = st.checkbox(
+        "J'autorise le scraper à acheter réellement les documents retenus, dans la limite du budget affiché.",
+        value=False,
+        key="confirm_document_purchases",
+    )
+    st.caption("Aucun achat n'est exécuté pendant l'analyse. L'achat n'a lieu qu'au lancement avec cette confirmation.")
+
+    with st.expander("🔎 Pourquoi certains documents ne sont pas recommandés ?", expanded=False):
+        rejected = chosen_plan.get("rejected", [])
+        if rejected:
+            rej_rows = []
+            for x in rejected[:80]:
+                rej_rows.append({
+                    "Module": x.get("module_display", x.get("module_key", "")),
+                    "Document": x.get("title", ""),
+                    "Prix": x.get("price"),
+                    "Score": round(float(x.get("score", 0)), 1),
+                    "Motif": x.get("reason", "non prioritaire"),
+                })
+            st.dataframe(pd.DataFrame(rej_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucun document écarté par l'optimiseur.")
+
 if selected_periods and selected_modules and db_host and db_name and db_user:
     try:
         preview_cfg = make_config(sub_user or "", sub_pass or "", force=False)
@@ -321,7 +532,10 @@ with run_col1:
         f"🚀 Lancer le scraping · {len(selected_periods)} période(s) × {len(selected_modules)} module(s)",
         type="primary",
         use_container_width=True,
-        disabled=(not selected_periods or not selected_modules or not sub_user or not sub_pass or not db_host or not db_name or not db_user),
+        disabled=(
+            not selected_periods or not selected_modules or not sub_user or not sub_pass or not db_host or not db_name or not db_user
+            or (bool(plan) and bool(plan.get("selected")) and any(x.get("purchase_required") for x in plan.get("selected", [])) and not confirm_buy)
+        ),
     )
 with run_col2:
     st.info("Les données sont synchronisées dans Aiven au fur et à mesure des modules.")
@@ -336,7 +550,10 @@ if launch:
     logger.addHandler(ui_handler)
 
     try:
-        summary = scraper.lancer_robot_global(selected_periods, selected_modules, config, logger)
+        summary = scraper.lancer_robot_global(
+            selected_periods, selected_modules, config, logger,
+            document_plan=plan, autoriser_achats=bool(plan and confirm_buy)
+        )
         st.session_state["last_scraper_summary"] = summary
         errors = sum(len(r.get("errors", [])) for r in summary.get("module_results", []))
         if errors:
