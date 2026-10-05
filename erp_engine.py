@@ -1,34 +1,49 @@
+import os
 import streamlit as st
 import pandas as pd
 import json
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
+# Chargement optionnel du fichier .env pour le local
+load_dotenv()
+
 # ==========================================
-# 1. CONFIGURATION ET CONNEXION BDD (CLOUD)
+# 1. CONFIGURATION ET CONNEXION BDD (UNIVERSELLE)
 # ==========================================
 st.set_page_config(page_title="ERP Subakoua - Cockpit Stratégique", layout="wide", initial_sidebar_state="expanded")
 
 @st.cache_resource
 def init_connection():
     try:
-        user = st.secrets["mysql"]["user"]
-        password = st.secrets["mysql"]["password"]
-        host = st.secrets["mysql"]["host"]
-        database = st.secrets["mysql"]["database"]
-        port = st.secrets["mysql"].get("port", 16869) 
+        host = os.getenv("DB_HOST")
+        user = os.getenv("DB_USER")
+        password = os.getenv("DB_PASSWORD")
+        database = os.getenv("DB_NAME", "subakoua_erp")
+        port = int(os.getenv("DB_PORT", 16869))
+        
+        if not host and "mysql" in st.secrets:
+            host = st.secrets["mysql"]["host"]
+            user = st.secrets["mysql"]["user"]
+            password = st.secrets["mysql"]["password"]
+            database = st.secrets["mysql"].get("database", "subakoua_erp")
+            port = int(st.secrets["mysql"].get("port", 16869))
+            
+        if not host or not password:
+            st.error("🔌 Identifiants de base de données introuvables (Vérifiez le fichier .env ou les secrets Streamlit).")
+            return None
         
         engine = create_engine(
             f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}",
             connect_args={'ssl': {}},
-            pool_pre_ping=True, # Vérifie si la connexion est vivante avant d'envoyer une requête
-            pool_recycle=3600   # Évite les déconnexions silencieuses d'Aiven
+            pool_pre_ping=True, 
+            pool_recycle=3600   
         )
-        # Test rapide de la connexion
         with engine.connect() as conn:
             pass
         return engine
     except Exception as e:
-        st.error(f"🔌 Impossible de se connecter à la base de données Aiven. L'application est en mode dégradé. Erreur : {e}")
+        st.error(f"🔌 Impossible de se connecter à la base de données. Mode dégradé. Erreur : {e}")
         return None
 
 engine = init_connection()
@@ -46,13 +61,58 @@ def init_db_simu():
                 PRIMARY KEY (Token_Seed, Tour_ID)
             )
             """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Historique_Equipe (
+                Tour_ID INT PRIMARY KEY,
+                Stock_Neo3 FLOAT, Stock_Neo5 FLOAT, Stock_Neo7 FLOAT, 
+                Stock_Renforts FLOAT, Stock_Manchons FLOAT, Stock_Fermetures FLOAT, 
+                Tresorerie_Initiale FLOAT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Parc_Machines_Mensuel (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                Nb_Machines_Decoupe INT, Nb_Machines_Assemblage INT, Nb_Machines_Cond INT,
+                Acquisition_Faite INT, Acq_Decoupe INT, Acq_Assemblage INT, Acq_Cond INT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Ventes_Historique (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                Ventes_S3 INT, Ventes_I3 INT, Ventes_S5 INT, Ventes_I5 INT, Ventes_I7 INT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Decisions_Marketing (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                Prix_S3 FLOAT, Prix_I3 FLOAT, Prix_S5 FLOAT, Prix_I5 FLOAT, Prix_I7 FLOAT,
+                Budget_Marque FLOAT, Axe_Principal VARCHAR(100), Axe_Accessoire VARCHAR(100),
+                Pub_S3 FLOAT, Pub_I3 FLOAT, Pub_S5 FLOAT, Pub_I5 FLOAT, Pub_I7 FLOAT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Decisions_RH_Mensuel (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                Eff_Employes_Prod INT, Sal_Employes_Prod FLOAT, Eff_Cadres_Prod INT, Sal_Cadres_Prod FLOAT, Eff_Directeurs_Prod INT, Sal_Directeurs_Prod FLOAT,
+                Eff_Employes_Appro INT, Sal_Employes_Appro FLOAT, Eff_Cadres_Appro INT, Sal_Cadres_Appro FLOAT, Eff_Directeurs_Appro INT, Sal_Directeurs_Appro FLOAT,
+                Eff_Employes_Admin INT, Sal_Employes_Admin FLOAT, Eff_Cadres_Admin INT, Sal_Cadres_Admin FLOAT, Eff_Directeurs_Admin INT, Sal_Directeurs_Admin FLOAT
+            )
+            """))
+            conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS Finances_Mensuelles (
+                Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
+                CA_Net FLOAT, Achats_Matieres FLOAT, Autres_Charges_Externes FLOAT, Remuneration_Personnel FLOAT, Charges_Sociales FLOAT, 
+                Dotations_Amortissements FLOAT, Resultat_Net FLOAT, Total_Actif_Immobilise FLOAT, Total_Actif_Circulant FLOAT, 
+                Total_Capitaux_Propres FLOAT, Emprunts_Bancaires FLOAT, Disponibilites_Banque FLOAT
+            )
+            """))
     except Exception:
         pass
 
 init_db_simu()
 
 # ==========================================
-# 2. CHARGEMENT BDD & FONCTIONS UTILITAIRES
+# 2. CHARGEMENT BDD & FILETS DE SÉCURITÉ
 # ==========================================
 def parse_french_float(val):
     if isinstance(val, (int, float)): return float(val)
@@ -64,10 +124,18 @@ def parse_french_float(val):
 
 @st.cache_data
 def charger_nomenclature_bdd():
-    if engine is None: return {}
+    nom_secours = {
+        'Shorty 3': {'Néoprène 3': {'minimum': 1.0, 'normal': 1.1, 'maximum': 1.2}, 'Renforts': {'minimum': 10.0, 'normal': 12.0, 'maximum': 15.0}, 'Manchons': {'minimum': 2.0, 'normal': 2.0, 'maximum': 2.0}, 'Fermetures': {'minimum': 1.0, 'normal': 1.0, 'maximum': 1.0}},
+        'Integral 3': {'Néoprène 3': {'minimum': 1.5, 'normal': 1.6, 'maximum': 1.8}, 'Renforts': {'minimum': 15.0, 'normal': 18.0, 'maximum': 20.0}, 'Manchons': {'minimum': 4.0, 'normal': 4.0, 'maximum': 4.0}, 'Fermetures': {'minimum': 1.0, 'normal': 1.0, 'maximum': 1.0}},
+        'Shorty 5': {'Néoprène 5': {'minimum': 1.0, 'normal': 1.1, 'maximum': 1.2}, 'Renforts': {'minimum': 10.0, 'normal': 12.0, 'maximum': 15.0}, 'Manchons': {'minimum': 2.0, 'normal': 2.0, 'maximum': 2.0}, 'Fermetures': {'minimum': 1.0, 'normal': 1.0, 'maximum': 1.0}},
+        'Integral 5': {'Néoprène 5': {'minimum': 1.5, 'normal': 1.6, 'maximum': 1.8}, 'Renforts': {'minimum': 15.0, 'normal': 18.0, 'maximum': 20.0}, 'Manchons': {'minimum': 4.0, 'normal': 4.0, 'maximum': 4.0}, 'Fermetures': {'minimum': 1.0, 'normal': 1.0, 'maximum': 1.0}},
+        'Integral 7': {'Néoprène 7': {'minimum': 1.5, 'normal': 1.6, 'maximum': 1.8}, 'Renforts': {'minimum': 20.0, 'normal': 22.0, 'maximum': 25.0}, 'Manchons': {'minimum': 4.0, 'normal': 4.0, 'maximum': 4.0}, 'Fermetures': {'minimum': 1.0, 'normal': 1.0, 'maximum': 1.0}}
+    }
+    if engine is None: return nom_secours
     try:
         query = "SELECT produit, matiere, coeff_min, coeff_normal, coeff_max FROM Parametres_Nomenclature"
         df = pd.read_sql(query, engine)
+        if df.empty: return nom_secours
         nom_dict = {}
         for prod, group in df.groupby('produit'):
             nom_dict[prod] = {}
@@ -78,14 +146,22 @@ def charger_nomenclature_bdd():
                     'maximum': float(row['coeff_max'])
                 }
         return nom_dict
-    except Exception: return {}
+    except Exception: return nom_secours
 
 @st.cache_data
 def charger_temps_ateliers_bdd():
-    if engine is None: return {}
+    temps_secours = {
+        'Shorty 3': {'Decoupe': {'minimum': 2.0, 'normal': 2.0, 'maximum': 2.0}, 'Assemblage': {'minimum': 4.0, 'normal': 4.0, 'maximum': 4.0}, 'Cond': {'minimum': 1.0, 'normal': 1.0, 'maximum': 1.0}},
+        'Integral 3': {'Decoupe': {'minimum': 3.0, 'normal': 3.0, 'maximum': 3.0}, 'Assemblage': {'minimum': 6.0, 'normal': 6.0, 'maximum': 6.0}, 'Cond': {'minimum': 1.0, 'normal': 1.0, 'maximum': 1.0}},
+        'Shorty 5': {'Decoupe': {'minimum': 2.5, 'normal': 2.5, 'maximum': 2.5}, 'Assemblage': {'minimum': 5.0, 'normal': 5.0, 'maximum': 5.0}, 'Cond': {'minimum': 1.0, 'normal': 1.0, 'maximum': 1.0}},
+        'Integral 5': {'Decoupe': {'minimum': 3.5, 'normal': 3.5, 'maximum': 3.5}, 'Assemblage': {'minimum': 7.0, 'normal': 7.0, 'maximum': 7.0}, 'Cond': {'minimum': 1.0, 'normal': 1.0, 'maximum': 1.0}},
+        'Integral 7': {'Decoupe': {'minimum': 4.0, 'normal': 4.0, 'maximum': 4.0}, 'Assemblage': {'minimum': 8.0, 'normal': 8.0, 'maximum': 8.0}, 'Cond': {'minimum': 1.5, 'normal': 1.5, 'maximum': 1.5}}
+    }
+    if engine is None: return temps_secours
     try:
         query = "SELECT produit, atelier, temps_min, temps_normal, temps_max FROM Parametres_TempsAteliers"
         df = pd.read_sql(query, engine)
+        if df.empty: return temps_secours
         temps_dict = {}
         for prod, group in df.groupby('produit'):
             temps_dict[prod] = {}
@@ -96,7 +172,7 @@ def charger_temps_ateliers_bdd():
                     'maximum': float(row['temps_max'])
                 }
         return temps_dict
-    except Exception: return {}
+    except Exception: return temps_secours
 
 @st.cache_data
 def charger_stocks_securite_bdd():
@@ -404,9 +480,8 @@ if module_principal == "📊 État des lieux global":
             query_erp = f"SELECT module, contenu FROM erp_donnees WHERE periode = '{periode_db}' AND type_donnee = 'etat_actuel'"
             df_erp = pd.read_sql(query_erp, engine)
             modules_disponibles_dict = dict(zip(df_erp['module'], df_erp['contenu'])) if not df_erp.empty else {}
-        except Exception as e:
+        except Exception:
             modules_disponibles_dict = {}
-            st.error(f"Erreur de lecture : La donnée pour cette période est peut-être corrompue. Détail : {e}")
 
         if not modules_disponibles_dict:
             st.warning(f"Aucune donnée valide n'a été trouvée en base pour la période **{periode_db}**.")
@@ -472,15 +547,38 @@ elif module_principal == "📥 Saisie des Données Réelles":
 
     with tab_r2:
         with st.form("f_mach"):
-            st.subheader("Saisie du Parc Machines")
-            m_dec = st.number_input("Découpe", value=get_m('Nb_Machines_Decoupe', 8))
-            m_ass = st.number_input("Assemblage", value=get_m('Nb_Machines_Assemblage', 13))
-            m_cond = st.number_input("Conditionnement", value=get_m('Nb_Machines_Cond', 3))
-            if st.form_submit_button("Enregistrer les Machines"):
+            st.subheader("Saisie du Parc Machines & Immobilisations")
+            
+            st.markdown("**Parc total en fin de mois**")
+            m_dec = st.number_input("Total Découpe", value=get_m('Nb_Machines_Decoupe', 10), step=1)
+            m_ass = st.number_input("Total Assemblage", value=get_m('Nb_Machines_Assemblage', 16), step=1)
+            m_cond = st.number_input("Total Conditionnement", value=get_m('Nb_Machines_Cond', 4), step=1)
+            
+            st.divider()
+            st.markdown("##### 🏗️️ Acquisitions / Investissements du mois")
+            acquis_check = st.checkbox("Des machines ont-elles été acquises ce mois-ci ?", value=bool(get_m('Acquisition_Faite', 0)))
+            
+            acq_dec = st.number_input("Nombre de machines Découpe acquises", value=get_m('Acq_Decoupe', 0), step=1)
+            acq_ass = st.number_input("Nombre de machines Assemblage acquises", value=get_m('Acq_Assemblage', 0), step=1)
+            acq_cond = st.number_input("Nombre de machines Conditionnement acquises", value=get_m('Acq_Cond', 0), step=1)
+            
+            if st.form_submit_button("Enregistrer les Machines et Acquisitions"):
+                acquis_val = 1 if acquis_check else 0
                 if engine:
                     with engine.begin() as conn:
-                        conn.execute(text(f"INSERT INTO Parc_Machines_Mensuel (Tour_ID, Mois, Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond) VALUES ({tour_saisie}, '{mois_saisie}', {m_dec}, {m_ass}, {m_cond}) ON DUPLICATE KEY UPDATE Nb_Machines_Decoupe={m_dec}, Nb_Machines_Assemblage={m_ass}, Nb_Machines_Cond={m_cond}"))
-                    st.success("Machines enregistrées !")
+                        query_mach = f"""
+                            INSERT INTO Parc_Machines_Mensuel (
+                                Tour_ID, Mois, Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond, 
+                                Acquisition_Faite, Acq_Decoupe, Acq_Assemblage, Acq_Cond
+                            ) VALUES (
+                                {tour_saisie}, '{mois_saisie}', {m_dec}, {m_ass}, {m_cond}, 
+                                {acquis_val}, {acq_dec}, {acq_ass}, {acq_cond}
+                            ) ON DUPLICATE KEY UPDATE 
+                                Nb_Machines_Decoupe={m_dec}, Nb_Machines_Assemblage={m_ass}, Nb_Machines_Cond={m_cond},
+                                Acquisition_Faite={acquis_val}, Acq_Decoupe={acq_dec}, Acq_Assemblage={acq_ass}, Acq_Cond={acq_cond};
+                        """
+                        conn.execute(text(query_mach))
+                    st.success("✅ Parc machines et acquisitions enregistrés avec succès !")
 
     with tab_r3:
         with st.form("form_saisie_rh_reel"):
@@ -552,7 +650,7 @@ elif module_principal == "📥 Saisie des Données Réelles":
                 axe_p = st.text_input("Axe Principal", value=str(d_mkg.get('Axe_Principal', 'Durée de vie')))
                 axe_a = st.text_input("Axe Accessoire", value=str(d_mkg.get('Axe_Accessoire', 'Souplesse')))
             with c_m2:
-                st.markdown("**Budgets PLV (Publicité sur Lieu de Vente)**")
+                st.markdown("**Budgets PLV**")
                 plv_s3 = st.number_input("PLV S3", value=float(d_mkg.get('Pub_S3', 3250.0)))
                 plv_i3 = st.number_input("PLV I3", value=float(d_mkg.get('Pub_I3', 4200.0)))
                 plv_s5 = st.number_input("PLV S5", value=float(d_mkg.get('Pub_S5', 3400.0)))
@@ -578,11 +676,11 @@ elif module_principal == "📥 Saisie des Données Réelles":
         with st.form("form_saisie_ventes"):
             st.subheader("Saisie des Ventes Réelles")
             c_v1, c_v2, c_v3, c_v4, c_v5 = st.columns(5)
-            v_s3 = c_v1.number_input("Ventes Shorty 3 (u)", value=int(d_ventes.get('Ventes_S3', 0)), step=1)
-            v_i3 = c_v2.number_input("Ventes Integral 3 (u)", value=int(d_ventes.get('Ventes_I3', 0)), step=1)
-            v_s5 = c_v3.number_input("Ventes Shorty 5 (u)", value=int(d_ventes.get('Ventes_S5', 0)), step=1)
-            v_i5 = c_v4.number_input("Ventes Integral 5 (u)", value=int(d_ventes.get('Ventes_I5', 0)), step=1)
-            v_i7 = c_v5.number_input("Ventes Integral 7 (u)", value=int(d_ventes.get('Ventes_I7', 0)), step=1)
+            v_s3 = c_v1.number_input("Ventes S3 (u)", value=int(d_ventes.get('Ventes_S3', 0)), step=1)
+            v_i3 = c_v2.number_input("Ventes I3 (u)", value=int(d_ventes.get('Ventes_I3', 0)), step=1)
+            v_s5 = c_v3.number_input("Ventes S5 (u)", value=int(d_ventes.get('Ventes_S5', 0)), step=1)
+            v_i5 = c_v4.number_input("Ventes I5 (u)", value=int(d_ventes.get('Ventes_I5', 0)), step=1)
+            v_i7 = c_v5.number_input("Ventes I7 (u)", value=int(d_ventes.get('Ventes_I7', 0)), step=1)
             
             if st.form_submit_button("💾 Enregistrer les Volumes Vendus"):
                 if engine:
@@ -706,6 +804,38 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
     score_rh_prod = calculer_score_rh_prod_dynamique(donnees_rh, ratio_optimum_rh)
 
+    # Récupération du parc de machines actuel
+    nb_m_dec_actuel = get_m('Nb_Machines_Decoupe', 10)
+    nb_m_ass_actuel = get_m('Nb_Machines_Assemblage', 16)
+    nb_m_cond_actuel = get_m('Nb_Machines_Cond', 4)
+
+    # Configuration centralisée des investissements machines (en amont pour la finance)
+    st.markdown("##### 🛒 Investissements & Acquisitions de Machines (Global Simulateur)")
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        achat_dec = sim_number(f"Découpe (Actuel: {nb_m_dec_actuel})", "sim_ach_dec", 0, step=1)
+        prix_unit_dec = sim_number("Prix HT Découpe (€/u)", "sim_p_dec", 500000.0, step=1000.0)
+    with col_m2:
+        achat_ass = sim_number(f"Assemblage (Actuel: {nb_m_ass_actuel})", "sim_ach_ass", 0, step=1)
+        prix_unit_ass = sim_number("Prix HT Assemblage (€/u)", "sim_p_ass", 600000.0, step=1000.0)
+    with col_m3:
+        achat_cond = sim_number(f"Conditionnement (Actuel: {nb_m_cond_actuel})", "sim_ach_cond", 0, step=1)
+        prix_unit_cond = sim_number("Prix HT Conditionnement (€/u)", "sim_p_cond", 160000.0, step=1000.0)
+
+    cout_invest_machines = (achat_dec * prix_unit_dec) + (achat_ass * prix_unit_ass) + (achat_cond * prix_unit_cond)
+    nb_m_dec_sim = nb_m_dec_actuel + achat_dec
+    nb_m_ass_sim = nb_m_ass_actuel + achat_ass
+    nb_m_cond_sim = nb_m_cond_actuel + achat_cond
+
+    # Choix du mode de règlement pour la gestion des dettes fournisseurs
+    mode_financement_machines = sim_radio(
+        "Mode de règlement des nouvelles machines :", 
+        ["Comptant (Impact immédiat sur la trésorerie)", "Crédit Fournisseur / Dette d'investissement (Délai)"],
+        "sim_mode_reglement_mach",
+        "Comptant (Impact immédiat sur la trésorerie)",
+        horizontal=True
+    )
+
     tab_sim_marche, tab_sim_prod, tab_sim_appro, tab_sim_rh, tab_sim_fin = st.tabs([
         "🎯 1. Marketing & Ventes", "🏭 2. Production & Ateliers", "📦 3. MRP2 & Achats", "👥 4. Pilotage & Scores RH", "💶 5. Budget & Situation d'Entreprise"
     ])
@@ -759,23 +889,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
     with tab_sim_prod:
         st.subheader("2. Production & Ateliers")
-        
-        st.markdown("##### 🛒 Investissements (Achat de nouvelles machines)")
-        nb_m_dec_actuel = get_m('Nb_Machines_Decoupe', 8)
-        nb_m_ass_actuel = get_m('Nb_Machines_Assemblage', 13)
-        nb_m_cond_actuel = get_m('Nb_Machines_Cond', 3)
-        
-        col_m1, col_m2, col_m3 = st.columns(3)
-        achat_dec = sim_number(f"Achat Découpe (8 000€/u) - Actuel: {nb_m_dec_actuel}", "sim_ach_dec", 0)
-        achat_ass = sim_number(f"Achat Assemblage (8 000€/u) - Actuel: {nb_m_ass_actuel}", "sim_ach_ass", 0)
-        achat_cond = sim_number(f"Achat Conditionnement (6 000€/u) - Actuel: {nb_m_cond_actuel}", "sim_ach_cond", 0)
-        
-        nb_m_dec_sim = nb_m_dec_actuel + achat_dec
-        nb_m_ass_sim = nb_m_ass_actuel + achat_ass
-        nb_m_cond_sim = nb_m_cond_actuel + achat_cond
-        cout_invest_machines = (achat_dec * 8000) + (achat_ass * 8000) + (achat_cond * 6000)
-
-        st.divider()
+        st.info(f"Parc machine actif : Découpe ({nb_m_dec_sim}), Assemblage ({nb_m_ass_sim}), Conditionnement ({nb_m_cond_sim}).")
 
         c_levier1, c_levier2, c_levier3 = st.columns(3)
         with c_levier1:
@@ -800,7 +914,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         st.caption(f"⚙️ Barème actif nomenclature : **{regime_matiere.upper()}** | Barème temps : **{regime_temps.upper()}**")
         st.divider()
 
-        col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
         ord_s3 = sim_number("Prod S3", "ord_s3", 50)
         ord_i3 = sim_number("Prod I3", "ord_i3", 500)
         ord_s5 = sim_number("Prod S5", "ord_s5", 100)
@@ -867,276 +980,4 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         recos_achats = []
         cout_achats_total_sim = 0.0
 
-        for mat, b_brut in besoins_bruts.items():
-            s_ini = stocks_initiaux[mat]
-            secu = b_brut * (coeff_stock_secu / 10.0)
-            b_net = max(0.0, (b_brut + secu) - s_ini)
-
-            mrp_lignes.append({"Matière": mat, "Stock Initial": s_ini, "Besoins Prod": b_brut, "Stock Sécurité": secu, "👉 Besoin Net": b_net})
-
-            if b_net > 0:
-                opt = optimiser_fournisseur_matiere(mat, qualite_visee=qualite_strategique, critere=critere_arbitrage)
-                if opt:
-                    cout_ligne = b_net * opt['prix']
-                    cout_achats_total_sim += cout_ligne
-                    recos_achats.append({"Matière": mat, "Besoin Net": b_net, "Fournisseur": opt['fournisseur'], "Délai (mois)": opt['delai_mois'], "Prix Unitaire": opt['prix'], "Coût Total Estimé": cout_ligne})
-
-        st.markdown("##### 📊 Tableau MRP2")
-        st.dataframe(pd.DataFrame(mrp_lignes).set_index("Matière").style.format("{:.2f}"), use_container_width=True)
-        if recos_achats:
-            st.markdown("##### 💡 Recommandations d'Achats")
-            st.dataframe(pd.DataFrame(recos_achats).set_index("Matière").style.format({"Besoin Net": "{:.2f}", "Prix Unitaire": "{:.2f} €", "Coût Total Estimé": "{:,.2f} €"}), use_container_width=True)
-
-    with tab_sim_rh:
-        st.subheader("4. Pilotage RH Interconnecté (Pyramide Hiérarchique & Normes BDD)")
-        def calculer_indice_structure(ms_emp, ms_cad, ms_dir, cible):
-            return (ms_cad + ms_dir) / ms_emp / cible if ms_emp > 0 else 2.0
-
-        c_rh1, c_rh2, c_rh3 = st.columns(3)
-        with c_rh1:
-            st.markdown("##### 🏭 Production")
-            sim_ep_eff = sim_number("Nb Employés", 'sp_e', get_rh_e('Eff_Employes_Prod', 15))
-            sim_ep_sal = sim_number("Sal. Employé (€)", 'sp_es', get_rh_v('Sal_Employes_Prod', 2000.0), step=100.0)
-            sim_cp_eff = sim_number("Nb Cadres", 'sp_c', get_rh_e('Eff_Cadres_Prod', 3))
-            sim_cp_sal = sim_number("Sal. Cadre (€)", 'sp_cs', get_rh_v('Sal_Cadres_Prod', 3333.33), step=100.0)
-            sim_dp_eff = sim_number("Nb Directeurs", 'sp_d', get_rh_e('Eff_Directeurs_Prod', 1))
-            sim_dp_sal = sim_number("Sal. Directeur (€)", 'sp_ds', get_rh_v('Sal_Directeurs_Prod', 4500.0), step=100.0)
-            
-            tot_p = (sim_ep_eff * sim_ep_sal) + (sim_cp_eff * sim_cp_sal) + (sim_dp_eff * sim_dp_sal)
-            ind_p = calculer_indice_structure(sim_ep_eff*sim_ep_sal, sim_cp_eff*sim_cp_sal, sim_dp_eff*sim_dp_sal, ratio_optimum_rh)
-            couts_prod_sim = sum(ordres_prod_dict.values()) * 150.0
-            ms_satisfaisante_prod = charger_norme_ms("Normes_MS_Prod", couts_prod_sim)
-            
-            s_ms_p = max(0.0, min(100.0, 100.0 - (abs(tot_p - ms_satisfaisante_prod) / max(ms_satisfaisante_prod, 1.0)) * 100))
-            s_disp_p = max(0.0, 100.0 - abs(1.0 - ind_p) * 200.0)
-            st.metric("Score MS Prod", f"{(s_ms_p+s_disp_p)/2.0:.2f} / 100", delta=f"Norme MS: {ms_satisfaisante_prod:,.0f} €")
-
-        with c_rh2:
-            st.markdown("##### 📦 Approvisionnement")
-            sim_ea_eff = sim_number("Nb Employés", 'sa_e', get_rh_e('Eff_Employes_Appro', 7))
-            sim_ea_sal = sim_number("Sal. Employé (€)", 'sa_es', get_rh_v('Sal_Employes_Appro', 2000.0), step=100.0)
-            sim_ca_eff = sim_number("Nb Cadres", 'sa_c', get_rh_e('Eff_Cadres_Appro', 2))
-            sim_ca_sal = sim_number("Sal. Cadre (€)", 'sa_cs', get_rh_v('Sal_Cadres_Appro', 2250.0), step=100.0)
-            sim_da_eff = sim_number("Nb Directeurs", 'sa_d', get_rh_e('Eff_Directeurs_Appro', 1))
-            sim_da_sal = sim_number("Sal. Directeur (€)", 'sa_ds', get_rh_v('Sal_Directeurs_Appro', 2000.0), step=100.0)
-            
-            tot_a = (sim_ea_eff * sim_ea_sal) + (sim_ca_eff * sim_ca_sal) + (sim_da_eff * sim_da_sal)
-            ind_a = calculer_indice_structure(sim_ea_eff*sim_ea_sal, sim_ca_eff*sim_ca_sal, sim_da_eff*sim_da_sal, ratio_optimum_rh)
-            ms_satisfaisante_appro = charger_norme_ms("Normes_MS_Appro", cout_achats_total_sim)
-            
-            s_ms_a = max(0.0, min(100.0, 100.0 - (abs(tot_a - ms_satisfaisante_appro) / max(ms_satisfaisante_appro, 1.0)) * 100))
-            s_disp_a = max(0.0, 100.0 - abs(1.0 - ind_a) * 200.0)
-            st.metric("Score MS Appro", f"{(s_ms_a+s_disp_a)/2.0:.2f} / 100", delta=f"Norme MS: {ms_satisfaisante_appro:,.0f} €")
-
-        with c_rh3:
-            st.markdown("##### 💶 Administration")
-            sim_ef_eff = sim_number("Nb Employés", 'sf_e', get_rh_e('Eff_Employes_Admin', 7))
-            sim_ef_sal = sim_number("Sal. Employé (€)", 'sf_es', get_rh_v('Sal_Employes_Admin', 2000.0), step=100.0)
-            sim_cf_eff = sim_number("Nb Cadres", 'sf_c', get_rh_e('Eff_Cadres_Admin', 2))
-            sim_cf_sal = sim_number("Sal. Cadre (€)", 'sf_cs', get_rh_v('Sal_Cadres_Admin', 2200.0), step=100.0)
-            sim_df_eff = sim_number("Nb Directeurs", 'sf_d', get_rh_e('Eff_Directeurs_Admin', 1))
-            sim_df_sal = sim_number("Sal. Directeur (€)", 'sf_ds', get_rh_v('Sal_Directeurs_Admin', 2000.0), step=100.0)
-            
-            tot_f = (sim_ef_eff * sim_ef_sal) + (sim_cf_eff * sim_cf_sal) + (sim_df_eff * sim_df_sal)
-            ind_f = calculer_indice_structure(sim_ef_eff*sim_ef_sal, sim_cf_eff*sim_cf_sal, sim_df_eff*sim_df_sal, ratio_optimum_rh)
-            ms_satisfaisante_admin = charger_norme_ms("Normes_MS_Admin", ca_prev_sim)
-            
-            s_ms_f = max(0.0, min(100.0, 100.0 - (abs(tot_f - ms_satisfaisante_admin) / max(ms_satisfaisante_admin, 1.0)) * 100))
-            s_disp_f = max(0.0, 100.0 - abs(1.0 - ind_f) * 200.0)
-            st.metric("Score MS Admin", f"{(s_ms_f+s_disp_f)/2.0:.2f} / 100", delta=f"Norme MS: {ms_satisfaisante_admin:,.0f} €")
-
-    with tab_sim_fin:
-        st.subheader("5. Décisions Financières & Situation de l'Entreprise")
-        
-        donnees_fin_act = charger_donnees_fin_bdd(tour_id_precedent)
-        dotations_prev = float(donnees_fin_act.get('Dotations_Amortissements', 0.0))
-        dette_bancaire = float(donnees_fin_act.get('Emprunts_Bancaires', 0.0))
-        res_net_historique = float(donnees_fin_act.get('Resultat_Net', 0.0))
-        treso_initiale = float(donnees_fin_act.get('Disponibilites_Banque', get_h('Tresorerie_Initiale', 0.0)))
-        capitaux_propres = float(donnees_fin_act.get('Total_Capitaux_Propres', 0.0))
-        
-        report_a_nouveau = 0.0
-        resultat_exercice_cumule = res_net_historique
-        ca_cumule_historique = 0.0
-        res_avant_impot_cumule_historique = 0.0
-
-        try:
-            periode_m1_nom_ui = [k for k, v in tour_mapping_id.items() if v == tour_id_precedent][0]
-            periode_m1_db = mois_mapping[periode_m1_nom_ui]
-            
-            if engine is not None:
-                df_bq = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'banque_assurance' AND type_donnee = 'etat_actuel'", engine)
-                if not df_bq.empty:
-                    data_bq = json.loads(df_bq.iloc[0]['contenu'])
-                    if "Soldes bancaires" in data_bq:
-                        for acc in data_bq["Soldes bancaires"]:
-                            if "Solde final" in acc:
-                                treso_initiale = parse_french_float(acc["Solde final"])
-                
-                df_ec = pd.read_sql(f"SELECT contenu FROM erp_donnees WHERE periode = '{periode_m1_db}' AND module = 'expert_comptable' AND type_donnee = 'etat_actuel'", engine)
-                if not df_ec.empty:
-                    data_ec = json.loads(df_ec.iloc[0]['contenu'])
-                    
-                    tab_treso = data_ec.get("Synthèse", {}).get("Tableau de trésorerie méthode indirecte", {}).get("Tableau_1", [])
-                    for row in tab_treso:
-                        rub = str(row.get("Rubrique", "")).lower()
-                        if "résultat net" in rub: res_net_historique = parse_french_float(row.get("Montant (€)", res_net_historique))
-                        if "dotations aux amortissements" in rub: dotations_prev = parse_french_float(row.get("Montant (€)", dotations_prev))
-                        if "solde de trésorerie final" in rub or "solde de tresorerie final" in rub: treso_initiale = parse_french_float(row.get("Montant (€)", treso_initiale))
-                            
-                    tab_bilan = data_ec.get("Synthèse", {}).get("Bilan détaillé", {}).get("Tableau_1", [])
-                    for row in tab_bilan:
-                        pas = str(row.get("Passif", "")).lower()
-                        act = str(row.get("Actif", "")).lower()
-                        if "total capitaux propres" in pas: 
-                            val = parse_french_float(row.get("Exercice N", 0.0))
-                            if val != 0.0: capitaux_propres = val
-                        if "report à nouveau" in pas or "report a nouveau" in pas: 
-                            val = parse_french_float(row.get("Exercice N", 0.0))
-                            if val != 0.0: report_a_nouveau = val
-                        if "résultat de l'exercice" in pas or "resultat de l'exercice" in pas:
-                            val = parse_french_float(row.get("Exercice N", 0.0))
-                            if val != 0.0: resultat_exercice_cumule = val
-                        if act.strip() == "banque" or "disponibilités" in act:
-                            val = parse_french_float(row.get("Net exercice N", row.get("Exercice N", 0.0)))
-                            if val != 0.0 and treso_initiale == 0.0: treso_initiale = val
-
-                    def scan_cumuls_recur(node):
-                        ca, res = 0.0, 0.0
-                        if isinstance(node, dict):
-                            for k, v in node.items():
-                                if "CUMULÉ" in str(k).upper() or "CUMULE" in str(k).upper():
-                                    if isinstance(v, list) and len(v) > 0:
-                                        item = v[0]
-                                        if "Chiffre d'affaires" in item: ca = parse_french_float(item["Chiffre d'affaires"])
-                                        if "Résultat avant impôt" in item: res = parse_french_float(item["Résultat avant impôt"])
-                                        return ca, res
-                                sub_ca, sub_res = scan_cumuls_recur(v)
-                                if sub_ca != 0.0: ca = sub_ca
-                                if sub_res != 0.0: res = sub_res
-                        elif isinstance(node, list):
-                            for item in node:
-                                if isinstance(item, dict):
-                                    rub = str(item.get("Rubrique", item.get("Libellé", ""))).lower()
-                                    if "chiffre d'affaires" in rub:
-                                        for col_k, col_v in item.items():
-                                            if "cumul" in str(col_k).lower() or "exercice" in str(col_k).lower():
-                                                c_val = parse_french_float(col_v)
-                                                if c_val > ca: ca = c_val
-                                    if "résultat avant impôt" in rub or "resultat avant impot" in rub:
-                                        for col_k, col_v in item.items():
-                                            if "cumul" in str(col_k).lower() or "exercice" in str(col_k).lower():
-                                                r_val = parse_french_float(col_v)
-                                                if r_val != 0.0: res = r_val
-                        return ca, res
-
-                    c_json, r_json = scan_cumuls_recur(data_ec)
-                    if c_json != 0.0: ca_cumule_historique = c_json
-                    if r_json != 0.0: res_avant_impot_cumule_historique = r_json
-        except Exception:
-            pass
-
-        if ca_cumule_historique == 0.0 and tour_id_precedent > 1 and engine is not None:
-            try:
-                df_sql_hist = pd.read_sql(f"SELECT SUM(CA_Net) as sum_ca, SUM(Resultat_Net) as sum_res FROM Finances_Mensuelles WHERE Tour_ID <= {tour_id_precedent}", engine)
-                if not df_sql_hist.empty:
-                    if df_sql_hist['sum_ca'].iloc[0] is not None: ca_cumule_historique = float(df_sql_hist['sum_ca'].iloc[0])
-                    if df_sql_hist['sum_res'].iloc[0] is not None: res_avant_impot_cumule_historique = float(df_sql_hist['sum_res'].iloc[0])
-            except Exception: pass
-
-        st.markdown("##### 📁 Saisie des Décisions Administration / Finance")
-        tab_f1, tab_f2, tab_f3, tab_f4 = st.tabs(["Compte épargne", "Ordres de bourse", "Assurances", "Actionnariat"])
-        
-        with tab_f1:
-            solde_initial_ep = sim_number("Solde initial", "sim_solde_ep", 1500000.0, step=1000.0)
-            placement_ep = sim_number("Placement", "sim_plac_ep", 0.0, step=1000.0)
-            retrait_ep = sim_number("Retrait", "sim_retr_ep", 0.0, step=1000.0)
-            st.metric("Nouveau solde compte épargne", f"{solde_initial_ep + placement_ep - retrait_ep:,.2f} €")
-
-        with tab_f2:
-            c_b1, c_b2 = st.columns(2)
-            with c_b1:
-                st.markdown("**Actions**")
-                a_a1 = sim_number("Achat A1", "sim_ach_a1", 0)
-                v_a1 = sim_number("Vente A1", "sim_ven_a1", 0)
-                a_a2 = sim_number("Achat A2", "sim_ach_a2", 0)
-                v_a2 = sim_number("Vente A2", "sim_ven_a2", 0)
-                a_a3 = sim_number("Achat A3", "sim_ach_a3", 0)
-                v_a3 = sim_number("Vente A3", "sim_ven_a3", 0)
-            with c_b2:
-                st.markdown("**Obligations**")
-                a_o1 = sim_number("Achat O1", "sim_ach_o1", 0)
-                v_o1 = sim_number("Vente O1", "sim_ven_o1", 0)
-                a_o2 = sim_number("Achat O2", "sim_ach_o2", 0)
-                v_o2 = sim_number("Vente O2", "sim_ven_o2", 0)
-                a_o3 = sim_number("Achat O3", "sim_ach_o3", 0)
-                v_o3 = sim_number("Vente O3", "sim_ven_o3", 0)
-
-        with tab_f3:
-            ass_rc = sim_checkbox("Responsabilité civile (2 000,00 €)", "sim_ass_rc", True)
-            ass_db = sim_checkbox("Dommages aux biens (2 000,00 €)", "sim_ass_db", True)
-            ass_pe = sim_checkbox("Pertes d'exploitation (2 000,00 €)", "sim_ass_pe", True)
-            cout_assurances = (2000 if ass_rc else 0) + (2000 if ass_db else 0) + (2000 if ass_pe else 0)
-            if ass_rc and ass_db and ass_pe: cout_assurances -= 1000
-            st.metric("Total des contrats d'assurance", f"{cout_assurances:,.2f} €")
-
-        with tab_f4:
-            div_par_part = sim_number("Dividende versé par part (€)", "sim_div_part", 0.0, step=0.50)
-            total_div = div_par_part * 40000
-            st.metric("Total dividendes versés", f"{total_div:,.2f} €")
-
-        st.divider()
-        st.markdown("##### 💶 Synthèse Financière & Situation Globale de l'Entreprise")
-        
-        ms_prev_brute = tot_p + tot_a + tot_f
-        charges_sociales_prev = ms_prev_brute * 0.50 
-        budget_mkg_prev = budget_pub_marque + sum(budgets_p_dict.values())
-        dotations_totales = dotations_prev + (cout_invest_machines / 60)
-
-        total_charges = cout_achats_total_sim + ms_prev_brute + charges_sociales_prev + budget_mkg_prev + dotations_totales + cout_assurances
-        res_financier = (solde_initial_ep * (0.012 / 12)) - (dette_bancaire * 0.005)
-        res_avant_impot = (ca_prev_sim - total_charges) + res_financier
-        
-        deficit_cumule = report_a_nouveau + resultat_exercice_cumule
-        if deficit_cumule > 0: deficit_cumule = 0 
-        
-        assiette_fiscale = res_avant_impot + deficit_cumule
-        impot_is = assiette_fiscale * 0.25 if assiette_fiscale > 0 else 0.0
-        res_net_prev = res_avant_impot - impot_is
-
-        taux_profitabilite = (res_avant_impot / ca_prev_sim * 100) if ca_prev_sim > 0 else 0.0
-        taux_rentabilite = (res_avant_impot / capitaux_propres * 100) if capitaux_propres > 0 else 0.0
-
-        ca_cumule_sim = ca_cumule_historique + ca_prev_sim
-        res_avant_impot_cumule_sim = res_avant_impot_cumule_historique + res_avant_impot
-        taux_profitabilite_cumule = (res_avant_impot_cumule_sim / ca_cumule_sim * 100) if ca_cumule_sim > 0 else 0.0
-        taux_rentabilite_cumule = (res_avant_impot_cumule_sim / capitaux_propres * 100) if capitaux_propres > 0 else 0.0
-
-        achats_titres = (a_a1 * 224.58) + (a_a2 * 200.64) + (a_a3 * 163.84) + (a_o1 * 109.09) + (a_o2 * 114.89) + (a_o3 * 114.78)
-        ventes_titres = (v_a1 * 224.58) + (v_a2 * 200.64) + (v_a3 * 163.84) + (v_o1 * 109.09) + (v_o2 * 114.89) + (v_o3 * 114.78)
-        
-        variation_bfr = (ca_prev_sim - (ca_cumule_historique / max(1, tour_id_precedent - 1)) if tour_id_precedent > 1 else ca_prev_sim) * 0.15
-        
-        flux_financier = ventes_titres - achats_titres - placement_ep + retrait_ep - total_div
-        treso_finale = treso_initiale + (res_net_prev + dotations_totales - variation_bfr) + flux_financier - cout_invest_machines
-        
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            st.markdown("##### 📈 Produits & Charges")
-            st.metric("Chiffre d'Affaires Prévisionnel (CA)", f"{ca_prev_sim:,.2f} €")
-            st.metric("Total des Charges d'Exploitation", f"{total_charges:,.2f} €")
-            st.metric("Achat Nouvelles Machines", f"{-cout_invest_machines:,.2f} €")
-            
-        with col_f2:
-            st.markdown("##### 🎯 Résultat Prévisionnel")
-            if deficit_cumule < 0: st.caption(f"🛡️ *Bouclier fiscal actif : Pertes cumulées de {deficit_cumule:,.2f} €.*")
-            st.metric("Résultat Net Prévisionnel", f"{res_net_prev:,.2f} €", delta=f"{res_net_prev - res_net_historique:+,.2f} € vs M-1", delta_color="normal")
-            
-            st.markdown("##### 📊 Ratios de Performance")
-            c_rm1, c_rm2 = st.columns(2)
-            c_rm1.metric("Profitabilité Mensuelle", f"{taux_profitabilite:.2f} %")
-            c_rm2.metric("Rentabilité Mensuelle", f"{taux_rentabilite:.2f} %")
-
-            st.markdown("##### 🏦 Situation de l'Entreprise")
-            if treso_finale >= 0: st.info(f"Trésorerie Fin de Mois Estimée : **{treso_finale:,.2f} €**")
-            else: st.error(f"⚠️ DÉCOUVERT BANCAIRE ESTIMÉ : **{treso_finale:,.2f} €**")
+        for mat, b_br
