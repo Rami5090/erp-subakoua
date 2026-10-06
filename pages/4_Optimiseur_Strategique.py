@@ -114,8 +114,24 @@ if latest_real is None:
     st.error("Aucune période de ventes réellement observée n'est disponible.")
     st.stop()
 real_periods=[p for p in periods if period_index(p) <= period_index(latest_real)]
-default_anchor_idx=real_periods.index(latest_real) if latest_real in real_periods else len(real_periods)-1
-anchor=st.selectbox("Période d'ancrage / dernière période réelle", real_periods, index=default_anchor_idx, help="Le moteur interdit toute fuite vers des périodes futures lors de la calibration.")
+anchor_key = "optimiseur_anchor"
+last_auto_anchor_key = "optimiseur_last_auto_anchor"
+if (
+    st.session_state.get(last_auto_anchor_key) != latest_real
+    or st.session_state.get(anchor_key) not in real_periods
+):
+    st.session_state[anchor_key] = latest_real
+    st.session_state[last_auto_anchor_key] = latest_real
+anchor=st.selectbox(
+    "Période d'ancrage / dernière période réelle",
+    real_periods,
+    key=anchor_key,
+    help="Le dernier mois réellement observé est sélectionné automatiquement lorsqu'une nouvelle période réelle apparaît. Vous pouvez ensuite revenir manuellement à un mois antérieur pour un test.",
+)
+st.caption(
+    f"📡 Ventes réelles reconnues par le moteur : {len(sales)} période(s) · "
+    f"dernier mois réellement observé : **{latest_real}**"
+)
 own_company=int(st.number_input("N° entreprise",1,9,3,1))
 
 struct=extract_structural_seasonality(period_data,study_data=study_data)
