@@ -39,3 +39,32 @@ def test_read_allowed_gate():
     good = StudyFetchResult("study", "Année 1 - Juin", "0106", "url", True, {"studyId":"study", "readAllowed":True}, True, "")
     assert not bad.valid
     assert good.valid
+
+
+def test_player_context_accepts_session_object():
+    from subakoua_api import SubakouaAPIClient
+
+    class Resp:
+        ok = True
+        status = 200
+        def json(self):
+            return {
+                "session": {"id": "sess-real", "genericSessionId": "sess-generic", "currentPeriod": "0107"},
+                "user": {"id": "u1", "teamId": "team-real", "teamNumber": 3, "teamName": "Entreprise 3"},
+                "rankingAvailable": True,
+            }
+        def text(self):
+            return ""
+
+    class Req:
+        def get(self, url, timeout):
+            assert url.endswith('/api/users/player/context')
+            return Resp()
+
+    class Ctx:
+        request = Req()
+
+    c = SubakouaAPIClient(Ctx())
+    player = c.get_player_context()
+    assert player.session == "sess-real"
+    assert player.team_id == "team-real"

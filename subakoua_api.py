@@ -113,10 +113,20 @@ class SubakouaAPIClient:
         response = self.request.get(url, timeout=self.timeout)
         payload = self._json_response(response, url)
         user = payload.get("user") or {}
-        session = str(payload.get("session") or "").strip()
+        raw_session = payload.get("session")
+        # Les réponses Subakoua rencontrées varient selon le déploiement :
+        # session peut être une chaîne ou un objet {id, genericSessionId, ...}.
+        # Les routes /api/sessions/{id}/... exigent l'ID de session technique,
+        # jamais la représentation Python complète du dictionnaire.
+        if isinstance(raw_session, Mapping):
+            session = str(raw_session.get("id") or raw_session.get("sessionId") or "").strip()
+            if not session:
+                session = str(raw_session.get("genericSessionId") or "").strip()
+        else:
+            session = str(raw_session or "").strip()
         team_id = str(user.get("teamId") or "").strip()
         if not session or not team_id:
-            raise SubakouaAPIError("Contexte Subakoua incomplet : session ou teamId absent.")
+            raise SubakouaAPIError("Contexte Subakoua incomplet : session.id ou teamId absent.")
         self.player = PlayerContext(
             session=session,
             user_id=str(user.get("id") or ""),
