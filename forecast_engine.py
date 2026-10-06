@@ -582,6 +582,102 @@ def _latest_available_period(study_data: Mapping[str, Any], anchor_period: str |
             return eligible[-1]
     return periods[-1]
 
+def _rows_from_named_sections(obj: Any, names: Sequence[str]) -> list[dict[str, Any]]:
+    """Extrait récursivement les lignes de tableaux situées sous des sections nommées."""
+    targets = {_norm_key(n) for n in names}
+    found: list[dict[str, Any]] = []
+    def walk(node: Any, active: bool = False) -> None:
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                is_active = active or _norm_key(key) in targets
+                if is_active:
+                    found.extend(_table_rows(value))
+                if isinstance(value, (Mapping, list)):
+                    walk(value, is_active)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, active)
+    walk(obj)
+    return found
+
+
+def _competition_rows_from_any(obj: Any, own_company_number: int) -> list[dict[str, Any]]:
+    """Construit une vue concurrentielle robuste à partir du JSON legacy/API.
+
+    Le schéma Subakoua place les observations de concurrence dans différentes
+    rubriques (Performance commerciale, Facteurs clés, etc.). Cette fonction
+    fusionne les tables par numéro d'entreprise au lieu de dépendre d'un seul
+    emplacement ou d'un seul nom de tableau.
+    """
+    by_company: dict[int, dict[str, Any]] = {}
+
+    def ensure(c: int) -> dict[str, Any]:
+        return by_company.setdefault(c, {"entreprise": c, "ventes": None, "part_marche": None, "part_marche_valeur": None,
+                                         "prix": None, "qualite": None, "chiffre_affaires": None,
+                                         "publicite": None, "axe_1": None, "axe_2": None,
+                                         "is_own": c == own_company_number})
+
+    def walk(node: Any, section: str = "") -> None:
+        if isinstance(node, Mapping):
+            # Une ligne de concurrence : l'entreprise est la clé de rattachement.
+            if str(node.get("Entreprise", "")).isdigit() and 1 <= int(node["Entreprise"]) <= 9:
+                c = int(node["Entreprise"])
+                rec = ensure(c)
+                if "Ventes" in node:
+                    v = _num(node.get("Ventes")); rec["ventes"] = v if v is not None else rec["ventes"]
+                for k in ("en quantité (%)", "part de marché", "Part de marché"):
+                    if k in node:
+                        v = _num(node.get(k));
+                        if v is not None: rec["part_marche"] = v
+                if "en valeur (%)" in node:
+                    v = _num(node.get("en valeur (%)"));
+                    if v is not None: rec["part_marche_valeur"] = v
+                for k in ("Prix (€)", "Prix"):
+                    if k in node:
+                        v = _num(node.get(k));
+                        if v is not None: rec["prix"] = v
+                if "Qualité" in node:
+                    v = _num(node.get("Qualité"));
+                    if v is not None: rec["qualite"] = v
+                for k in ("Chiffre d'affaires (€)", "CA (€)", "Chiffre d’affaires (€)"):
+                    if k in node:
+                        v = _num(node.get(k));
+                        if v is not None: rec["chiffre_affaires"] = v
+                for k in ("Publicité de marque", "Publicité produit (€)", "Publicité", "publicité"):
+                    if k in node:
+                        v = _num(node.get(k));
+                        if v is not None: rec["publicite"] = v
+                if "Axe 1" in node: rec["axe_1"] = node.get("Axe 1")
+                if "Axe 2" in node: rec["axe_2"] = node.get("Axe 2")
+            for key, value in node.items():
+                walk(value, _norm_key(key) if isinstance(key, str) else section)
+        elif isinstance(node, list):
+            for value in node: walk(value, section)
+    walk(obj)
+    return list(by_company.values())
+
+
+def _extract_legacy_competition(period_data: Mapping[str, Mapping[str, Any]], period: str, own_company_number: int) -> list[dict[str, Any]]:
+    modules = period_data.get(period, {}) if isinstance(period_data, Mapping) else {}
+    candidates: list[Any] = []
+    veille = modules.get("veille_concurrentielle") if isinstance(modules, Mapping) else None
+    if veille is not None:
+        candidates.append(veille)
+    for module in modules.values() if isinstance(modules, Mapping) else []:
+        if isinstance(module, Mapping):
+            if _find_sections(module, ["Performance commerciale", "Facteurs clés", "Décisions marketing", "Évolution marketing"]):
+                candidates.append(module)
+    merged: dict[int, dict[str, Any]] = {}
+    for obj in candidates:
+        for row in _competition_rows_from_any(obj, own_company_number):
+            c = int(row["entreprise"])
+            rec = merged.setdefault(c, row.copy())
+            for key, value in row.items():
+                if value is not None and (rec.get(key) is None or rec.get(key) == ""):
+                    rec[key] = value
+    return list(merged.values())
+
+
 def extract_competitive_snapshot(
     period_data: Mapping[str, Mapping[str, Any]],
     own_company_number: int = 3,
@@ -592,62 +688,39 @@ def extract_competitive_snapshot(
     periods = ordered_periods(set(period_data) | set(study_data))
     if not periods:
         return {"period": None, "rows": [], "own": None, "total_market": None, "share": None}
-    period = anchor_period if anchor_period in periods else _latest_available_period({p: {} for p in periods}, anchor_period) or periods[-1]
+    period = anchor_period if anchor_period in periods else (_latest_available_period({p: {} for p in periods}, anchor_period) or periods[-1])
 
-    # Legacy : chercher la rubrique où qu'elle soit dans le module veille.
-    veille_modules = []
-    if period in period_data:
-        v = period_data.get(period, {}).get("veille_concurrentielle")
-        if v is not None:
-            veille_modules.append(v)
-        for module in period_data.get(period, {}).values():
-            if isinstance(module, Mapping) and module not in veille_modules:
-                sections = _find_sections(module, ["Performance commerciale"])
-                if sections:
-                    veille_modules.append(module)
-    veille = veille_modules[0] if veille_modules else {}
-    perf_sections = _find_sections(veille, ["Performance commerciale"])
-    perf = perf_sections[0] if perf_sections else {}
-    if not isinstance(perf, Mapping):
-        perf = {}
-    sales_rows = perf.get("Ventes", {}).get("Tableau_1", []) if isinstance(perf.get("Ventes"), Mapping) else []
-    share_rows = perf.get("Parts de marché", {}).get("Tableau_1", []) if isinstance(perf.get("Parts de marché"), Mapping) else []
-    shares = {int(r["Entreprise"]): r for r in share_rows if isinstance(r, Mapping) and str(r.get("Entreprise", "")).isdigit()}
-    prices: dict[int, float] = {}
-    quality: dict[int, float] = {}
-    for section in _find_sections(veille, ["Facteurs clés"]):
-        if not isinstance(section, Mapping):
-            continue
-        for subsection in section.values():
-            rows = subsection.get("Tableau_1", []) if isinstance(subsection, Mapping) else []
-            for r in rows if isinstance(rows, list) else []:
-                if not isinstance(r, Mapping) or not str(r.get("Entreprise", "")).isdigit():
-                    continue
-                c = int(r["Entreprise"])
-                for key in ("Prix (€)", "Prix"):
-                    v = _num(r.get(key))
-                    if v is not None:
-                        prices[c] = v
-                v = _num(r.get("Qualité"))
-                if v is not None:
-                    quality[c] = v
+    rows = _extract_legacy_competition(period_data, period, own_company_number)
+    # L'API peut aussi fournir la concurrence sous un payload d'étude. On cherche
+    # toute structure contenant des lignes avec un numéro d'entreprise.
+    if not rows:
+        api_periods = [p for p in ordered_periods(study_data) if period_index(p) <= period_index(period)]
+        for pp in reversed(api_periods):
+            for payload in (study_data.get(pp, {}) or {}).values():
+                if isinstance(payload, Mapping):
+                    api_rows = _competition_rows_from_any(payload, own_company_number)
+                    if api_rows:
+                        rows = api_rows
+                        period = pp
+                        break
+            if rows:
+                break
 
-    rows = []
-    for r in sales_rows if isinstance(sales_rows, list) else []:
-        if not isinstance(r, Mapping) or not str(r.get("Entreprise", "")).isdigit():
-            continue
-        c = int(r["Entreprise"])
-        rows.append({
-            "entreprise": c,
-            "ventes": _num(r.get("Ventes")) or 0.0,
-            "part_marche": _num(shares.get(c, {}).get("en quantité (%)")) or 0.0,
-            "part_marche_valeur": _num(shares.get(c, {}).get("en valeur (%)")) or 0.0,
-            "prix": prices.get(c),
-            "qualite": quality.get(c),
-            "is_own": c == own_company_number,
-        })
-    own = next((r for r in rows if r["is_own"]), None)
+    own = next((r for r in rows if r.get("is_own")), None)
+    total_market = None
+    share = None
+    if rows:
+        sales_vals = [float(r["ventes"]) for r in rows if r.get("ventes") is not None]
+        if sales_vals:
+            total_market = float(sum(sales_vals))
+        if own:
+            pct = _num(own.get("part_marche"))
+            if pct is not None:
+                share = pct / 100.0 if pct > 1 else pct
+        if share is None and own and total_market and (own.get("ventes") or 0) > 0:
+            share = float(own["ventes"]) / total_market
 
+    # Tableau de bord API : source privilégiée pour la PDM de l'entreprise.
     monitoring = _extract_api_monitoring(period, study_data)
     if monitoring is None and anchor_period in PERIOD_INDEX:
         eligible_api = [p for p in ordered_periods(study_data) if period_index(p) <= period_index(anchor_period)]
@@ -661,30 +734,19 @@ def extract_competitive_snapshot(
         own_sales = None
         if not own_sales_history.empty and period in set(own_sales_history["periode"]):
             rr = own_sales_history.loc[own_sales_history["periode"] == period].iloc[-1]
-            own_sales = float(sum(rr[p] for p in PRODUCTS))
-        own = {
-            "entreprise": own_company_number,
-            "ventes": own_sales or 0.0,
-            "part_marche": (monitoring.get("market_share") or 0.0) * 100,
-            "part_marche_valeur": 0.0,
-            "prix": None,
-            "qualite": None,
-            "is_own": True,
-        }
+            own_sales = float(sum(float(rr[p]) for p in PRODUCTS))
+        own = {"entreprise": own_company_number, "ventes": own_sales or 0.0,
+               "part_marche": (monitoring.get("market_share") or 0.0) * 100,
+               "part_marche_valeur": None, "prix": None, "qualite": None,
+               "chiffre_affaires": None, "publicite": None, "axe_1": None, "axe_2": None,
+               "is_own": True}
         rows.append(own)
-    total_market = sum(r["ventes"] for r in rows) if rows else None
-    share = None
-    if own:
-        own_share_pct = _num(own.get("part_marche"))
-        if own_share_pct is not None and own_share_pct > 0:
-            share = own_share_pct / 100.0
-        elif total_market and own.get("ventes", 0) > 0:
-            share = own["ventes"] / total_market
     if monitoring and monitoring.get("market_share") is not None:
-        share = monitoring["market_share"]
+        share = float(monitoring["market_share"])
     if total_market is None and own and share and own.get("ventes", 0) > 0:
-        total_market = own["ventes"] / share
-    return {"period": period, "rows": rows, "own": own, "total_market": total_market, "share": share}
+        total_market = float(own["ventes"]) / float(share)
+    share_scope = "overall_monitoring" if monitoring is not None and share is not None else ("competitive_segment" if share is not None else None)
+    return {"period": period, "rows": rows, "own": own, "total_market": total_market, "share": share, "share_scope": share_scope}
 
 def _damped_linear_forecast(values: np.ndarray, horizon: int) -> np.ndarray:
     if len(values) == 0:
@@ -803,8 +865,9 @@ def compute_market_forecast(
     if future.empty:
         return MarketForecastResult(anchor_period, (), (), (), (), target_share, (), (), competitive.get("share"), competitive.get("total_market"), "aucune prévision")
     own = future["Total unités"].astype(float).to_numpy()
-    current_market = competitive.get("total_market")
-    current_share = competitive.get("share")
+    share_scope = competitive.get("share_scope")
+    current_market = competitive.get("total_market") if share_scope == "overall_monitoring" else None
+    current_share = competitive.get("share") if share_scope == "overall_monitoring" else None
     actual = forecast_df.loc[forecast_df["statut"] == "Réel"].tail(1)
     own_current = float(actual["Total unités"].iloc[0]) if not actual.empty else 0.0
     if (current_market is None or current_market <= 0) and current_share and own_current > 0:
@@ -826,7 +889,7 @@ def compute_market_forecast(
         anchor_proxy = sum(float(pot or 0) * float(structural.get(PRODUCT_GROUP.get(product, 3), {}).get(mi, 1.0)) for product, pot in market_potential.items())
     if anchor_proxy and anchor_proxy > 0 and current_market and current_market > 0:
         market = proxies * (current_market / anchor_proxy)
-        method = "marché calibré sur volume observé + saisonnalité structurelle"
+        method = "marché global calibré sur PDM globale + saisonnalité structurelle"
     elif proxies.size and np.any(proxies > 0):
         market = proxies.copy()
         method = "proxy marché structurel non calibré"

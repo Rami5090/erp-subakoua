@@ -108,6 +108,8 @@ with st.expander("🔎 Diagnostic des sources", expanded=False):
     monitoring_ok = any(_study_payload_has_monitoring(study_data.get(p, {})) for p in study_data)
     st.write(f"Tableau de bord / PDM : {'disponible' if monitoring_ok else 'NON DISPONIBLE'}")
     st.write(f"Concurrence détaillée : {'disponible (' + str(len(competitive.get('rows') or [])) + ' entreprises)' if competitive.get('rows') else 'NON DISPONIBLE'}")
+    scope = competitive.get("share_scope")
+    st.write(f"Périmètre PDM : {'global (tableau de bord)' if scope == 'overall_monitoring' else 'segment concurrentiel' if scope == 'competitive_segment' else 'indéterminé'}")
     if not struct:
         st.warning("La saisonnalité structurelle n'est pas synchronisée. Avec un seul mois réel, le forecast sera une extrapolation de niveau et ne doit pas être interprété comme une prévision saisonnière fiable.")
     if not sales.empty:
@@ -135,7 +137,9 @@ c2.metric("Ventes actuelles", f"{current_sales:,.0f} u")
 c3.metric("Prix actuel", f"{metrics['own_price']:.2f} €" if metrics.get('own_price') is not None else "—")
 c4.metric("Concurrents observés", str(metrics.get("competitor_count", 0)))
 if current_share is None:
-    st.info("PDM actuelle indisponible : le tableau de bord gratuit (monitoring) ou une étude de parts de marché n'est pas encore synchronisé pour cette période. Aucune valeur de PDM n'est inventée.")
+    st.info("PDM globale indisponible : le tableau de bord (monitoring) n'est pas synchronisé pour cette période. Aucune valeur globale n'est inventée.")
+elif competitive.get("share_scope") == "competitive_segment":
+    st.info("Une part de marché concurrentielle par segment est disponible, mais elle n'est pas utilisée comme PDM globale de l'entreprise.")
 elif competitive.get("rows") and len(competitive.get("rows") or []) < 3:
     st.warning("La PDM est connue, mais la vue concurrentielle détaillée est incomplète. Pour piloter contre les 8 concurrents, il faut synchroniser au minimum l'étude de parts de marché et/ou de ventes concurrentes.")
 
@@ -184,6 +188,8 @@ st.subheader("🏁 Position concurrentielle")
 if competitive.get("rows"):
     dfc = pd.DataFrame(competitive["rows"]).sort_values(["part_marche", "ventes"], ascending=False)
     st.dataframe(dfc.round(2), width="stretch", hide_index=True)
+    if competitive.get("share_scope") == "competitive_segment":
+        st.caption("Les ventes/PDM de ce tableau correspondent au segment concurrentiel observé par Subakoua ; elles ne sont pas assimilées à la PDM globale de l'entreprise.")
 else:
     st.info("Les données concurrentielles détaillées ne sont pas disponibles dans les sources actuellement synchronisées.")
 

@@ -11,6 +11,7 @@ def current_competitive_metrics(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     qualities = [r["qualite"] for r in rows if r.get("qualite") is not None]
     return {
         "own_share": snapshot.get("share"),
+        "share_scope": snapshot.get("share_scope"),
         "own_price": own.get("prix") or None,
         "median_competitor_price": float(pd.Series(prices).median()) if prices else None,
         "own_quality": own.get("qualite") or None,
