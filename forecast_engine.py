@@ -191,16 +191,32 @@ def _find_rows_with_months(obj: Any) -> list[dict[str, Any]]:
 def _extract_market_potential_from_any(obj: Any) -> dict[str, float]:
     """Extrait le marché potentiel depuis une structure legacy imbriquée."""
     for candidate in _find_sections(obj, ["Prévision des ventes"]):
-        rows = candidate.get("Tableau_1", []) if isinstance(candidate, Mapping) else []
-        for row in rows if isinstance(rows, list) else []:
-            if isinstance(row, Mapping) and _norm_key(row.get("Colonne_0")) == "marche potentiel":
-                out = {}
-                for product in PRODUCTS:
-                    v = _num(row.get(product))
-                    if v is not None:
-                        out[product] = max(0.0, v)
-                if out:
-                    return out
+        def scan(node: Any) -> dict[str, float]:
+            if isinstance(node, list):
+                for row in node:
+                    if not isinstance(row, Mapping):
+                        continue
+                    labels = [_norm_key(row.get(k)) for k in ("Colonne_0", "Produit", "Libellé", "Indicateur", "Mois précédent") if row.get(k) is not None]
+                    if "marche potentiel" in labels or any("marche potentiel" in x for x in labels):
+                        out = {}
+                        for product in PRODUCTS:
+                            v = _num(row.get(product))
+                            if v is not None:
+                                out[product] = max(0.0, v)
+                        if out:
+                            return out
+                    nested = scan(row)
+                    if nested:
+                        return nested
+            elif isinstance(node, Mapping):
+                for value in node.values():
+                    nested = scan(value)
+                    if nested:
+                        return nested
+            return {}
+        out = scan(candidate)
+        if out:
+            return out
     return {}
 
 
@@ -318,19 +334,73 @@ def _extract_sales_from_api_payload(payload: Mapping[str, Any]) -> dict[str, flo
 
 
 def _recursive_find_product_rows(obj: Any) -> list[dict[str, Any]]:
-    """Cherche dans une extraction DOM éventuelle une table contenant les produits."""
+    """Fallback DOM : cherche des lignes produits, sans privilégier les stocks."""
     found: list[dict[str, Any]] = []
     if isinstance(obj, list):
         for item in obj:
             found.extend(_recursive_find_product_rows(item))
     elif isinstance(obj, dict):
-        keys = {str(k) for k in obj}
-        score = sum(1 for p in PRODUCTS if p in keys)
-        if score >= 2:
+        keys = {_norm_key(k) for k in obj}
+        score = sum(1 for p in PRODUCTS if p in obj)
+        has_sales_context = any(k in keys for k in (
+            "ventes", "ventes mensuelles", "sales", "monthly sales", "total ventes",
+            "ventes du mois", "ventes produits"
+        ))
+        if score >= 2 and has_sales_context:
             found.append(obj)
-        for v in obj.values():
-            found.extend(_recursive_find_product_rows(v))
+        for key, value in obj.items():
+            # Une table explicitement nommée "Ventes mensuelles" est une source prioritaire.
+            if _norm_key(key) in {"ventes mensuelles", "monthly sales", "ventes du mois"}:
+                found.extend(_recursive_find_product_rows(value))
+            elif isinstance(value, (Mapping, list)):
+                found.extend(_recursive_find_product_rows(value))
     return found
+
+
+def _extract_sales_from_legacy_any(obj: Any, target_period: str) -> dict[str, float]:
+    """Recherche explicite de la table Ventes mensuelles dans n'importe quel module legacy."""
+    targets = {"ventes mensuelles", "monthly sales", "ventes du mois"}
+
+    def walk(node: Any, in_sales_section: bool = False) -> dict[str, float]:
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                nk = _norm_key(key)
+                is_sales = in_sales_section or nk in targets
+                if is_sales:
+                    result = walk(value, True)
+                    if result:
+                        return result
+                else:
+                    result = walk(value, False)
+                    if result:
+                        return result
+
+            # Une fois dans la bonne section, chercher une ligne portant la période.
+            if in_sales_section:
+                for key, value in node.items():
+                    result = walk(value, True)
+                    if result:
+                        return result
+
+        elif isinstance(node, list):
+            for item in node:
+                if not isinstance(item, Mapping):
+                    continue
+                month_value = item.get("Mois", item.get("Month", item.get("periode", item.get("Période"))))
+                if month_value is not None and _norm_key(month_value) == _norm_key(target_period):
+                    out = {}
+                    for product in PRODUCTS:
+                        v = _num(item.get(product))
+                        if v is not None:
+                            out[product] = max(0.0, v)
+                    if len(out) >= 2:
+                        return out
+                result = walk(item, in_sales_section)
+                if result:
+                    return result
+        return {}
+
+    return walk(obj, False)
 
 
 def extract_own_sales_history(
@@ -349,26 +419,25 @@ def extract_own_sales_history(
             values = _extract_sales_from_api_payload(payload)
 
         if not values:
-            di = period_data.get(period, {}).get("donnees_internes", {})
-            marketing = di.get("Marketing", {}) if isinstance(di, dict) else {}
-            table = marketing.get("Ventes mensuelles", {}).get("Tableau_1", []) if isinstance(marketing, dict) else []
-            match = next((r for r in table if isinstance(r, dict) and str(r.get("Mois", "")).strip().lower() == period.lower()), None)
-            if match:
-                for product in products:
-                    v = _num(match.get(product))
-                    if v is not None:
-                        values[product] = max(0.0, v)
+            # Legacy : recherche explicite de la section "Ventes mensuelles"
+            # dans tout le contenu de la période. On évite ainsi de confondre
+            # une table de stocks (qui contient aussi les noms des produits)
+            # avec les ventes.
+            for module in period_data.get(period, {}).values():
+                values = _extract_sales_from_legacy_any(module, period)
+                if values:
+                    break
 
         if not values:
-            # Fallback très tolérant pour les anciennes extractions DOM :
-            # recherche récursive d'un objet contenant plusieurs noms de produits.
+            # Dernier secours : uniquement des objets où le contexte indique réellement
+            # des ventes. Aucune table générique de stocks ne doit être acceptée.
             for candidate in _recursive_find_product_rows(period_data.get(period, {})):
                 mapped = {}
                 for product in products:
                     v = _num(candidate.get(product))
                     if v is not None:
                         mapped[product] = max(0.0, v)
-                if len(mapped) >= 3:
+                if len(mapped) >= 2:
                     values = mapped
                     break
 

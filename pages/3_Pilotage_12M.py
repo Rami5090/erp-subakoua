@@ -4,6 +4,7 @@ import json
 import os
 import pandas as pd
 import streamlit as st
+import altair as alt
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 
@@ -134,11 +135,26 @@ c2.metric("Ventes actuelles", f"{current_sales:,.0f} u")
 c3.metric("Prix actuel", f"{metrics['own_price']:.2f} €" if metrics.get('own_price') is not None else "—")
 c4.metric("Concurrents observés", str(metrics.get("competitor_count", 0)))
 if current_share is None:
-    st.info("PDM actuelle indisponible dans les sources synchronisées. Le modèle ne l'invente pas ; la PDM prévisionnelle est présentée comme proxy si le marché potentiel structurel est disponible.")
+    st.info("PDM actuelle indisponible : le tableau de bord gratuit (monitoring) ou une étude de parts de marché n'est pas encore synchronisé pour cette période. Aucune valeur de PDM n'est inventée.")
+elif competitive.get("rows") and len(competitive.get("rows") or []) < 3:
+    st.warning("La PDM est connue, mais la vue concurrentielle détaillée est incomplète. Pour piloter contre les 8 concurrents, il faut synchroniser au minimum l'étude de parts de marché et/ou de ventes concurrentes.")
 
 st.subheader("📈 Trajectoire 12 mois")
-chart = forecast_df.set_index("periode")[PRODUCTS + ["Total unités"]]
-st.line_chart(chart, height=380)
+chart_df = forecast_df.sort_values("index").copy()
+chart_df["periode"] = pd.Categorical(chart_df["periode"], categories=chart_df["periode"].tolist(), ordered=True)
+chart_long = chart_df[["periode", *PRODUCTS, "Total unités"]].melt("periode", var_name="Série", value_name="Unités")
+chart = (
+    alt.Chart(chart_long)
+    .mark_line(point=True)
+    .encode(
+        x=alt.X("periode:N", sort=chart_df["periode"].tolist(), title="Période"),
+        y=alt.Y("Unités:Q", title="Unités"),
+        color=alt.Color("Série:N", title="Produit"),
+        tooltip=[alt.Tooltip("periode:N", title="Période"), alt.Tooltip("Série:N", title="Série"), alt.Tooltip("Unités:Q", format=",.0f")]
+    )
+    .properties(height=380)
+)
+st.altair_chart(chart, use_container_width=True)
 st.dataframe(forecast_df[["periode", "statut", *PRODUCTS, "Total unités"]].round(1), width="stretch", hide_index=True)
 
 st.subheader("🎯 Part de marché : trajectoire de base vs cible")
