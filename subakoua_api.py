@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -41,6 +41,7 @@ class StudyAvailability:
     price: float
     bought_by_team: bool
     period_code: str
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class SubakouaAPIClient:
         self.dashboard_url = (dashboard_url or f"{self.base_url}/companies").rstrip("/")
         self.timeout = timeout_ms
         self.player: PlayerContext | None = None
+        self._catalog_rows: dict[tuple[str, str], dict[str, Any]] = {}
 
     @staticmethod
     def period_code(period: str) -> str:
@@ -163,11 +165,14 @@ class SubakouaAPIClient:
                 sid = str(row.get("studyId") or "").strip()
                 if not sid:
                     continue
+                raw_row = dict(row)
+                self._catalog_rows[(period_code, sid)] = raw_row
                 out[sid] = StudyAvailability(
                     study_id=sid,
                     price=float(row.get("price") or 0),
                     bought_by_team=bool(row.get("boughtByTeam", False)),
                     period_code=period_code,
+                    raw=raw_row,
                 )
         return list(out.values())
 
@@ -378,17 +383,136 @@ class SubakouaAPIClient:
                 continue
         return False
 
-    def _search_global_study(self, page: Page, study_id: str, label: str) -> bool:
-        """Ouvre une étude via la recherche globale réelle du portail.
+    def _candidate_urls_from_row(self, row: Mapping[str, Any] | None) -> list[str]:
+        """Extrait récursivement les éventuelles routes/URLs présentes dans une ligne catalogue."""
+        if not isinstance(row, Mapping):
+            return []
+        found: list[str] = []
+        keys_hint = ("url", "href", "link", "route", "path", "uri", "router", "location", "navigation")
 
-        Le résultat de recherche est dynamique et peut être rendu hors du
-        composant ``okw-main-header-filtered-studies-list``. On déclenche donc
-        une vraie saisie clavier, attend le rendu Angular, puis cherche la cible
-        dans tout le DOM visible. Plusieurs variantes du titre servent de
-        fallback lorsque le libellé contient de la ponctuation ou une apostrophe.
-        """
+        def walk(value: Any, key: str = "") -> None:
+            if isinstance(value, Mapping):
+                for k, v in value.items():
+                    walk(v, str(k).lower())
+            elif isinstance(value, (list, tuple)):
+                for v in value:
+                    walk(v, key)
+            elif isinstance(value, str):
+                v = value.strip()
+                low = v.lower()
+                hinted = any(h in key for h in keys_hint)
+                if hinted or "/companies/partners/" in low or ("monthly" in low and "/companies/" in low):
+                    if low.startswith(("/", "http://", "https://")):
+                        found.append(v)
+
+        walk(row)
+        out: list[str] = []
+        for v in found:
+            full = urljoin(self.base_url + "/", v.lstrip("/")) if v.startswith("/") else v
+            if self.base_url in full and full not in out:
+                out.append(full)
+        return out
+
+    def _navigate_to_study_url_candidates(self, page: Page, study_id: str, period: str) -> bool:
+        """Essaie les URLs exposées par le catalogue live, sans dépendre des cartes UI."""
+        period_code = self.period_code(period)
+        row = self._catalog_rows.get((period_code, study_id))
+        if row is None:
+            try:
+                self.catalog(period, [study_id])
+                row = self._catalog_rows.get((period_code, study_id))
+            except Exception as exc:
+                self.logger.debug("Route catalogue indisponible pour %s : %s", study_id, exc)
+                row = None
+        candidates = self._candidate_urls_from_row(row)
+        for url in candidates:
+            try:
+                self.logger.info("Achat UI | route catalogue détectée : %s", url)
+                page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
+                page.wait_for_timeout(1400)
+                if self._click_buy_visible(page):
+                    return True
+            except Exception as exc:
+                self.logger.debug("Route catalogue non exploitable %s : %s", url, exc)
+        return False
+
+    def _click_search_result_dom(self, page: Page, label: str, study_id: str) -> bool:
+        """Clique ou ouvre une cible de résultat trouvée par inspection DOM directe."""
+        label_norm = self._norm_ui_text(label)
+        token_list = self._label_tokens(label)
+        token_expr = " ".join(token_list[:4])
+        try:
+            result = page.evaluate(r"""
+            ({label, tokens, studyId}) => {
+                const norm = (v) => (v || '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+                const visible = (el) => {
+                    const s = getComputedStyle(el); const r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+                };
+                const nodes = Array.from(document.querySelectorAll('*')).filter(visible);
+                const scored = [];
+                for (const el of nodes) {
+                    const txt = norm(el.innerText || el.textContent || '');
+                    if (!txt) continue;
+                    const attrs = [
+                        el.getAttribute('href'), el.getAttribute('routerlink'), el.getAttribute('ng-reflect-router-link'),
+                        el.getAttribute('data-study-id'), el.getAttribute('data-studyid'), el.getAttribute('data-id'),
+                        el.getAttribute('value')
+                    ].filter(Boolean).join(' ').toLocaleLowerCase();
+                    let score = 0;
+                    if (studyId && attrs.includes(studyId.toLocaleLowerCase())) score += 100;
+                    if (label && txt.includes(label)) score += 90;
+                    const hits = tokens.filter(t => txt.includes(t)).length;
+                    if (tokens.length && hits >= Math.max(2, Math.ceil(tokens.length * 0.6))) score += 50 + hits;
+                    if (!score) continue;
+                    const target = el.closest('a,button,[role="link"],[role="button"],[routerlink],[ng-reflect-router-link]') || el;
+                    const href = target.getAttribute('href') || target.getAttribute('routerlink') || target.getAttribute('ng-reflect-router-link') || '';
+                    scored.push({score, href, tag: target.tagName, text:(target.innerText||target.textContent||'').trim().slice(0,300)});
+                }
+                scored.sort((a,b)=>b.score-a.score);
+                return scored.slice(0,15);
+            }
+            """, {"label": label_norm, "tokens": token_list[:5], "studyId": study_id})
+        except Exception as exc:
+            self.logger.debug("Inspection DOM recherche échouée pour %s : %s", study_id, exc)
+            return False
+
+        for cand in result or []:
+            href = str(cand.get("href") or "").strip()
+            self.logger.debug("Achat UI | candidat recherche : %s", cand)
+            try:
+                if href and href not in ("#", "javascript:void(0)"):
+                    full = urljoin(self.base_url + "/", href.lstrip("/"))
+                    if self.base_url in full:
+                        page.goto(full, wait_until="domcontentloaded", timeout=self.timeout)
+                        page.wait_for_timeout(1000)
+                        if self._click_buy_visible(page):
+                            return True
+                else:
+                    text_loc = page.get_by_text(re.compile(re.escape(label), re.I) if label else re.compile(re.escape(token_expr), re.I)).last
+                    if text_loc.is_visible():
+                        text_loc.click(timeout=5000, force=True)
+                        page.wait_for_timeout(1000)
+                        if self._click_buy_visible(page):
+                            return True
+            except Exception:
+                continue
+        return False
+
+    def _search_global_study(self, page: Page, study_id: str, label: str) -> bool:
+        """Recherche une étude via le moteur global Angular, avec fallbacks DOM et navigation directe."""
         queries: list[str] = []
-        for q in (label, " ".join(self._label_tokens(label)[:5]), study_id):
+        raw = " ".join(str(label or "").split())
+        tokens = self._label_tokens(raw)
+        variants = [
+            raw,
+            " ".join(tokens[:5]),
+            " ".join(tokens[:3]),
+            " ".join(tokens[-3:]),
+            tokens[0] if tokens else "",
+            study_id,
+        ]
+        for q in variants:
             q = " ".join(str(q or "").split())
             if q and q not in queries:
                 queries.append(q)
@@ -396,208 +520,77 @@ class SubakouaAPIClient:
         inp = page.locator("input#search-query").first
         try:
             inp.wait_for(state="visible", timeout=7000)
-        except Exception:
+        except Exception as exc:
+            self.logger.debug("Champ recherche globale indisponible : %s", exc)
             return False
 
         for query in queries:
             try:
+                self.logger.debug("Achat UI | requête globale : %s", query)
                 inp.click()
-                inp.press("Control+A")
-                # `fill()` ne suffit pas sur certaines versions Angular : le
-                # composant du portail écoute également les événements clavier.
-                inp.press_sequentially(query, delay=25)
-                page.wait_for_timeout(1400)
+                inp.fill("")
+                # Déclenche les événements Angular même si le contrôle est un composant custom.
+                inp.dispatch_event("input")
+                inp.fill(query)
+                inp.dispatch_event("input")
+                inp.press("End")
+                page.wait_for_timeout(2200)
 
-                # Le résultat peut apparaître dans le composant dédié ou dans un
-                # overlay global ; dans les deux cas, on tente une cible exacte.
-                if label:
+                # Attendre plus longtemps sur le réseau distant avant d'abandonner la requête.
+                deadline = time.time() + 6
+                while time.time() < deadline:
+                    if self._click_search_result_dom(page, label, study_id):
+                        return True
                     try:
-                        page.wait_for_function(
-                            "([q]) => document.body && document.body.innerText.toLocaleLowerCase().includes(q.toLocaleLowerCase())",
-                            arg=[label],
-                            timeout=3500,
-                        )
+                        container = page.locator("okw-main-header-filtered-studies-list:visible").first
+                        if container.count() > 0 and container.inner_text().strip():
+                            if self._click_search_result_candidate(page, label, study_id):
+                                return True
                     except Exception:
                         pass
+                    if self._click_buy_visible(page):
+                        return True
+                    page.wait_for_timeout(500)
 
-                # 1) Composant de recherche dédié.
-                container = page.locator("okw-main-header-filtered-studies-list:visible").first
-                try:
-                    if container.count() > 0:
-                        exactish = container.get_by_text(label, exact=False) if label else container.get_by_text(query, exact=False)
-                        count = min(exactish.count(), 30)
-                        for i in range(count):
-                            node = exactish.nth(i)
-                            if not node.is_visible():
-                                continue
-                            ancestor = node
-                            for _ in range(10):
-                                try:
-                                    tag = ancestor.evaluate(
-                                        "el => ({tag: el.tagName, role: el.getAttribute('role'), href: el.getAttribute('href'), router: el.getAttribute('routerlink')})"
-                                    )
-                                    if tag and (tag.get("tag") in ("A", "BUTTON") or tag.get("role") in ("link", "button") or tag.get("href") or tag.get("router")):
-                                        ancestor.click(timeout=5000)
-                                        page.wait_for_timeout(1000)
-                                        if self._click_buy_visible(page):
-                                            return True
-                                        break
-                                except Exception:
-                                    pass
-                                ancestor = ancestor.locator("xpath=..")
-                except Exception:
-                    pass
-
-                # 2) Toute cible visible de la page, y compris les overlays.
-                if self._click_search_result_candidate(page, label, study_id):
-                    return True
-
-                # 3) Certains composants gèrent encore la sélection au clavier.
+                # Fallback clavier : certains composants matérialisent le résultat sans lien DOM.
                 try:
                     inp.press("ArrowDown")
                     page.wait_for_timeout(250)
                     inp.press("Enter")
-                    page.wait_for_timeout(1200)
+                    page.wait_for_timeout(1600)
                     if self._click_buy_visible(page):
                         return True
                 except Exception:
                     pass
 
-                # Efface avant la variante suivante.
                 try:
                     inp.click()
                     inp.press("Control+A")
                     inp.press("Backspace")
-                    page.wait_for_timeout(250)
+                    page.wait_for_timeout(300)
                 except Exception:
                     pass
-            except Exception:
+            except Exception as exc:
+                self.logger.debug("Recherche globale échouée pour %s : %s", query, exc)
                 continue
         return False
 
-    def _open_study(self, page: Page, study_id: str, label: str) -> None:
-        """Ouvre une étude et son bouton Acheter.
-
-        Le catalogue API peut connaître une étude alors que son libellé n'est pas
-        présent comme texte exact dans le DOM (cartes Angular, traduction,
-        titre tronqué, etc.). On cherche donc d'abord l'identifiant dans les
-        attributs/href, puis le libellé de façon souple, puis une recherche UI.
-        """
-        # 0) Voie prioritaire observée dans l'audit : recherche globale.
+    def _open_study(self, page: Page, study_id: str, label: str, period: str | None = None) -> None:
+        """Ouvre une étude et son bouton Acheter sans dépendre d'une fausse zone « Études »."""
+        if period and self._navigate_to_study_url_candidates(page, study_id, period):
+            return
         if self._search_global_study(page, study_id, label):
-            if self._click_buy_visible(page):
-                return
+            return
 
-        # 1) Cas le plus fiable : l'identifiant est présent dans href/data-* du DOM.
-        id_selectors = [
-            f'[data-study-id="{study_id}"]',
-            f'[data-studyid="{study_id}"]',
-            f'[data-id="{study_id}"]',
-            f'a[href*="{study_id}"]',
-            f'button[value="{study_id}"]',
-            f'[id*="{study_id}"]',
-        ]
-        for selector in id_selectors:
-            try:
-                loc = page.locator(selector)
-                count = min(loc.count(), 20)
-            except Exception:
-                count = 0
-            for i in range(count):
-                item = loc.nth(i)
-                try:
-                    if not item.is_visible():
-                        continue
-                    # Le bouton peut être directement sur la carte.
-                    if self._click_buy_visible(page, item):
-                        return
-                    item.click(timeout=5000)
-                    page.wait_for_timeout(700)
-                    if self._click_buy_visible(page):
-                        return
-                except Exception:
-                    continue
-
-        # 2) Libellé souple (exact=False), puis remontée de plusieurs niveaux
-        # pour couvrir les structures Angular profondément imbriquées.
-        item = self._visible_text_locator(page, label)
-        if item is not None:
-            ancestor = item
-            for _ in range(12):
-                try:
-                    if self._click_buy_visible(page, ancestor):
-                        return
-                except Exception:
-                    pass
-                try:
-                    ancestor.click(timeout=5000)
-                    page.wait_for_timeout(700)
-                    if self._click_buy_visible(page):
-                        return
-                except Exception:
-                    pass
-                ancestor = ancestor.locator("xpath=..")
-
-        # 3) Recherche éventuelle dans un champ de recherche du catalogue.
-        if label:
-            try:
-                inputs = page.locator("input")
-                for i in range(min(inputs.count(), 30)):
-                    inp = inputs.nth(i)
-                    if not inp.is_visible():
-                        continue
-                    meta = " ".join([
-                        str(inp.get_attribute("placeholder") or ""),
-                        str(inp.get_attribute("aria-label") or ""),
-                        str(inp.get_attribute("name") or ""),
-                    ]).lower()
-                    if any(token in meta for token in ("recherch", "search", "étude", "etude", "document")):
-                        inp.fill(label)
-                        page.wait_for_timeout(900)
-                        item = self._visible_text_locator(page, label)
-                        if item is not None:
-                            ancestor = item
-                            for _ in range(12):
-                                if self._click_buy_visible(page, ancestor):
-                                    return
-                                try:
-                                    ancestor.click(timeout=5000)
-                                    page.wait_for_timeout(600)
-                                    if self._click_buy_visible(page):
-                                        return
-                                except Exception:
-                                    pass
-                                ancestor = ancestor.locator("xpath=..")
-            except Exception:
-                pass
-
-        # 4) Dernier essai : tout élément visible contenant l'identifiant ou le titre.
-        try:
-            all_clickables = page.locator("a, button, [role='button'], [role='link']")
-            for i in range(min(all_clickables.count(), 200)):
-                node = all_clickables.nth(i)
-                if not node.is_visible():
-                    continue
-                text = " ".join(node.inner_text().split()).lower()
-                attrs = " ".join([
-                    str(node.get_attribute("href") or ""),
-                    str(node.get_attribute("data-study-id") or ""),
-                    str(node.get_attribute("data-id") or ""),
-                ]).lower()
-                if study_id.lower() in attrs or (label and label.lower() in text):
-                    try:
-                        node.click(timeout=5000)
-                        page.wait_for_timeout(700)
-                        if self._click_buy_visible(page):
-                            return
-                    except Exception:
-                        continue
-        except Exception:
-            pass
+        # Dernier recours : DOM courant (par exemple si la recherche a déjà navigué).
+        if self._click_buy_visible(page):
+            return
+        if self._click_search_result_candidate(page, label, study_id):
+            return
 
         raise SubakouaAPIError(
             f"Étude introuvable dans l'interface : {label or study_id} ({study_id}). "
-            "Le catalogue API la connaît mais aucun lien/carte exploitable n'a été trouvé."
+            "La recherche globale n'a pas exposé de cible navigable."
         )
 
     def _find_visible_purchase_dialog(self, page: Page):
@@ -703,12 +696,10 @@ class SubakouaAPIClient:
         self.logger.info("Achat UI | recherche de l'étude : %s", study_id)
 
         try:
-            self._open_study(page, study_id, label)
-        except SubakouaAPIError:
-            self.logger.info("Achat UI | recherche primaire échouée, ouverture de la zone Études/Documents")
-            self._open_study_area(page)
-            self._select_purchase_period(page, wanted_period)
-            self._open_study(page, study_id, label)
+            self._open_study(page, study_id, label, wanted_period)
+        except Exception as exc:
+            self.logger.error("Achat UI | ouverture étude échouée | étude=%s | %s", study_id, exc)
+            raise
 
         self.logger.info("Achat UI | bouton Acheter exécuté, attente de la confirmation")
         # Attente robuste : on cherche le dialog réel et, à défaut, le texte de la demande.
