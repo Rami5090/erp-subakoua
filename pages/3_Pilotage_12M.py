@@ -93,7 +93,7 @@ with st.expander("🔎 Diagnostic des sources", expanded=False):
     st.write(f"Saisonnalité structurelle : {'disponible' if struct else 'non disponible'}")
     st.write(f"Marché potentiel : {'disponible' if potential else 'non disponible'}")
     if not sales.empty:
-        st.dataframe(sales[["periode", *PRODUCTS]].tail(12).round(1), use_container_width=True, hide_index=True)
+        st.dataframe(sales[["periode", *PRODUCTS]].tail(12).round(1), width="stretch", hide_index=True)
 
 forecast_df, results = build_12m_forecast(sales, struct, anchor)
 if forecast_df.empty:
@@ -105,14 +105,19 @@ market = compute_market_forecast(forecast_df, struct, potential, competitive, ta
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("PDM actuelle", f"{current_share * 100:.2f} %" if current_share is not None else "—")
-c2.metric("Ventes actuelles", f"{competitive.get('own', {}).get('ventes', 0):,.0f} u")
+own_snapshot = competitive.get("own") or {}
+current_sales = own_snapshot.get("ventes")
+if current_sales is None:
+    actual_rows = forecast_df.loc[forecast_df["statut"] == "Réel"].tail(1)
+    current_sales = float(actual_rows["Total unités"].iloc[0]) if not actual_rows.empty else 0.0
+c2.metric("Ventes actuelles", f"{current_sales:,.0f} u")
 c3.metric("Prix actuel", f"{metrics['own_price']:.2f} €" if metrics.get('own_price') is not None else "—")
 c4.metric("Concurrents observés", str(metrics.get("competitor_count", 0)))
 
 st.subheader("📈 Trajectoire 12 mois")
 chart = forecast_df.set_index("periode")[PRODUCTS + ["Total unités"]]
 st.line_chart(chart, height=380)
-st.dataframe(forecast_df[["periode", "statut", *PRODUCTS, "Total unités"]].round(1), use_container_width=True, hide_index=True)
+st.dataframe(forecast_df[["periode", "statut", *PRODUCTS, "Total unités"]].round(1), width="stretch", hide_index=True)
 
 st.subheader("🎯 Part de marché : trajectoire de base vs cible")
 mt = pd.DataFrame({
@@ -124,7 +129,7 @@ mt = pd.DataFrame({
     "Unités à produire/vendre pour cible": market.required_units_for_target,
     "Écart à combler (u)": market.unit_gap,
 })
-st.dataframe(mt.round(1), use_container_width=True, hide_index=True)
+st.dataframe(mt.round(1), width="stretch", hide_index=True)
 
 m1, m2, m3 = st.columns(3)
 m1.metric("PDM projetée fin d'année", f"{market.baseline_share_forecast[-1] * 100:.2f} %" if market.baseline_share_forecast else "—")
@@ -136,7 +141,7 @@ for alert in strategic_alerts(list(market.baseline_share_forecast), target_share
 st.subheader("🏁 Position concurrentielle")
 if competitive.get("rows"):
     dfc = pd.DataFrame(competitive["rows"]).sort_values(["part_marche", "ventes"], ascending=False)
-    st.dataframe(dfc.round(2), use_container_width=True, hide_index=True)
+    st.dataframe(dfc.round(2), width="stretch", hide_index=True)
 else:
     st.info("Les données concurrentielles détaillées ne sont pas disponibles dans les sources actuellement synchronisées.")
 
