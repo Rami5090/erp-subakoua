@@ -102,23 +102,12 @@ if latest_real is None:
 # réellement observé dans les ventes. Les études futures peuvent exister dans la
 # base, mais ne doivent pas servir à préparer une décision historique.
 real_periods = [p for p in periods if period_index(p) <= period_index(latest_real)]
-anchor_key = "pilotage_anchor"
-last_auto_anchor_key = "pilotage_last_auto_anchor"
-if (
-    st.session_state.get(last_auto_anchor_key) != latest_real
-    or st.session_state.get(anchor_key) not in real_periods
-):
-    st.session_state[anchor_key] = latest_real
-    st.session_state[last_auto_anchor_key] = latest_real
+default_anchor_idx = real_periods.index(latest_real) if latest_real in real_periods else len(real_periods) - 1
 anchor = st.selectbox(
     "Période d'ancrage du plan",
     real_periods,
-    key=anchor_key,
-    help="Le dernier mois réellement observé est sélectionné automatiquement lorsqu'une nouvelle période réelle apparaît. Vous pouvez ensuite revenir manuellement à un mois antérieur pour un test.",
-)
-st.caption(
-    f"📡 Ventes réelles reconnues par le moteur : {len(sales)} période(s) · "
-    f"dernier mois réellement observé : **{latest_real}**"
+    index=default_anchor_idx,
+    help="Dernier mois réellement observé par défaut. Les données futures ne sont jamais utilisées pour calibrer la décision.",
 )
 own_company = st.number_input("N° entreprise pilotée", 1, 9, 3, 1)
 

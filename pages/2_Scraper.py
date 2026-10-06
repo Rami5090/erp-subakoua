@@ -221,20 +221,6 @@ with b3:
 available = unique_periods(st.session_state.get("scraper_periods") or list(legacy.MOIS_DISPONIBLES))
 st.session_state["scraper_periods"] = available
 
-# Le sélecteur de périodes de Streamlit conserve normalement sa valeur d'une
-# exécution à l'autre. Après une découverte live (ex. Janvier -> Juin), cela
-# pouvait laisser une ancienne sélection sur Janvier alors que la BDD savait
-# déjà travailler sur Juin. On réinitialise uniquement lorsque l'ensemble des
-# périodes disponibles a réellement changé ; un choix manuel reste ensuite
-# conservé tant que la liste ne change pas.
-_periods_signature = "||".join(available)
-if st.session_state.get("smart_periods_signature") != _periods_signature:
-    st.session_state["smart_periods_signature"] = _periods_signature
-    if available:
-        st.session_state["smart_current_period"] = available[-1]
-        st.session_state["smart_target_periods"] = [available[-1]]
-
-
 # ---------------------------------------------------------------------------
 # ONGLET 1 : PLAN DOCUMENTAIRE
 # ---------------------------------------------------------------------------

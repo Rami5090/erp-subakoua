@@ -188,7 +188,7 @@ def execute_purchase_plan(
             results.append({"study_id": item.study_id, "status": "REFUSE", "purchase_period": item.purchase_period, "reason": f"Prix live différent : {live.price} € au lieu de {item.price} €. Replanifier."})
             continue
         try:
-            response = api.purchase_study(item.purchase_period, item.study_id)
+            response = api.purchase_study(item.purchase_period, item.study_id, label=item.label, expected_price=item.price)
             results.append({"study_id": item.study_id, "status": "ACHETE", "purchase_period": item.purchase_period, "target_period": item.target_period, "response": response})
             log.warning("ACHAT RÉEL Subakoua : %s | %s -> %s | prix=%s", item.study_id, item.purchase_period, item.target_period, response.get("price"))
         except Exception as exc:

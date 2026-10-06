@@ -1,10 +1,13 @@
-# v2.8.1 — correction période réelle / état Streamlit
+# ERP Subakoua — v2.8.1
 
-Cette version corrige un problème d'état persistant Streamlit : après une nouvelle synchronisation (par exemple Janvier -> Juin), les sélecteurs pouvaient conserver Janvier alors que la base contenait une période plus récente.
+Correction du processus d'achat documentaire :
 
-Corrections :
-- le scraper réinitialise ses sélections lorsque la liste des périodes découvertes change ;
-- le pilotage 12 mois et l'optimiseur recalculent et resélectionnent automatiquement le dernier mois réellement observé ;
-- affichage du nombre de périodes de ventes réellement reconnues par le moteur.
+- achat effectué via l'interface Playwright réelle ;
+- ouverture de la fenêtre de confirmation Subakoua ;
+- clic explicite sur le bouton `Confirmer` du dialogue `role=dialog` ;
+- contrôle du prix affiché avant confirmation ;
+- vérification post-achat via le catalogue live (`boughtByTeam=true`) ;
+- remontée en erreur si le clic de confirmation ne produit pas un achat confirmé ;
+- les 31 tests existants passent.
 
-Important : un achat documentaire seul ne fait pas avancer la période réelle. La période réelle est déterminée par les ventes effectivement synchronisées et exploitables par le moteur.
+Le reste du moteur de planification et de synchronisation est conservé.

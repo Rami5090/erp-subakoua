@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from playwright.sync_api import Page
 from urllib.parse import urlencode, urljoin
 
 from playwright.sync_api import BrowserContext, APIResponse, TimeoutError as PlaywrightTimeoutError
@@ -65,11 +67,15 @@ class SubakouaAPIClient:
         logger: logging.Logger | None = None,
         base_url: str = BASE_URL,
         timeout_ms: int = 30_000,
+        page: Page | None = None,
+        dashboard_url: str | None = None,
     ) -> None:
         self.context = context
         self.request = context.request
+        self.page = page
         self.logger = logger or logging.getLogger("subakoua_api")
         self.base_url = base_url.rstrip("/")
+        self.dashboard_url = (dashboard_url or f"{self.base_url}/companies").rstrip("/")
         self.timeout = timeout_ms
         self.player: PlayerContext | None = None
 
@@ -205,20 +211,157 @@ class SubakouaAPIClient:
             reason = "Document non lisible : readAllowed=false. Aucun payload ne doit être considéré comme acquis."
         return StudyFetchResult(study_id, period_label, period_code, url, read_allowed, payload if isinstance(payload, dict) else {}, valid, reason)
 
-    def purchase_study(self, purchase_period: str, study_id: str) -> dict[str, Any]:
-        """Achète explicitement une étude pour la période d'achat indiquée.
+    def _select_purchase_period(self, page: Page, period: str) -> None:
+        selector = "okw-select-period span[role='combobox']"
+        loc = page.locator(selector).first
+        loc.wait_for(state="visible", timeout=self.timeout)
+        current = " ".join(loc.inner_text().split())
+        wanted = self.period_label(period)
+        if wanted in current:
+            return
+        loc.click()
+        page.wait_for_timeout(250)
+        option = page.locator("div.p-select-option-label").filter(has_text=wanted).last
+        option.wait_for(state="visible", timeout=5000)
+        option.click()
+        page.wait_for_timeout(1200)
 
-        Cette méthode est volontairement non appelée automatiquement par le planificateur.
+    @staticmethod
+    def _click_first_visible(locator, timeout: int = 5000) -> bool:
+        try:
+            count = min(locator.count(), 30)
+            for i in range(count):
+                item = locator.nth(i)
+                if item.is_visible():
+                    item.click(timeout=timeout)
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _open_study_area(self, page: Page) -> None:
+        """Ouvre la zone documentaire du portail avec plusieurs sélecteurs robustes."""
+        labels = ["Études", "Etudes", "Documents", "Études disponibles", "Etudes disponibles"]
+        for label in labels:
+            if self._click_first_visible(page.get_by_role("link", name=re.compile(re.escape(label), re.I))):
+                page.wait_for_timeout(900)
+                return
+            if self._click_first_visible(page.get_by_role("button", name=re.compile(re.escape(label), re.I))):
+                page.wait_for_timeout(900)
+                return
+            if self._click_first_visible(page.get_by_text(label, exact=True)):
+                page.wait_for_timeout(900)
+                return
+        raise SubakouaAPIError("Zone Études/Documents introuvable dans le portail Subakoua.")
+
+    def _open_study(self, page: Page, study_id: str, label: str) -> None:
+        """Ouvre la fiche/carte d'une étude puis son bouton Acheter."""
+        buy = page.get_by_role("button", name=re.compile(r"acheter", re.I))
+
+        # Cas 1 : la carte comporte directement son bouton Acheter.
+        for needle in (label, study_id):
+            if not needle:
+                continue
+            loc = page.get_by_text(needle, exact=True)
+            try:
+                count = min(loc.count(), 30)
+            except Exception:
+                count = 0
+            for i in range(count):
+                item = loc.nth(i)
+                try:
+                    if not item.is_visible():
+                        continue
+                    ancestor = item
+                    for _ in range(6):
+                        try:
+                            local_buy = ancestor.get_by_role("button", name=re.compile(r"acheter", re.I))
+                            if local_buy.count() and self._click_first_visible(local_buy):
+                                return
+                        except Exception:
+                            pass
+                        ancestor = ancestor.locator("xpath=..")
+
+                    # Cas 2 : clic sur le libellé ouvre la fiche de l'étude.
+                    item.click(timeout=5000)
+                    page.wait_for_timeout(700)
+                    if self._click_first_visible(buy):
+                        return
+                except Exception:
+                    continue
+
+        raise SubakouaAPIError(f"Étude introuvable dans l'interface : {label or study_id} ({study_id}).")
+
+    def purchase_study(
+        self,
+        purchase_period: str,
+        study_id: str,
+        *,
+        label: str = "",
+        expected_price: float | None = None,
+    ) -> dict[str, Any]:
+        """Achète une étude via l'interface réelle de Subakoua.
+
+        Le portail ouvre une boîte de dialogue de confirmation ; on ne considère
+        l'achat comme réussi qu'après le clic sur « Confirmer » et la vérification
+        du catalogue live (`boughtByTeam=true`).
         """
-        player = self.get_player_context()
-        period_code = self.period_code(purchase_period)
-        path = f"/api/sessions/{player.session}/periods/{period_code}/teams/{player.team_id}/studies/{study_id}/studyPurchases"
-        url = self._url(path)
-        response = self.request.put(url, timeout=self.timeout)
-        payload = self._json_response(response, url)
-        self.logger.info("Achat étude=%s période=%s prix=%s", study_id, period_code, payload.get("price"))
-        return payload if isinstance(payload, dict) else {"response": payload}
+        if self.page is None:
+            raise SubakouaAPIError("Aucune page Playwright attachée au client : achat UI impossible.")
 
+        page = self.page
+        wanted_period = self.period_label(purchase_period)
+        page.goto(self.dashboard_url, wait_until="domcontentloaded", timeout=self.timeout)
+        page.wait_for_timeout(700)
+        self._select_purchase_period(page, wanted_period)
+        self._open_study_area(page)
+        self._select_purchase_period(page, wanted_period)
+        self._open_study(page, study_id, label)
+
+        dialog = page.get_by_role("dialog")
+        dialog.wait_for(state="visible", timeout=7000)
+
+        if expected_price is not None:
+            body = dialog.inner_text()
+            candidates = {
+                f"{expected_price:,.2f}".replace(",", "§").replace(".", ",").replace("§", "."),
+                f"{expected_price:.2f}",
+                f"{expected_price:g}",
+            }
+            if not any(value in body for value in candidates):
+                raise SubakouaAPIError(
+                    f"Prix affiché différent pour {study_id} : attendu {expected_price:.2f} €. Dialogue={body!r}"
+                )
+
+        confirm = dialog.get_by_role("button", name="Confirmer", exact=True)
+        confirm.wait_for(state="visible", timeout=5000)
+        confirm.click()
+
+        try:
+            dialog.wait_for(state="hidden", timeout=8000)
+        except PlaywrightTimeoutError:
+            page.wait_for_timeout(1500)
+
+        # Vérification métier après le clic de confirmation.
+        live = next((x for x in self.catalog(wanted_period, [study_id]) if x.study_id == study_id), None)
+        if live is None or not live.bought_by_team:
+            raise SubakouaAPIError(
+                f"Le clic 'Confirmer' a été effectué mais l'achat de {study_id} n'est pas confirmé par le catalogue live."
+            )
+
+        self.logger.info(
+            "Achat UI confirmé | étude=%s période=%s prix=%s",
+            study_id,
+            self.period_code(wanted_period),
+            live.price,
+        )
+        return {
+            "studyId": study_id,
+            "period": wanted_period,
+            "price": live.price,
+            "boughtByTeam": True,
+            "purchaseConfirmedByUI": True,
+        }
 
 def start_authenticated_client(config: Any, logger: logging.Logger | None = None):
     """Ouvre Chromium, se connecte via le login robuste existant et renvoie
@@ -234,6 +377,6 @@ def start_authenticated_client(config: Any, logger: logging.Logger | None = None
     page.set_default_timeout(config.timeout_ms)
     page.set_default_navigation_timeout(config.timeout_ms)
     legacy.login(page, context, config, log)
-    api = SubakouaAPIClient(context, logger=log, base_url=legacy.DOMAINE_BASE, timeout_ms=config.timeout_ms)
+    api = SubakouaAPIClient(context, logger=log, base_url=legacy.DOMAINE_BASE, timeout_ms=config.timeout_ms, page=page, dashboard_url=legacy.URL_DASHBOARD)
     api.get_player_context(refresh=True)
     return pw, browser, context, page, api
