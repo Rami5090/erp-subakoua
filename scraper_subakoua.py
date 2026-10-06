@@ -36,8 +36,6 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse
 
-from document_strategy import DocumentCandidate, make_candidate, optimize_document_plan
-
 from dotenv import load_dotenv
 from playwright.sync_api import (
     BrowserContext,
@@ -61,7 +59,7 @@ load_dotenv()
 URL_CONNEXION = os.getenv("SUBAKOUA_LOGIN_URL", "https://login.arkhe.com/")
 URL_DASHBOARD = os.getenv("SUBAKOUA_DASHBOARD_URL", "https://subakoua.arkhe.com/companies")
 DOMAINE_BASE = f"{urlparse(URL_DASHBOARD).scheme}://{urlparse(URL_DASHBOARD).netloc}"
-EXTRACTOR_VERSION = "2.4.0"
+EXTRACTOR_VERSION = "2.3.0"
 
 MODULES_A_VISITER = [
     ("Marketing", "marketing"),
@@ -530,25 +528,6 @@ def existing_module_data(connection, periode: str, module: str) -> Any | None:
     return value
 
 
-def normalize_document_title(value: str) -> str:
-    import unicodedata
-    text = unicodedata.normalize("NFD", str(value or ""))
-    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
-    return re.sub(r"\s+", " ", text).strip().lower()
-
-
-def existing_module_covers_documents(connection, periode: str, module: str, titles: set[str]) -> bool:
-    if not titles: return False
-    existing = existing_module_data(connection, periode, module)
-    if not isinstance(existing, dict) or contains_specimen(existing) or contains_scraper_error(existing): return False
-    keys = {normalize_document_title(k) for k in existing.keys()}
-    for title in titles:
-        nt = normalize_document_title(title)
-        match = next((k for k in existing.keys() if normalize_document_title(k) == nt), None)
-        if nt not in keys or match is None or not payload_is_usable(existing.get(match)): return False
-    return True
-
-
 def upsert_module(
     connection,
     periode: str,
@@ -965,8 +944,8 @@ def verifier_specimen(page: Page) -> bool:
         return False
 
 
-def extract_document_links(page: Page) -> list[dict[str, Any]]:
-    """Découvre les cartes document et leurs métadonnées commerciales sans acheter."""
+def extract_document_links(page: Page) -> list[dict[str, str]]:
+    """Extrait d'abord les cartes documentelles connues, puis un fallback plus large."""
     docs = page.evaluate(r"""
         () => {
             const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
@@ -975,133 +954,28 @@ def extract_document_links(page: Page) -> list[dict[str, Any]]:
                 anchors = Array.from(document.querySelectorAll('a[href]')).filter(a => {
                     const txt = norm(a.innerText).toLowerCase();
                     const cls = norm(a.className).toLowerCase();
-                    return txt && (/document|tableau|rapport|extrait|bilan|compte|etude|étude/.test(txt + ' ' + cls));
+                    return txt && (/document|tableau|rapport|extrait|bilan|compte/.test(txt + ' ' + cls));
                 });
             }
-            return anchors.map(a => {
-                const card = a.closest('.linkItemCard, .card, article, li') || a;
-                const text = norm(card.innerText || a.innerText);
-                const attrPrice = [card.getAttribute('data-price'), card.getAttribute('data-cost'), a.getAttribute('data-price'), a.getAttribute('data-cost'), card.querySelector('[data-price]')?.getAttribute('data-price'), card.querySelector('[data-cost]')?.getAttribute('data-cost')].find(Boolean) || null;
-                return {title: norm(a.querySelector('.text-regular-md, .linkItemCard-title')?.innerText || a.innerText || 'Document'), url: a.getAttribute('href'), card_text: text, price_hint: attrPrice};
-            }).filter(x => x.url && x.title);
+            return anchors.map(a => ({
+                title: norm(a.querySelector('.text-regular-md, .linkItemCard-title')?.innerText || a.innerText || 'Document'),
+                url: a.getAttribute('href')
+            })).filter(x => x.url && x.title);
         }
     """)
-    unique=[]; seen=set()
+    unique: list[dict[str, str]] = []
+    seen: set[str] = set()
     for doc in docs:
-        title=re.sub(r"\s+", " ", str(doc.get("title","Document"))).strip() or "Document"
-        url=urljoin(DOMAINE_BASE, str(doc.get("url","")))
-        if not url or url in seen: continue
-        parsed=urlparse(url)
-        if parsed.netloc and parsed.netloc != urlparse(DOMAINE_BASE).netloc: continue
+        title = re.sub(r"\s+", " ", str(doc.get("title", "Document"))).strip() or "Document"
+        url = urljoin(DOMAINE_BASE, str(doc.get("url", "")))
+        if not url or url in seen:
+            continue
+        parsed = urlparse(url)
+        if parsed.netloc and parsed.netloc != urlparse(DOMAINE_BASE).netloc:
+            continue
         seen.add(url)
-        card_text=str(doc.get("card_text","")); price=None
-        if doc.get("price_hint") is not None:
-            try: price=float(str(doc["price_hint"]).replace(" ","").replace(",","."))
-            except (TypeError,ValueError): pass
-        lower=card_text.lower()
-        locked=True if any(x in lower for x in ["acheter ce document","acheter","spécimen","specimen","pas encore acheté"]) else None
-        owned=True if any(x in lower for x in ["déjà acheté","deja achete","document acheté","document achete","télécharger"]) else None
-        if owned is True: locked=False
-        unique.append({"title":title,"url":url,"card_text":card_text,"price":price,"locked":locked,"owned":owned})
+        unique.append({"title": title, "url": url})
     return unique
-
-
-def discover_document_catalog(page: Page, modules: list[tuple[str,str]], config: ScraperConfig, logger: logging.Logger) -> list[DocumentCandidate]:
-    results=[]; seen=set()
-    for display,module_key in modules:
-        try:
-            revenir_au_dashboard(page,config); ouvrir_module(page,display,config,logger)
-            tabs=extract_tabs(page); module_url=page.url
-            for tab in (tabs or [""]):
-                try:
-                    if tab:
-                        page.goto(module_url,wait_until="domcontentloaded",timeout=config.timeout_ms); wait_page_stable(page,config.timeout_ms)
-                        page.get_by_text(tab,exact=True).first.click(timeout=5000); wait_page_stable(page,config.timeout_ms)
-                    docs=extract_document_links(page)
-                    for raw in docs:
-                        key=(module_key,str(raw.get("title","")).strip().lower())
-                        if key in seen: continue
-                        seen.add(key)
-                        inspected=dict(raw)
-                        try:
-                            page.goto(str(raw.get("url")),wait_until="domcontentloaded",timeout=config.timeout_ms); wait_page_stable(page,config.timeout_ms)
-                            body=page.locator("body").inner_text(timeout=2000)
-                            from document_strategy import parse_price, infer_access_state
-                            if inspected.get("price") is None: inspected["price"]=parse_price(body)
-                            lk,ow=infer_access_state(body)
-                            if lk is not None: inspected["locked"]=lk
-                            if ow is not None: inspected["owned"]=ow
-                        except Exception as exc:
-                            logger.debug("Inspection document impossible | %s | %s",raw.get("title"),exc)
-                        results.append(make_candidate(display,module_key,inspected))
-                        page.goto(module_url,wait_until="domcontentloaded",timeout=config.timeout_ms); wait_page_stable(page,config.timeout_ms)
-                        if tab:
-                            page.get_by_text(tab,exact=True).first.click(timeout=5000); wait_page_stable(page,config.timeout_ms)
-                except Exception as exc:
-                    logger.warning("Catalogue | onglet=%s | module=%s | %s",tab,module_key,exc)
-        except Exception as exc:
-            logger.warning("Catalogue | module=%s | %s",module_key,exc)
-    return results
-
-
-def _find_purchase_button(page: Page):
-    patterns=[r"acheter(?:\s+ce\s+document)?",r"acheter\s+le\s+document",r"débloquer(?:\s+le\s+document)?",r"accéder\s+au\s+document"]
-    for pattern in patterns:
-        try:
-            loc=page.get_by_role("button",name=re.compile(pattern,re.I)).first
-            if loc.is_visible(timeout=700): return loc
-        except Exception: pass
-        try:
-            loc=page.get_by_text(re.compile(pattern,re.I),exact=False).first
-            if loc.is_visible(timeout=700): return loc
-        except Exception: pass
-    return None
-
-
-def document_est_verrouille(page: Page) -> bool:
-    if verifier_specimen(page): return True
-    try:
-        body=page.locator("body").inner_text(timeout=1500).lower()
-        if any(m in body for m in ["acheter ce document","document payant","débloquer le document","acceder au document"]): return True
-    except Exception: pass
-    try: return _find_purchase_button(page) is not None
-    except Exception: return False
-
-
-def acheter_document(page: Page,candidate: DocumentCandidate,config: ScraperConfig,logger: logging.Logger,budget_restant: float|None=None) -> dict[str,Any]:
-    result={"module":candidate.module_key,"title":candidate.title,"url":candidate.url,"price":candidate.price,"status":"unknown","message":""}
-    page.goto(candidate.url,wait_until="domcontentloaded",timeout=config.timeout_ms); wait_page_stable(page,config.timeout_ms)
-    if not document_est_verrouille(page):
-        result["status"]="already_accessible"; result["message"]="Document déjà accessible ; aucun achat effectué."; return result
-    price=candidate.price
-    if price is None:
-        from document_strategy import parse_price
-        price=parse_price(page.locator("body").inner_text(timeout=2000)); result["price"]=price
-    if price is None:
-        result["status"]="blocked_unknown_price"; result["message"]="Prix introuvable ; achat automatique refusé."; return result
-    if budget_restant is not None and float(price)>budget_restant+1e-9:
-        result["status"]="blocked_budget"; result["message"]=f"Prix {float(price):.2f} € > budget restant {budget_restant:.2f} €."; return result
-    button=_find_purchase_button(page)
-    if button is None:
-        result["status"]="purchase_button_not_found"; result["message"]="Bouton d'achat introuvable ; diagnostic généré."; maybe_save_debug(page,config,f"achat_{candidate.title}",logger); return result
-    button.click(); page.wait_for_timeout(500)
-    try:
-        dialog=page.get_by_role("dialog")
-        for pattern in [r"confirmer",r"valider",r"acheter"]:
-            loc=dialog.get_by_role("button",name=re.compile(pattern,re.I)).last
-            if loc.is_visible(timeout=800): loc.click(); break
-    except Exception:
-        for pattern in [r"confirmer",r"valider"]:
-            try:
-                loc=page.get_by_role("button",name=re.compile(pattern,re.I)).last
-                if loc.is_visible(timeout=800): loc.click(); break
-            except Exception: pass
-    wait_page_stable(page,config.timeout_ms); page.wait_for_timeout(700)
-    if document_est_verrouille(page):
-        result["status"]="purchase_failed"; result["message"]="Le document semble toujours verrouillé après l'achat."; maybe_save_debug(page,config,f"achat_echec_{candidate.title}",logger)
-    else:
-        result["status"]="purchased"; result["message"]="Document acheté et désormais accessible."
-    return result
 
 
 def extract_tabs(page: Page) -> list[str]:
@@ -1125,13 +999,9 @@ def aspirer_page_courante(
     liste_mois: list[str],
     config: ScraperConfig,
     logger: logging.Logger,
-    documents_autorises: set[str] | None = None,
 ) -> dict[str, Any]:
     donnees_par_mois = {mois: {} for mois in liste_mois}
     documents = extract_document_links(page)
-    if documents_autorises is not None:
-        allowed = {re.sub(r"\s+", " ", str(x)).strip().lower() for x in documents_autorises}
-        documents = [d for d in documents if re.sub(r"\s+", " ", str(d.get("title", ""))).strip().lower() in allowed]
 
     if documents:
         url_mosaique = page.url
@@ -1193,12 +1063,11 @@ def aspirer_structure_intelligente(
     liste_mois: list[str],
     config: ScraperConfig,
     logger: logging.Logger,
-    documents_autorises: set[str] | None = None,
 ) -> dict[str, Any]:
     page.wait_for_timeout(700)
     onglets = extract_tabs(page)
     if not onglets:
-        return aspirer_page_courante(page, liste_mois, config, logger, documents_autorises)
+        return aspirer_page_courante(page, liste_mois, config, logger)
 
     logger.info("Onglets détectés : %s", ", ".join(onglets))
     donnees_par_mois = {mois: {} for mois in liste_mois}
@@ -1210,7 +1079,7 @@ def aspirer_structure_intelligente(
             wait_page_stable(page, config.timeout_ms)
             page.get_by_text(onglet, exact=True).first.click(timeout=5000)
             wait_page_stable(page, config.timeout_ms)
-            resultat = aspirer_page_courante(page, liste_mois, config, logger, documents_autorises)
+            resultat = aspirer_page_courante(page, liste_mois, config, logger)
             for mois in liste_mois:
                 donnees_par_mois[mois][onglet] = resultat.get(mois, {})
         except Exception as exc:
@@ -1274,8 +1143,6 @@ def lancer_robot_global(
     modules: list[tuple[str, str]],
     config: ScraperConfig,
     logger: logging.Logger,
-    document_plan: dict[str, Any] | None = None,
-    autoriser_achats: bool = False,
 ) -> dict[str, Any]:
     run_id = timestamp()
     started = datetime.now().isoformat(timespec="seconds")
@@ -1288,8 +1155,6 @@ def lancer_robot_global(
         "mode": "force" if not config.incremental else "incremental",
         "status": "running",
         "module_results": [],
-        "document_plan": document_plan or {},
-        "purchase_results": [],
     }
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1311,30 +1176,6 @@ def lancer_robot_global(
                 login(page, context, config, logger)
                 revenir_au_dashboard(page, config)
 
-                selected_docs = list((document_plan or {}).get("selected", []))
-                selected_by_module: dict[str, set[str]] = {}
-                for item in selected_docs:
-                    selected_by_module.setdefault(str(item.get("module_key", "")), set()).add(str(item.get("title", "")))
-
-                if autoriser_achats and selected_docs:
-                    budget = (document_plan or {}).get("budget")
-                    spent = 0.0
-                    for item in selected_docs:
-                        candidate = DocumentCandidate(
-                            module_display=str(item.get("module_display", "")), module_key=str(item.get("module_key", "")),
-                            title=str(item.get("title", "")), url=str(item.get("url", "")), card_text=str(item.get("card_text", "")),
-                            price=float(item["price"]) if item.get("price") is not None else None, locked=item.get("locked"), owned=item.get("owned"),
-                            needs=tuple(item.get("needs", ())), score=float(item.get("score", 0.0)), rationale=str(item.get("rationale", "")),
-                            purchase_required=bool(item.get("purchase_required", False)), db_covered=bool(item.get("db_covered", False)),
-                            coverage_source=str(item.get("coverage_source", "Portail Subakoua")),
-                        )
-                        if not candidate.url: continue
-                        remaining = None if budget is None else max(0.0, float(budget) - spent)
-                        buy = acheter_document(page, candidate, config, logger, remaining)
-                        summary["purchase_results"].append(buy)
-                        if buy.get("status") == "purchased" and buy.get("price") is not None: spent += float(buy["price"])
-                    logger.info("Plan d'achat terminé | dépense=%0.2f €", spent)
-
                 for mot_cle, cle_dict in modules:
                     logger.info("===== MODULE %s (%s) =====", mot_cle, cle_dict)
                     result_mod = {
@@ -1347,16 +1188,12 @@ def lancer_robot_global(
                     try:
                         a_traiter: list[str] = []
                         if config.incremental:
-                            selected_titles_for_module = selected_by_module.get(cle_dict) if document_plan is not None else None
                             for mois in liste_mois:
-                                if selected_titles_for_module is not None:
-                                    covered = existing_module_covers_documents(connection, mois, cle_dict, selected_titles_for_module)
-                                    if covered: result_mod["skipped_periods"].append(mois)
-                                    else: a_traiter.append(mois)
+                                existing = existing_module_data(connection, mois, cle_dict)
+                                if existing is None or contains_specimen(existing) or contains_scraper_error(existing):
+                                    a_traiter.append(mois)
                                 else:
-                                    existing = existing_module_data(connection, mois, cle_dict)
-                                    if existing is None or contains_specimen(existing) or contains_scraper_error(existing): a_traiter.append(mois)
-                                    else: result_mod["skipped_periods"].append(mois)
+                                    result_mod["skipped_periods"].append(mois)
                             if not a_traiter:
                                 logger.info("Aucun changement à aspirer pour %s", cle_dict)
                                 summary["module_results"].append(result_mod)
@@ -1364,14 +1201,8 @@ def lancer_robot_global(
                         else:
                             a_traiter = liste_mois
 
-                        if document_plan is not None and not selected_by_module.get(cle_dict):
-                            logger.info("Module %s ignoré : aucun document retenu par le plan documentaire.", cle_dict)
-                            result_mod["skipped_periods"].extend(a_traiter)
-                            summary["module_results"].append(result_mod)
-                            continue
                         ouvrir_module(page, mot_cle, config, logger)
-                        allowed_docs = selected_by_module.get(cle_dict) if document_plan is not None else None
-                        donnees_multi_mois = aspirer_structure_intelligente(page, a_traiter, config, logger, allowed_docs)
+                        donnees_multi_mois = aspirer_structure_intelligente(page, a_traiter, config, logger)
                         synchroniser_module(connection, cle_dict, donnees_multi_mois, logger, has_unique_key)
                         result_mod["scraped_periods"] = list(a_traiter)
                         revenir_au_dashboard(page, config)
@@ -1423,9 +1254,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--periods", help="Périodes par index : 1,2,3 ou plage 1-12")
     parser.add_argument("--all", action="store_true", help="Scrape toutes les périodes disponibles")
     parser.add_argument("--modules", default="all", help="Modules par nom/clé séparés par des virgules, ou all")
-    parser.add_argument("--pilotage-profile", default="Pilotage global", choices=["Pilotage global", "Finance & trésorerie", "Commercial & marketing", "Production & achats", "RH"], help="Profil de besoin pour le plan documentaire")
-    parser.add_argument("--budget-docs", type=float, default=None, help="Budget maximum en euros pour les achats de documents")
-    parser.add_argument("--auto-buy", action="store_true", help="Autorise l'achat automatique des documents retenus")
     parser.add_argument("--force", action="store_true", help="Ignore le mode incrémental et rescrape les périodes sélectionnées")
     parser.add_argument("--headless", dest="headless", action="store_true", help="Navigateur sans interface")
     parser.add_argument("--show-browser", dest="headless", action="store_false", help="Affiche le navigateur")
@@ -1462,33 +1290,12 @@ def main() -> int:
     modules = parse_modules(args)
     logger.info("Extracteur %s | périodes=%s | modules=%s | mode=%s", EXTRACTOR_VERSION, len(periods), len(modules), "force" if args.force else "incremental")
 
-    document_plan = None
-    if args.auto_buy and args.budget_docs is None:
-        logger.error("Sécurité achat : --auto-buy exige --budget-docs afin d'avoir une limite explicite.")
-        return 2
-    if args.auto_buy or args.budget_docs is not None:
-        try:
-            with sync_playwright() as p:
-                browser = launch_browser(p, config, logger); context = create_context(browser, config, logger)
-                page = context.new_page(); page.set_default_timeout(config.timeout_ms); page.set_default_navigation_timeout(config.timeout_ms)
-                try:
-                    login(page, context, config, logger); revenir_au_dashboard(page, config)
-                    catalog = discover_document_catalog(page, modules, config, logger)
-                    document_plan = optimize_document_plan(catalog, profile=args.pilotage_profile, budget=args.budget_docs)
-                    (config.output_dir / "document_plan.json").write_text(json.dumps(document_plan, ensure_ascii=False, indent=2), encoding="utf-8")
-                    logger.info("Plan documentaire | couverture=%.0f%% | achat estimé=%.2f €", 100*document_plan["coverage_ratio"], document_plan["spent_estimate"])
-                finally:
-                    context.close(); browser.close()
-        except Exception as exc:
-            logger.exception("Impossible de construire le plan documentaire : %s", exc)
-            return 1
-
     if not config.username or not config.password:
         logger.error("Identifiants Subakoua absents. Renseigne .env (SUBAKOUA_USER / SUBAKOUA_PASS) ou lance le scraper dans un terminal interactif.")
         return 2
 
     try:
-        summary = lancer_robot_global(periods, modules, config, logger, document_plan=document_plan, autoriser_achats=args.auto_buy)
+        summary = lancer_robot_global(periods, modules, config, logger)
         errors = sum(len(r.get("errors", [])) for r in summary.get("module_results", []))
         logger.info("Résumé | modules OK/traités=%s | erreurs=%s", len(summary.get("module_results", [])), errors)
         return 0 if errors == 0 else 1

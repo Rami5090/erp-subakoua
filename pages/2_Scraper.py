@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-import scraper_subakoua as scraper
-from document_strategy import PILOTAGE_NEEDS, PROFILE_NEEDS, optimize_document_plan
+import document_optimizer as optimizer
+import scraper_subakoua as legacy
+import smart_scraper
+import subakoua_api
 
 
 st.set_page_config(page_title="Scraper Subakoua", page_icon="🕷️", layout="wide")
@@ -20,175 +20,43 @@ st.set_page_config(page_title="Scraper Subakoua", page_icon="🕷️", layout="w
 
 def secret_value(section: str | None, key: str, default: str = "") -> str:
     try:
-        if section:
-            data = st.secrets.get(section, {})
-            value = data.get(key, default)
-        else:
-            value = st.secrets.get(key, default)
-        return str(value) if value is not None else default
+        if section and section in st.secrets:
+            value = st.secrets[section].get(key)
+            if value is not None:
+                return str(value)
+        if section is None:
+            value = st.secrets.get(key)
+            if value is not None:
+                return str(value)
     except Exception:
-        return default
+        pass
+    return default
 
 
 def env_or_secret(section: str | None, key: str, env_name: str, default: str = "") -> str:
     value = secret_value(section, key, "")
-    if value:
-        return value
-    return os.getenv(env_name, default)
+    return value if value else os.getenv(env_name, default)
 
 
-def to_bool(value: Any, default: bool = False) -> bool:
+def to_bool(value: str, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
-def unique_periods(values: list[str]) -> list[str]:
-    result = []
-    seen = set()
-    for value in values:
-        value = re.sub(r"\s+", " ", str(value)).strip()
-        if value and value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result
-
-
-def period_year(period: str) -> str:
-    m = re.search(r"Année\s+(\d+)", period, re.I)
-    return f"Année {m.group(1)}" if m else "Autres"
-
-
-def get_periods_from_db(config: scraper.ScraperConfig, periods: list[str], modules: list[str]) -> pd.DataFrame:
-    if not periods or not modules:
-        return pd.DataFrame(columns=["Période", "Données présentes", "Données attendues", "Couverture"])
-    conn = None
-    try:
-        conn = scraper.connect_mysql(config)
-        marks_p = ",".join(["%s"] * len(periods))
-        marks_m = ",".join(["%s"] * len(modules))
-        sql = f"""
-            SELECT periode, module, COUNT(*) AS n
-            FROM erp_donnees
-            WHERE type_donnee = %s
-              AND periode IN ({marks_p})
-              AND module IN ({marks_m})
-            GROUP BY periode, module
-        """
-        with conn.cursor() as cursor:
-            cursor.execute(sql, ["etat_actuel", *periods, *modules])
-            rows = cursor.fetchall()
-        existing = {(r["periode"], r["module"]) for r in rows}
-        total_expected = len(modules)
-        data = []
-        for period in periods:
-            count = sum((period, mod) in existing for mod in modules)
-            data.append({
-                "Période": period,
-                "Données présentes": count,
-                "Données attendues": total_expected,
-                "Couverture": f"{count / total_expected:.0%}" if total_expected else "0%",
-            })
-        return pd.DataFrame(data)
-    except Exception as exc:
-        st.warning(f"Impossible de lire la couverture actuelle de la BDD : {exc}")
-        return pd.DataFrame(columns=["Période", "Données présentes", "Données attendues", "Couverture"])
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def enrich_catalog_with_db_coverage(config: scraper.ScraperConfig, catalog: list[dict[str, Any]], periods: list[str]) -> list[dict[str, Any]]:
-    """Marque comme déjà couvert tout document dont les données sont présentes pour
-    toutes les périodes demandées. Cela évite de considérer comme un nouvel achat
-    une information déjà synchronisée dans Aiven."""
-    if not catalog or not periods:
-        return catalog
-    try:
-        conn = scraper.connect_mysql(config)
-        try:
-            with conn.cursor() as cursor:
-                marks = ",".join(["%s"] * len(periods))
-                cursor.execute(
-                    f"SELECT periode, module, contenu FROM erp_donnees WHERE type_donnee=%s AND periode IN ({marks})",
-                    ["etat_actuel", *periods],
-                )
-                rows = cursor.fetchall()
-        finally:
-            conn.close()
-    except Exception:
-        return catalog
-
-    by_period_module = {}
-    for row in rows:
-        content = row.get("contenu")
-        if isinstance(content, str):
-            try:
-                content = json.loads(content)
-            except Exception:
-                content = {}
-        by_period_module[(row.get("periode"), row.get("module"))] = content if isinstance(content, dict) else {}
-
-    enriched = []
-    for item in catalog:
-        title_norm = scraper.normalize_document_title(str(item.get("title", "")))
-        covered = True
-        for period in periods:
-            module_content = by_period_module.get((period, item.get("module_key")), {})
-            if not module_content or scraper.contains_specimen(module_content) or scraper.contains_scraper_error(module_content):
-                covered = False
-                break
-            keys = {scraper.normalize_document_title(str(k)) for k in module_content.keys()}
-            match = next((k for k in module_content.keys() if scraper.normalize_document_title(str(k)) == title_norm), None)
-            if title_norm not in keys or match is None or not scraper.payload_is_usable(module_content.get(match)):
-                covered = False
-                break
-        clone = dict(item)
-        clone["db_covered"] = covered
-        if covered:
-            clone["owned"] = True
-            clone["locked"] = False
-            clone["purchase_required"] = False
-            clone["coverage_source"] = "Aiven / erp_donnees"
-        else:
-            clone["coverage_source"] = "Portail Subakoua"
-        enriched.append(clone)
-    return enriched
-
-
-class StreamlitLogHandler(logging.Handler):
-    def __init__(self, placeholder):
-        super().__init__(level=logging.INFO)
-        self.placeholder = placeholder
-        self.lines: list[str] = []
-        self.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", "%H:%M:%S"))
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            self.lines.append(self.format(record))
-            self.lines = self.lines[-120:]
-            self.placeholder.code("\n".join(self.lines), language="text")
-        except Exception:
-            pass
-
-
-def make_config(username: str, password: str, force: bool) -> scraper.ScraperConfig:
-    root = Path(tempfile.mkdtemp(prefix="subakoua_scraper_"))
+def make_config(username: str, password: str, force: bool = False) -> legacy.ScraperConfig:
+    root = Path(tempfile.mkdtemp(prefix="subakoua_cloud_"))
     output_dir = root / "scraper_output"
     state_file = root / "auth_state.json"
 
-    # Permet de surcharger les URL depuis les secrets sans modifier le code.
     login_url = env_or_secret("subakoua", "login_url", "SUBAKOUA_LOGIN_URL", "https://login.arkhe.com/")
     dashboard_url = env_or_secret("subakoua", "dashboard_url", "SUBAKOUA_DASHBOARD_URL", "https://subakoua.arkhe.com/companies")
-    scraper.URL_CONNEXION = login_url
-    scraper.URL_DASHBOARD = dashboard_url
-    parsed = scraper.urlparse(dashboard_url)
-    scraper.DOMAINE_BASE = f"{parsed.scheme}://{parsed.netloc}"
+    parsed = legacy.urlparse(dashboard_url)
+    legacy.URL_CONNEXION = login_url
+    legacy.URL_DASHBOARD = dashboard_url
+    legacy.DOMAINE_BASE = f"{parsed.scheme}://{parsed.netloc}"
 
-    return scraper.ScraperConfig(
+    return legacy.ScraperConfig(
         username=username.strip(),
         password=password,
         db_host=env_or_secret("mysql", "host", "DB_HOST", ""),
@@ -210,9 +78,9 @@ def make_config(username: str, password: str, force: bool) -> scraper.ScraperCon
     )
 
 
-def check_mysql(config: scraper.ScraperConfig) -> tuple[bool, str]:
+def check_mysql(config: legacy.ScraperConfig) -> tuple[bool, str]:
     try:
-        conn = scraper.connect_mysql(config)
+        conn = legacy.connect_mysql(config)
         try:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT VERSION() AS version")
@@ -224,367 +92,349 @@ def check_mysql(config: scraper.ScraperConfig) -> tuple[bool, str]:
         return False, f"MySQL indisponible : {exc}"
 
 
-def discover_periods(config: scraper.ScraperConfig) -> list[str]:
-    with scraper.sync_playwright() as p:
-        browser = scraper.launch_browser(p, config, logging.getLogger("subakoua_scraper"))
-        context = scraper.create_context(browser, config, logging.getLogger("subakoua_scraper"))
-        page = context.new_page()
-        page.set_default_timeout(config.timeout_ms)
-        page.set_default_navigation_timeout(config.timeout_ms)
+def api_session(config: legacy.ScraperConfig, *, log_name: str = "subakoua_api"):
+    logger = logging.getLogger(log_name)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", "%H:%M:%S"))
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    return subakoua_api.start_authenticated_client(config, logger)
+
+
+def discover_periods(config: legacy.ScraperConfig) -> list[str]:
+    pw = browser = context = None
+    page = None
+    try:
+        pw, browser, context, page, api = api_session(config)
+        return legacy.discover_available_periods(page, config, logging.getLogger("subakoua_api"))
+    finally:
         try:
-            scraper.login(page, context, config, logging.getLogger("subakoua_scraper"))
-            scraper.revenir_au_dashboard(page, config)
-            return scraper.discover_available_periods(page, config, logging.getLogger("subakoua_scraper"))
-        finally:
-            try:
+            if context:
                 context.close()
-            finally:
-                browser.close()
-
-
-def discover_document_catalog_live(config: scraper.ScraperConfig, modules: list[tuple[str, str]]):
-    logger = logging.getLogger("subakoua_scraper")
-    with scraper.sync_playwright() as p:
-        browser = scraper.launch_browser(p, config, logger)
-        context = scraper.create_context(browser, config, logger)
-        page = context.new_page()
-        page.set_default_timeout(config.timeout_ms)
-        page.set_default_navigation_timeout(config.timeout_ms)
-        try:
-            scraper.login(page, context, config, logger)
-            scraper.revenir_au_dashboard(page, config)
-            return scraper.discover_document_catalog(page, modules, config, logger)
         finally:
-            try:
-                context.close()
-            finally:
+            if browser:
                 browser.close()
+            if pw:
+                pw.stop()
 
 
-# ---------------------------------------------------------------------------
-# INTERFACE
-# ---------------------------------------------------------------------------
+def period_year(period: str) -> str:
+    import re
+    m = re.search(r"Année\s+(\d+)", period, re.I)
+    return f"Année {m.group(1)}" if m else "Autres"
 
-st.title("🕷️ Scraper Subakoua")
-st.caption("Extraction en ligne → synchronisation directe dans MySQL / Aiven")
+
+def unique_periods(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        v = " ".join(str(value).split()).strip()
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def plan_dicts(items):
+    return [asdict(x) for x in items]
+
+
+def plan_items_from_dicts(rows):
+    return [optimizer.PlanItem(**row) for row in rows]
+
+
+st.title("🕷️ Scraper Subakoua — moteur documentaire intelligent")
+st.caption("API-first · achat documentaire contrôlé · extraction déterministe · synchronisation Aiven")
 
 with st.expander("🔐 Connexions", expanded=True):
     has_subakoua_secrets = bool(secret_value("subakoua", "user")) and bool(secret_value("subakoua", "password"))
     use_secret_creds = st.checkbox(
-        "Utiliser les identifiants Subakoua stockés dans les Secrets Streamlit",
+        "Utiliser les identifiants Subakoua des Secrets Streamlit",
         value=has_subakoua_secrets,
         disabled=not has_subakoua_secrets,
-        help="Recommandé pour un scraper en ligne. Les identifiants ne sont pas affichés ni enregistrés dans le code.",
     )
-
     if use_secret_creds:
         sub_user = secret_value("subakoua", "user")
         sub_pass = secret_value("subakoua", "password")
         st.success("Identifiants Subakoua chargés depuis les Secrets Streamlit.")
     else:
-        col1, col2 = st.columns(2)
-        with col1:
-            sub_user = st.text_input("Identifiant Subakoua", key="online_sub_user")
-        with col2:
-            sub_pass = st.text_input("Mot de passe Subakoua", type="password", key="online_sub_pass")
-        if not sub_user or not sub_pass:
-            st.info("Renseigne les identifiants ici, ou configure [subakoua] dans les Secrets Streamlit.")
+        c1, c2 = st.columns(2)
+        sub_user = c1.text_input("Identifiant Subakoua", key="smart_sub_user")
+        sub_pass = c2.text_input("Mot de passe Subakoua", type="password", key="smart_sub_pass")
 
     db_host = env_or_secret("mysql", "host", "DB_HOST", "")
     db_name = env_or_secret("mysql", "database", "DB_NAME", "")
     db_user = env_or_secret("mysql", "user", "DB_USER", env_or_secret("mysql", "username", "DB_USER", ""))
-    if db_host and db_name and db_user:
-        st.success(f"Aiven configuré : `{db_host}` · base `{db_name}` · utilisateur `{db_user}`")
+    db_pass = env_or_secret("mysql", "password", "DB_PASSWORD", "")
+    if db_host and db_name and db_user and db_pass:
+        st.success(f"Aiven configuré : `{db_host}` · `{db_name}` · `{db_user}`")
     else:
-        st.error("La connexion Aiven est incomplète dans les Secrets Streamlit ([mysql]).")
+        st.error("Configuration Aiven incomplète dans les Secrets Streamlit ([mysql]).")
 
-col_a, col_b = st.columns([1, 1])
-with col_a:
-    if st.button("🔎 Tester la connexion & actualiser les périodes", type="secondary", use_container_width=True):
+b1, b2, b3 = st.columns(3)
+with b1:
+    if st.button("🧪 Tester login + API", use_container_width=True):
         if not sub_user or not sub_pass:
             st.error("Identifiants Subakoua manquants.")
-        elif not db_host or not db_name or not db_user or not env_or_secret("mysql", "password", "DB_PASSWORD", ""):
-            st.error("Identifiants Aiven manquants dans les Secrets Streamlit.")
         else:
-            cfg = make_config(sub_user, sub_pass, force=False)
-            ok, msg = check_mysql(cfg)
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
+            cfg = make_config(sub_user, sub_pass)
+            pw = browser = context = None
             try:
-                live_periods = discover_periods(cfg)
-                if live_periods:
-                    st.session_state["scraper_periods"] = unique_periods(live_periods)
+                ok_db, msg_db = check_mysql(cfg)
+                (st.success if ok_db else st.error)(msg_db)
+                pw, browser, context, page, api = api_session(cfg)
+                ctx = api.get_player_context(refresh=True)
+                st.success(f"API Subakoua OK — équipe {ctx.team_number or '?'} · {ctx.team_name}")
+            except Exception as exc:
+                st.error(f"Échec login/API : {exc}")
+            finally:
+                try:
+                    if context:
+                        context.close()
+                finally:
+                    if browser:
+                        browser.close()
+                    if pw:
+                        pw.stop()
+with b2:
+    if st.button("🔎 Découvrir les périodes", use_container_width=True):
+        if not sub_user or not sub_pass:
+            st.error("Identifiants Subakoua manquants.")
+        else:
+            try:
+                cfg = make_config(sub_user, sub_pass)
+                live = discover_periods(cfg)
+                if live:
+                    st.session_state["scraper_periods"] = unique_periods(live)
                     st.session_state["scraper_periods_source"] = "live"
-                    st.success(f"{len(live_periods)} période(s) détectée(s) depuis Subakoua.")
+                    st.success(f"{len(live)} période(s) détectée(s).")
                     st.rerun()
             except Exception as exc:
-                st.error(f"Impossible de charger les périodes en ligne : {exc}")
-with col_b:
-    if st.button("↻ Utiliser les périodes connues", use_container_width=True):
-        st.session_state["scraper_periods"] = list(scraper.MOIS_DISPONIBLES)
+                st.error(f"Découverte impossible : {exc}")
+with b3:
+    if st.button("↻ Périodes locales de secours", use_container_width=True):
+        st.session_state["scraper_periods"] = list(legacy.MOIS_DISPONIBLES)
         st.session_state["scraper_periods_source"] = "local"
         st.rerun()
 
-available = st.session_state.get("scraper_periods") or list(scraper.MOIS_DISPONIBLES)
-available = unique_periods(available)
+available = unique_periods(st.session_state.get("scraper_periods") or list(legacy.MOIS_DISPONIBLES))
 st.session_state["scraper_periods"] = available
 
-st.subheader("📅 Périodes à extraire")
-source = st.session_state.get("scraper_periods_source", "local")
-st.caption("Périodes détectées en direct depuis Subakoua." if source == "live" else "Périodes de secours connues. Utilise le bouton de découverte pour synchroniser la liste avec le portail.")
+# ---------------------------------------------------------------------------
+# ONGLET 1 : PLAN DOCUMENTAIRE
+# ---------------------------------------------------------------------------
+tab_plan, tab_sync, tab_legacy = st.tabs(["🎯 Plan documentaire", "📥 Synchroniser", "🧱 Secours DOM"])
 
-preset = st.selectbox(
-    "Sélection rapide",
-    ["Personnalisée", "Toutes", "Année 1", "Année 2"],
-    index=0,
-)
-
-if preset == "Toutes":
-    st.session_state["scraper_selected_periods"] = list(available)
-elif preset in {"Année 1", "Année 2"}:
-    st.session_state["scraper_selected_periods"] = [p for p in available if period_year(p) == preset]
-else:
-    if "scraper_selected_periods" not in st.session_state:
-        st.session_state["scraper_selected_periods"] = [available[0]] if available else []
-    st.session_state["scraper_selected_periods"] = [p for p in st.session_state["scraper_selected_periods"] if p in available]
-
-selected_periods = st.multiselect(
-    "Périodes sélectionnées",
-    options=available,
-    key="scraper_selected_periods",
-    placeholder="Choisis une ou plusieurs périodes...",
-)
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Périodes", len(selected_periods))
-c2.metric("Périodes disponibles", len(available))
-c3.metric("Mode", "Incrémental" if not st.session_state.get("force_scraper", False) else "Forcé")
-
-st.subheader("🧩 Modules")
-module_options = [(display, key) for display, key in scraper.MODULES_A_VISITER]
-module_labels = [display for display, _ in module_options]
-selected_module_labels = st.multiselect(
-    "Modules à extraire",
-    options=module_labels,
-    default=module_labels,
-    help="Tu peux limiter le scraping aux modules utiles pour accélérer une mise à jour.",
-)
-selected_modules = [(display, key) for display, key in module_options if display in selected_module_labels]
-
-with st.expander("⚙️ Options avancées", expanded=False):
-    force = st.checkbox(
-        "Forcer le re-scraping des périodes sélectionnées",
-        value=False,
-        key="force_scraper",
-        help="Par défaut, le scraper ignore les couples période/module déjà présents et valides dans la BDD.",
-    )
-    timeout_ms = st.number_input("Timeout navigation / extraction (ms)", min_value=10000, max_value=120000, value=30000, step=5000)
-    retries = st.number_input("Nombre de tentatives par opération", min_value=1, max_value=6, value=3, step=1)
-
-st.subheader("🧠 Optimiseur d'achats documentaires")
-st.caption(
-    "Le scraper explore d'abord le catalogue sans acheter. Il note chaque document selon les informations réellement utiles au pilotage, puis choisit la meilleure couverture par euro."
-)
-profile = st.selectbox(
-    "Profil de pilotage",
-    list(PROFILE_NEEDS.keys()),
-    index=0,
-    help="Le profil détermine les informations recherchées : trésorerie, rentabilité, BFR/TVA, ventes, concurrence, production, achats, RH et investissements.",
-)
-budget_docs = st.number_input(
-    "Budget maximum d'achat documentaire (€)",
-    min_value=0.0, value=50.0, step=5.0,
-    help="Le plan n'autorisera jamais un dépassement de ce montant. Un prix inconnu n'est jamais acheté automatiquement."
-)
-
-plan_col1, plan_col2 = st.columns([1, 1])
-with plan_col1:
-    build_plan = st.button(
-        "🔎 Analyser le catalogue et construire le plan",
-        type="secondary", use_container_width=True,
-        disabled=(not selected_modules or not sub_user or not sub_pass or not db_host or not db_name or not db_user),
-    )
-with plan_col2:
-    if st.session_state.get("document_catalog"):
-        st.success(f"Catalogue chargé : {len(st.session_state['document_catalog'])} document(s).")
-    else:
-        st.info("Aucun catalogue analysé pour le moment.")
-
-if build_plan:
-    try:
-        cfg_plan = make_config(sub_user, sub_pass, force=False)
-        with st.spinner("Analyse des documents disponibles (aucun achat)…"):
-            catalog = discover_document_catalog_live(cfg_plan, selected_modules)
-            catalog_rows = [c.to_dict() for c in catalog]
-            catalog_rows = enrich_catalog_with_db_coverage(cfg_plan, catalog_rows, selected_periods)
-            from document_strategy import make_candidate
-            catalog = [make_candidate(x.get("module_display", ""), x.get("module_key", ""), x) for x in catalog_rows]
-        plan = optimize_document_plan(catalog, profile=profile, budget=float(budget_docs))
-        st.session_state["document_catalog"] = [c.to_dict() for c in catalog]
-        st.session_state["document_plan"] = plan
-        st.session_state["document_plan_profile"] = profile
-        st.session_state["document_plan_budget"] = float(budget_docs)
-        st.rerun()
-    except Exception as exc:
-        st.error(f"Impossible d'analyser le catalogue documentaire : {exc}")
-
-plan = st.session_state.get("document_plan")
-if plan:
-    st.markdown("##### 📋 Plan recommandé")
-    cpl1, cpl2, cpl3 = st.columns(3)
-    cpl1.metric("Couverture des besoins", f"{plan.get('coverage_ratio', 0):.0%}")
-    cpl2.metric("Coût estimé", f"{plan.get('spent_estimate', 0):,.2f} €")
-    cpl3.metric("Budget restant", "—" if plan.get('remaining_budget') is None else f"{plan.get('remaining_budget', 0):,.2f} €")
-
-    selected_items = plan.get("selected", [])
-    owned_selected = [x for x in selected_items if x.get("owned") is True]
-    candidate_map = {(str(x.get("module_key")), str(x.get("title"))): x for x in selected_items if x.get("owned") is not True}
-    all_catalog = st.session_state.get("document_catalog", [])
-
-    catalog_options = [
-        (str(x.get("module_key")), str(x.get("title")))
-        for x in all_catalog
-        if float(x.get("score", 0) or 0) > 0 and x.get("owned") is not True
-    ]
-    default_keys = [k for k in candidate_map if k in catalog_options]
-    selected_keys = st.multiselect(
-        "Documents à retenir (tu peux ajuster la recommandation)",
-        options=catalog_options,
-        default=default_keys,
-        format_func=lambda x: f"{x[1]} — {x[0]}",
-        key="document_plan_selection",
+with tab_plan:
+    st.subheader("🎯 Construire le plan d'achat documentaire")
+    st.info(
+        "La planification interroge le catalogue live de Subakoua. Elle ne déclenche aucun achat. "
+        "Les achats sont séparés et nécessitent une confirmation explicite."
     )
 
-    chosen = list(owned_selected)
-    catalog_lookup = {(str(x.get("module_key")), str(x.get("title"))): x for x in all_catalog}
-    for key in selected_keys:
-        if key in catalog_lookup:
-            chosen.append(catalog_lookup[key])
-    # Déduplication tout en préservant l'ordre du plan.
-    dedup = {}
-    for item in chosen:
-        dedup[(str(item.get("module_key")), str(item.get("title")))] = item
-    chosen = list(dedup.values())
-    chosen_plan = dict(plan)
-    chosen_plan["selected"] = chosen
-    chosen_plan["spent_estimate"] = sum(float(x.get("price")) for x in chosen if x.get("price") is not None)
-    chosen_plan["remaining_budget"] = max(0.0, float(budget_docs) - chosen_plan["spent_estimate"])
-    st.session_state["document_plan"] = chosen_plan
-
-    if chosen:
-        rows = []
-        for x in chosen:
-            rows.append({
-                "Priorité": round(float(x.get("score", 0)), 1),
-                "Module": x.get("module_display", x.get("module_key", "")),
-                "Document": x.get("title", ""),
-                "Prix": None if x.get("price") is None else float(x.get("price")),
-                "Valeur/€": None if x.get("price") in (None, 0) else round(float(x.get("score", 0)) / float(x.get("price")), 3),
-                "Besoin couvert": ", ".join(PILOTAGE_NEEDS[n]["label"] for n in x.get("needs", []) if n in PILOTAGE_NEEDS),
-                "Informations utiles": ", ".join(x.get("facts", [])),
-                "Statut": ("Déjà dans Aiven" if x.get("db_covered") else ("Déjà accessible" if x.get("owned") is True else ("A acheter" if x.get("purchase_required") else "A vérifier"))),
-            })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    unknown = [x for x in chosen if x.get("price") is None]
-    if unknown:
-        st.warning(f"⚠️ {len(unknown)} document(s) du plan ont un prix inconnu. Ils seront bloqués en achat automatique.")
-
-    confirm_buy = st.checkbox(
-        "J'autorise le scraper à acheter réellement les documents retenus, dans la limite du budget affiché.",
-        value=False,
-        key="confirm_document_purchases",
-    )
-    st.caption("Aucun achat n'est exécuté pendant l'analyse. L'achat n'a lieu qu'au lancement avec cette confirmation.")
-
-    with st.expander("🔎 Pourquoi certains documents ne sont pas recommandés ?", expanded=False):
-        rejected = chosen_plan.get("rejected", [])
-        if rejected:
-            rej_rows = []
-            for x in rejected[:80]:
-                rej_rows.append({
-                    "Module": x.get("module_display", x.get("module_key", "")),
-                    "Document": x.get("title", ""),
-                    "Prix": x.get("price"),
-                    "Score": round(float(x.get("score", 0)), 1),
-                    "Motif": x.get("reason", "non prioritaire"),
-                })
-            st.dataframe(pd.DataFrame(rej_rows), use_container_width=True, hide_index=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        preset = st.selectbox("Sélection rapide des périodes", ["Personnalisée", "Toutes", "Année 1", "Année 2"], key="smart_period_preset")
+        if preset == "Toutes":
+            default_periods = available
+        elif preset in {"Année 1", "Année 2"}:
+            default_periods = [p for p in available if period_year(p) == preset]
         else:
-            st.info("Aucun document écarté par l'optimiseur.")
-
-if selected_periods and selected_modules and db_host and db_name and db_user:
-    try:
-        preview_cfg = make_config(sub_user or "", sub_pass or "", force=False)
-        coverage = get_periods_from_db(preview_cfg, selected_periods, [k for _, k in selected_modules])
-        if not coverage.empty:
-            st.subheader("📊 État avant extraction")
-            st.dataframe(coverage, use_container_width=True, hide_index=True)
-    except Exception:
-        pass
-
-st.divider()
-run_col1, run_col2 = st.columns([2, 1])
-with run_col1:
-    launch = st.button(
-        f"🚀 Lancer le scraping · {len(selected_periods)} période(s) × {len(selected_modules)} module(s)",
-        type="primary",
-        use_container_width=True,
-        disabled=(
-            not selected_periods or not selected_modules or not sub_user or not sub_pass or not db_host or not db_name or not db_user
-            or (bool(plan) and bool(plan.get("selected")) and any(x.get("purchase_required") for x in plan.get("selected", [])) and not confirm_buy)
-        ),
-    )
-with run_col2:
-    st.info("Les données sont synchronisées dans Aiven au fur et à mesure des modules.")
-
-if launch:
-    config = make_config(sub_user, sub_pass, force=force)
-    config = scraper.replace(config, timeout_ms=int(timeout_ms), retries=int(retries))
-    log_placeholder = st.empty()
-    status = st.status("🚀 Scraping en cours…", expanded=True)
-    logger = scraper.build_logger(config.output_dir)
-    ui_handler = StreamlitLogHandler(log_placeholder)
-    logger.addHandler(ui_handler)
-
-    try:
-        summary = scraper.lancer_robot_global(
-            selected_periods, selected_modules, config, logger,
-            document_plan=plan, autoriser_achats=bool(plan and confirm_buy)
+            default_periods = st.session_state.get("smart_target_periods", available[:1])
+        selected_periods = st.multiselect("Périodes cibles", available, default=default_periods, key="smart_target_periods")
+    with c2:
+        current_period = st.selectbox(
+            "Période courante pour les achats",
+            available,
+            index=min(len(available) - 1, max(0, available.index(st.session_state.get("smart_current_period", available[-1])) if st.session_state.get("smart_current_period", available[-1]) in available else len(available) - 1)),
+            key="smart_current_period",
+            help="Une étude achetée sur la période courante est observée comme disponible sur la période suivante dans l'audit. Le moteur ne force jamais un achat hors période.",
         )
-        st.session_state["last_scraper_summary"] = summary
-        errors = sum(len(r.get("errors", [])) for r in summary.get("module_results", []))
-        if errors:
-            status.update(label="⚠️ Extraction terminée avec erreurs", state="error", expanded=True)
+        budget = st.number_input("Budget documentaire par période cible (€)", min_value=0.0, max_value=1_000_000.0, value=600.0, step=50.0, key="smart_budget")
+        allow_5000 = st.checkbox("Autoriser les études stratégiques à 5 000 €", value=False, key="smart_allow_5000")
+
+    if selected_periods:
+        st.caption("Objectif stratégique : **maximiser la part de marché**, puis couvrir prévision, production et sécurité financière.")
+
+    if st.button("📐 Analyser le catalogue live et calculer le plan", type="primary", use_container_width=True, disabled=not selected_periods):
+        if not sub_user or not sub_pass:
+            st.error("Identifiants Subakoua manquants.")
         else:
-            status.update(label="✅ Extraction terminée", state="complete", expanded=False)
-        logger.removeHandler(ui_handler)
-    except Exception as exc:
-        status.update(label="❌ Échec du scraping", state="error", expanded=True)
-        st.error(f"Scraping interrompu : {exc}")
-        logger.removeHandler(ui_handler)
+            cfg = make_config(sub_user, sub_pass)
+            pw = browser = context = None
+            try:
+                pw, browser, context, page, api = api_session(cfg, log_name="subakoua_plan")
+                with st.status("Analyse documentaire en cours…", expanded=True) as status:
+                    summaries, items = smart_scraper.build_plan_for_periods(api, selected_periods, budget_per_period=float(budget), allow_5000=allow_5000)
+                    st.session_state["smart_plan"] = plan_dicts(items)
+                    st.session_state["smart_plan_summaries"] = [asdict(x) for x in summaries]
+                    st.session_state["smart_api_base"] = api.base_url
+                    status.update(label="✅ Plan documentaire calculé", state="complete", expanded=False)
+            except Exception as exc:
+                st.error(f"Planification impossible : {exc}")
+            finally:
+                try:
+                    if context:
+                        context.close()
+                finally:
+                    if browser:
+                        browser.close()
+                    if pw:
+                        pw.stop()
 
-summary = st.session_state.get("last_scraper_summary")
-if summary:
-    st.subheader("🧾 Dernier run")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Statut", summary.get("status", "inconnu"))
-    m2.metric("Périodes", len(summary.get("periods", [])))
-    m3.metric("Modules", len(summary.get("modules", [])))
-    m4.metric("Durée", f"{summary.get('duration_seconds', 0):.1f} s")
+    summaries = st.session_state.get("smart_plan_summaries", [])
+    plan_rows = st.session_state.get("smart_plan", [])
+    if summaries:
+        st.subheader("📊 Diagnostic des périodes")
+        st.dataframe(pd.DataFrame(summaries), use_container_width=True, hide_index=True)
 
-    rows = []
-    for result in summary.get("module_results", []):
-        rows.append({
-            "Module": result.get("display", result.get("module", "")),
-            "Scrapées": len(result.get("scraped_periods", [])),
-            "Ignorées": len(result.get("skipped_periods", [])),
-            "Erreurs": len(result.get("errors", [])),
-        })
-    if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.subheader("📚 Matrice documentaire")
+    with st.expander("Voir le classement document → décision → valeur / €", expanded=False):
+        matrix = optimizer.build_information_matrix(optimizer.load_profiles())
+        st.dataframe(pd.DataFrame(matrix), use_container_width=True, hide_index=True)
 
-    with st.expander("🔍 Détails du run"):
-        st.json(summary)
+    if plan_rows:
+        plan = plan_items_from_dicts(plan_rows)
+        st.subheader("💳 Études payantes recommandées")
+        df = pd.DataFrame([
+            {
+                "Période cible": x.target_period,
+                "Période achat": x.purchase_period,
+                "Document": x.label,
+                "Prix (€)": x.price,
+                "Valeur / €": x.efficiency,
+                "Endpoint API": "✅" if x.endpoint_known else "⚠️",
+                "Besoins couverts": ", ".join(x.covered_needs),
+                "Pourquoi": x.reason,
+                "Statut": x.status,
+            }
+            for x in plan
+        ])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        purchasable = smart_scraper.only_purchasable_now(plan, current_period)
+        total_now = sum(x.price for x in purchasable)
+        st.metric("Achats réellement exigibles maintenant", f"{len(purchasable)} · {total_now:,.0f} €")
+
+        authorize = st.checkbox(
+            "⚠️ J'autorise les achats réels affichés ci-dessous sur la période courante",
+            value=False,
+            key="smart_authorize_purchase",
+            help="Cette case est indispensable. Sans elle, le bouton ne fait qu'un mode simulation.",
+        )
+        now_df = pd.DataFrame([{"Document": x.label, "Prix (€)": x.price, "Cible": x.target_period, "Endpoint": "✅" if x.endpoint_known else "⚠️"} for x in purchasable])
+        if not now_df.empty:
+            st.dataframe(now_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucun achat du plan n'est actuellement exigible sur la période courante. Les autres restent à planifier.")
+
+        if st.button("💳 Acheter maintenant les études exigibles", type="secondary", use_container_width=True, disabled=(not purchasable or not authorize)):
+            cfg = make_config(sub_user, sub_pass)
+            pw = browser = context = None
+            try:
+                pw, browser, context, page, api = api_session(cfg, log_name="subakoua_purchase")
+                results = smart_scraper.execute_purchase_plan(api, purchasable, current_period=current_period, allow_real_purchases=True)
+                st.session_state["smart_purchase_results"] = results
+                st.success(f"Opération terminée : {sum(1 for r in results if r.get('status') == 'ACHETE')} achat(s) confirmé(s).")
+            except Exception as exc:
+                st.error(f"Achat interrompu : {exc}")
+            finally:
+                try:
+                    if context:
+                        context.close()
+                finally:
+                    if browser:
+                        browser.close()
+                    if pw:
+                        pw.stop()
+
+        if st.session_state.get("smart_purchase_results"):
+            st.subheader("🧾 Résultat des achats")
+            st.dataframe(pd.DataFrame(st.session_state["smart_purchase_results"]), use_container_width=True, hide_index=True)
+
+with tab_sync:
+    st.subheader("📥 Lire les études accessibles et synchroniser Aiven")
+    st.caption("Cette étape ne déclenche aucun achat. Une étude n'est acceptée que si son API retourne `readAllowed=true` et le bon `studyId`.")
+
+    target_periods = st.multiselect(
+        "Périodes à synchroniser",
+        options=available,
+        default=st.session_state.get("smart_target_periods", available[:1]),
+        key="smart_sync_periods",
+    )
+    profiles = optimizer.load_profiles()
+    known_profiles = [p for p in profiles.values() if p.endpoint_known]
+    options = {p.study_id: f"{p.label} · {p.price:g} € · API" for p in known_profiles}
+    saved_plan_ids = [r["study_id"] for r in st.session_state.get("smart_plan", []) if r.get("endpoint_known")]
+    default_ids = [sid for sid in saved_plan_ids if sid in options]
+    selected_ids = st.multiselect("Études API à lire", list(options), default=default_ids or list(options)[:8], format_func=lambda sid: options[sid])
+
+    if st.button("📥 Synchroniser les études sélectionnées", type="primary", use_container_width=True, disabled=(not target_periods or not selected_ids)):
+        if not sub_user or not sub_pass:
+            st.error("Identifiants Subakoua manquants.")
+        elif not db_host or not db_name or not db_user or not db_pass:
+            st.error("Configuration Aiven incomplète.")
+        else:
+            cfg = make_config(sub_user, sub_pass)
+            conn = None
+            pw = browser = context = None
+            try:
+                conn = legacy.connect_mysql(cfg)
+                pw, browser, context, page, api = api_session(cfg, log_name="subakoua_sync")
+                results = smart_scraper.fetch_and_store(api, conn, target_periods, selected_ids)
+                st.session_state["smart_sync_results"] = results
+                ok = sum(1 for r in results if r.get("status") == "OK")
+                refused = sum(1 for r in results if r.get("status") == "REFUSE")
+                errors = sum(1 for r in results if r.get("status") == "ERREUR")
+                st.success(f"Synchronisation terminée — OK={ok} · refus={refused} · erreurs={errors}")
+            except Exception as exc:
+                st.error(f"Synchronisation interrompue : {exc}")
+            finally:
+                try:
+                    if conn:
+                        conn.close()
+                finally:
+                    try:
+                        if context:
+                            context.close()
+                    finally:
+                        if browser:
+                            browser.close()
+                        if pw:
+                            pw.stop()
+
+    if st.session_state.get("smart_sync_results"):
+        st.dataframe(pd.DataFrame(st.session_state["smart_sync_results"]), use_container_width=True, hide_index=True)
+
+with tab_legacy:
+    st.warning("Mode de secours conservé pour les études dont aucun endpoint API n'a encore été cartographié. Il ne doit pas être privilégié lorsqu'une API connue existe.")
+    selected_legacy_periods = st.multiselect(
+        "Périodes",
+        options=available,
+        default=st.session_state.get("smart_target_periods", available[:1]),
+        key="legacy_periods",
+    )
+    module_options = [(display, key) for display, key in legacy.MODULES_A_VISITER]
+    selected_legacy_labels = st.multiselect(
+        "Modules DOM",
+        [display for display, _ in module_options],
+        default=[display for display, _ in module_options],
+        key="legacy_modules",
+    )
+    selected_legacy_modules = [(display, key) for display, key in module_options if display in selected_legacy_labels]
+    force = st.checkbox("Forcer le rescraping", value=False, key="legacy_force")
+
+    if st.button("🧱 Lancer le secours DOM", use_container_width=True, disabled=(not selected_legacy_periods or not selected_legacy_modules)):
+        if not sub_user or not sub_pass:
+            st.error("Identifiants Subakoua manquants.")
+        else:
+            cfg = make_config(sub_user, sub_pass, force=force)
+            logger = legacy.build_logger(cfg.output_dir)
+            try:
+                summary = legacy.lancer_robot_global(selected_legacy_periods, selected_legacy_modules, cfg, logger)
+                st.session_state["last_scraper_summary"] = summary
+                st.success("Secours DOM terminé.")
+                st.json(summary)
+            except Exception as exc:
+                st.error(f"Secours DOM interrompu : {exc}")
