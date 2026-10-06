@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -74,6 +74,7 @@ class PlannedPeriod:
     proposed_purchase_count: int = 0
     proposed_cost: float = 0.0
     recommended_ids: tuple[str, ...] = ()
+    coverage_by_need: Mapping[str, Any] = field(default_factory=dict)
 
 
 def load_local_catalog() -> list[dict[str, str]]:
@@ -94,31 +95,39 @@ def plan_for_period(
     allow_5000: bool = False,
 ) -> tuple[PlannedPeriod, list[optimizer.PlanItem], list[dict[str, object]]]:
     """Construit le plan à partir du catalogue LIVE, pas du snapshot historique."""
-    live = api.catalog(target_period, optimizer.load_profiles().keys())
-    live_rows = availability_rows(live)
     profiles = optimizer.load_profiles()
+    target_live = api.catalog(target_period, profiles.keys())
+    target_rows = availability_rows(target_live)
+    target_label = optimizer.period_code_to_label(api.period_code(target_period))
+    purchase_label = optimizer.try_next_period(target_label, -1)
+    purchase_rows: list[dict[str, object]] = []
+    if purchase_label is not None:
+        purchase_live = api.catalog(purchase_label, profiles.keys())
+        purchase_rows = availability_rows(purchase_live)
     plan = optimizer.build_purchase_plan(
         profiles,
-        live_rows,
-        target_period=optimizer.period_code_to_label(api.period_code(target_period)),
+        target_rows,
+        purchase_catalog_rows=purchase_rows,
+        target_period=target_label,
         budget=budget,
         allow_5000=allow_5000,
     )
-    target_label = optimizer.period_code_to_label(api.period_code(target_period))
-    purchase_period = optimizer.try_next_period(target_label, -1) or "Impossible — avant A1-Janvier"
-    coverage = optimizer.build_coverage_snapshot(profiles, live_rows)
+    purchase_period = purchase_label or "Impossible — avant A1-Janvier"
+    coverage = optimizer.build_coverage_snapshot(profiles, target_rows)
+    coverage_by_need = coverage.get("coverage_by_need", {})
     summary = PlannedPeriod(
         target_period=target_label,
         purchase_period=purchase_period,
-        live_rows=len(live_rows),
-        already_available_count=sum(1 for r in live_rows if bool(r.get("bought_by_team", r.get("boughtByTeam", False)))),
-        free_count=sum(1 for r in live_rows if float(r.get("price", 0) or 0) <= 0),
+        live_rows=len(target_rows),
+        already_available_count=sum(1 for r in target_rows if bool(r.get("bought_by_team", r.get("boughtByTeam", False)))),
+        free_count=sum(1 for r in target_rows if float(r.get("price", 0) or 0) <= 0),
         baseline_coverage_percent=float(coverage["coverage_percent"]),
         proposed_purchase_count=len(plan),
         proposed_cost=round(sum(x.price for x in plan), 2),
         recommended_ids=tuple(x.study_id for x in plan),
+        coverage_by_need=coverage_by_need,
     )
-    return summary, plan, live_rows
+    return summary, plan, target_rows
 
 
 def build_plan_for_periods(

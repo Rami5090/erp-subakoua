@@ -26,3 +26,12 @@ Cette version poursuit la reconstruction du scraper à partir de l'audit web Sub
 Les prix, IDs et endpoints connus sont issus de l'audit web fourni. La relation étude → levier de décision est une couche analytique du projet : elle doit être revue si une nouvelle règle Subakoua ou un changement de document est constaté.
 
 Les secrets `.env` et les données propriétaires ne doivent jamais être poussés sur GitHub.
+
+
+## v2.5.2 — couverture documentaire corrigée
+- La couverture n'est plus calculée par simple recouvrement de tags.
+- Chaque besoin de pilotage est décomposé en unités d'information explicitement cartographiées.
+- Les études gratuites/déjà achetées couvrent uniquement les informations qu'elles fournissent réellement.
+- Les documents payants sont évalués sur leur gain marginal réel.
+- Le catalogue de la période cible sert à mesurer ce qui sera disponible; le catalogue de la période d'achat sert à déterminer ce qui est effectivement achetable.
+- Le diagnostic affiche désormais la couverture par besoin, et non seulement un agrégat opaque.

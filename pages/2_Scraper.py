@@ -287,7 +287,15 @@ with tab_plan:
     plan_rows = st.session_state.get("smart_plan", [])
     if summaries:
         st.subheader("📊 Diagnostic des périodes")
-        st.dataframe(pd.DataFrame(summaries), use_container_width=True, hide_index=True)
+        summary_rows = []
+        for x in summaries:
+            row = asdict(x) if hasattr(x, "__dataclass_fields__") else dict(x)
+            cov = row.pop("coverage_by_need", {}) or {}
+            for need_id, info in cov.items():
+                row[f"Couverture · {info.get('label', need_id)}"] = info.get("coverage_percent", 0.0)
+            summary_rows.append(row)
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+        st.caption("La couverture est calculée par informations distinctes explicitement cartographiées, et non par simple recouvrement de mots-clés.")
 
     st.subheader("📚 Matrice documentaire")
     with st.expander("Voir le classement document → décision → valeur / €", expanded=False):

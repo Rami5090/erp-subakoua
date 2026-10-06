@@ -97,6 +97,107 @@ DEFAULT_NEEDS = (
     ),
 )
 
+
+# ---------------------------------------------------------------------------
+# MATRICE D'EVIDENCE : on ne mesure plus la couverture par simple recouvrement
+# de tags. Chaque besoin est décomposé en informations observables, et chaque
+# information doit être fournie par au moins une étude effectivement
+# disponible. Cela évite le faux 100 % créé par l'addition de tags redondants.
+# ---------------------------------------------------------------------------
+NEED_EVIDENCE_WEIGHTS: dict[str, dict[str, float]] = {
+    "market_share": {
+        "own_sales": 0.10,
+        "own_market_share": 0.15,
+        "competitor_market_share": 0.25,
+        "competitor_sales": 0.15,
+        "competitor_price": 0.15,
+        "competitor_quality": 0.10,
+        "competitor_advertising": 0.10,
+    },
+    "forecast": {
+        "historical_sales": 0.35,
+        "seasonality": 0.30,
+        "market_potential": 0.20,
+        "sales_forecast": 0.15,
+    },
+    "production": {
+        "stock": 0.20,
+        "material_need": 0.25,
+        "workshop_capacity": 0.25,
+        "production_process": 0.15,
+        "product_quality": 0.10,
+        "supplier_risk": 0.05,
+    },
+    "cash": {
+        "bank_cashflow": 0.30,
+        "bfr": 0.25,
+        "customer_receivables": 0.10,
+        "vat": 0.15,
+        "tax": 0.10,
+        "debt": 0.10,
+    },
+    "profit": {
+        "profit_and_loss": 0.35,
+        "turnover": 0.15,
+        "production_cost": 0.25,
+        "expense_detail": 0.15,
+        "margin_competitor": 0.10,
+    },
+    "hr": {
+        "payroll": 0.45,
+        "staff_quality": 0.35,
+        "staff_satisfaction": 0.20,
+    },
+}
+
+STUDY_EVIDENCE: dict[str, tuple[str, ...]] = {
+    # Pilotage / marché
+    "monitoring": ("own_sales", "own_market_share", "stock", "bank_cashflow", "staff_satisfaction"),
+    "ensaacvm": ("own_sales", "historical_sales"),
+    "potentialMarketStudy": ("market_potential",),
+    "peeumreusreprv": ("seasonality", "sales_forecast"),
+    "pevcvipm": ("competitor_market_share",),
+    "pevcvicpve": ("competitor_sales",),
+    "pevcvicppv": ("competitor_price",),
+    "pevcecprpf": ("competitor_price",),
+    "pevcfcpfquca": ("competitor_price", "competitor_quality"),
+    "pevcfcpfqurs": ("competitor_price", "competitor_quality", "margin_competitor"),
+    "pevcfcpfpuca": ("competitor_price", "competitor_advertising"),
+    "pevcfcpfpurs": ("competitor_price", "competitor_advertising", "margin_competitor"),
+    "pevcvicppq": ("competitor_advertising",),
+    "pevcvicpps": ("competitor_advertising",),
+    # Production / approvisionnement
+    "companyStock": ("stock",),
+    "enprgeqtpp": ("production_process",),
+    "enprgeqtmpdb": ("material_need",),
+    "enprgeqtatdb": ("workshop_capacity",),
+    "enprgeqlquespf": ("product_quality",),
+    "enprgeqlccqp": ("product_quality",),
+    "pefrmppofr": ("supplier_risk",),
+    # Finance
+    "bankStatements": ("bank_cashflow", "debt", "vat"),
+    "peeedsftt": ("bfr", "bank_cashflow"),
+    "peeedsbidt": ("bfr",),
+    "peeedsbiak": ("bfr",),
+    "peeedccscl": ("customer_receivables",),
+    "peeefstvp": ("vat",),
+    "peeefsisp": ("tax",),
+    "pebaemecta": ("debt",),
+    "companyResults": ("profit_and_loss", "turnover"),
+    "peeedscrsm": ("profit_and_loss", "turnover", "production_cost"),
+    "peeedscrdl": ("profit_and_loss", "turnover", "expense_detail"),
+    "ifrsStatementOfProfitAndLoss": ("profit_and_loss", "production_cost"),
+    "peeedccg": ("turnover",),
+    "productionCostDetailStudy": ("production_cost",),
+    "peeedcahsx": ("expense_detail",),
+    "peeedcahm": ("production_cost",),
+    # RH
+    "peeedcitesm": ("payroll",),
+    "enafgeqlevss": ("payroll", "staff_quality"),
+    "enapgeqlevss": ("payroll", "staff_quality"),
+    "enprgeqlevss": ("payroll", "staff_quality"),
+}
+
 # Profils explicites des études les plus structurantes.
 OVERRIDES: dict[str, dict[str, Any]] = {
     # Pilotage / marché
@@ -299,17 +400,49 @@ def try_next_period(period: str, offset: int = 1) -> str | None:
         return None
 
 
-def _profile_coverages(profile: StudyProfile, needs: Sequence[DecisionNeed]) -> dict[str, float]:
-    tags = set(profile.tags)
+def _profile_evidence(profile: StudyProfile) -> tuple[str, ...]:
+    """Retourne les unités d'information réellement fournies par une étude.
+
+    Les études non cartographiées explicitement ne sont pas comptées comme
+    preuves fortes : on préfère une couverture conservatrice à un faux positif.
+    """
+    explicit = STUDY_EVIDENCE.get(profile.study_id)
+    if explicit is not None:
+        return explicit
+    return ()
+
+
+def _need_coverages_from_available(
+    available_profiles: Sequence[StudyProfile],
+    needs: Sequence[DecisionNeed],
+) -> dict[str, float]:
+    available_evidence: set[str] = set()
+    for profile in available_profiles:
+        available_evidence.update(_profile_evidence(profile))
     out: dict[str, float] = {}
     for need in needs:
-        overlap = tags.intersection(need.tags)
-        if not overlap:
+        requirements = NEED_EVIDENCE_WEIGHTS.get(need.need_id, {})
+        if not requirements:
+            out[need.need_id] = 0.0
             continue
-        # Couverture partielle par document. Plus un document répond à des dimensions
-        # distinctes du besoin, plus sa contribution est forte, bornée à 1.
-        ratio = min(1.0, len(overlap) / max(1.0, min(4, len(need.tags))))
-        out[need.need_id] = ratio
+        out[need.need_id] = round(sum(w for evidence, w in requirements.items() if evidence in available_evidence), 6)
+    return out
+
+
+def _profile_coverages(profile: StudyProfile, needs: Sequence[DecisionNeed]) -> dict[str, float]:
+    """Compatibilité historique : convertit les preuves d'une étude en couverture.
+
+    Une étude ne peut plus couvrir un besoin simplement parce que quelques tags
+    génériques se ressemblent ; elle doit fournir au moins une unité d'information
+    explicitement cartographiée.
+    """
+    evidence = set(_profile_evidence(profile))
+    out: dict[str, float] = {}
+    for need in needs:
+        weights = NEED_EVIDENCE_WEIGHTS.get(need.need_id, {})
+        covered = sum(w for atom, w in weights.items() if atom in evidence)
+        if covered > 0:
+            out[need.need_id] = min(1.0, covered)
     return out
 
 
@@ -325,16 +458,22 @@ def score_profile(profile: StudyProfile, needs: Sequence[DecisionNeed] = DEFAULT
 
 
 def _candidate_utility(candidate: StudyProfile, covered: Mapping[str, float], needs: Sequence[DecisionNeed]) -> tuple[float, tuple[str, ...], str]:
-    local = _profile_coverages(candidate, needs)
+    """Calcule le gain marginal à partir d'informations distinctes, pas de tags.
+
+    `covered` contient la couverture actuelle par besoin. Pour chaque preuve
+    nouvelle, on répartit son poids dans les besoins qu'elle sert.
+    """
+    evidence = set(_profile_evidence(candidate))
     marginal = 0.0
     newly: list[str] = []
     for need in needs:
+        requirements = NEED_EVIDENCE_WEIGHTS.get(need.need_id, {})
         old = float(covered.get(need.need_id, 0.0))
-        inc = min(1.0, old + local.get(need.need_id, 0.0)) - old
+        new_cov = min(1.0, old + sum(w for atom, w in requirements.items() if atom in evidence))
+        inc = new_cov - old
         if inc > 0:
             marginal += need.weight * inc
             newly.append(need.label)
-    # Petit bonus documentaire pour favoriser les études riches sans écraser la couverture.
     marginal *= 0.8 + candidate.importance / 500.0
     if candidate.endpoint_known:
         marginal *= 1.05
@@ -350,6 +489,7 @@ def build_purchase_plan(
     needs: Sequence[DecisionNeed] = DEFAULT_NEEDS,
     purchase_lead_periods: int = 1,
     allow_5000: bool = False,
+    purchase_catalog_rows: Sequence[Mapping[str, object]] | None = None,
 ) -> list[PlanItem]:
     """Construit un plan par période avec un glouton à utilité marginale.
 
@@ -357,8 +497,9 @@ def build_purchase_plan(
     `boughtByTeam` est alors la source de vérité de disponibilité.
     """
     rows_by_id = {str(r["study_id"]): r for r in catalog_rows}
+    purchase_rows_by_id = {str(r["study_id"]): r for r in (purchase_catalog_rows if purchase_catalog_rows is not None else catalog_rows)}
     budget_left = max(0.0, float(budget))
-    covered: dict[str, float] = {}
+    covered_evidence: set[str] = set()
     chosen: set[str] = set()
     candidates: list[StudyProfile] = []
 
@@ -371,13 +512,12 @@ def build_purchase_plan(
         price = float(row.get("price", profile.price) or 0)
         bought = bool(row.get("boughtByTeam", row.get("bought_by_team", row.get("bought_any_period", False))))
         if bought or price <= 0:
-            local = _profile_coverages(profile, needs)
-            for need_id, cov in local.items():
-                covered[need_id] = min(1.0, covered.get(need_id, 0.0) + cov)
+            covered_evidence.update(_profile_evidence(profile))
 
-    # 2) Candidats payants restants.
+    # 2) Candidats payants restants : ils doivent être achetables sur la
+    # période d'achat (et non simplement visibles sur la période cible).
     for sid, profile in profiles.items():
-        row = rows_by_id.get(sid)
+        row = purchase_rows_by_id.get(sid)
         if not row:
             continue
         price = float(row.get("price", profile.price) or 0)
@@ -394,7 +534,13 @@ def build_purchase_plan(
         for p in candidates:
             if p.price > budget_left:
                 continue
-            marginal, new_needs, reason = _candidate_utility(p, covered, needs)
+            covered_snapshot = _need_coverages_from_available(
+                [profiles[sid] for sid in ()], needs
+            ) if False else {
+                need_id: min(1.0, sum(w for atom, w in NEED_EVIDENCE_WEIGHTS.get(need_id, {}).items() if atom in covered_evidence))
+                for need_id in NEED_EVIDENCE_WEIGHTS
+            }
+            marginal, new_needs, reason = _candidate_utility(p, covered_snapshot, needs)
             if marginal <= 0:
                 continue
             efficiency = marginal / p.price if p.price else 0.0
@@ -405,16 +551,14 @@ def build_purchase_plan(
         _, marginal, picked, new_needs, reason = feasible[0]
         chosen.add(picked.study_id)
         budget_left -= picked.price
-        local = _profile_coverages(picked, needs)
-        for need_id, cov in local.items():
-            covered[need_id] = min(1.0, covered.get(need_id, 0.0) + cov)
+        covered_evidence.update(_profile_evidence(picked))
         candidates = [p for p in candidates if p.study_id != picked.study_id]
 
     plan: list[PlanItem] = []
     purchase_period = try_next_period(target_period, -purchase_lead_periods)
     for sid in chosen:
         profile = profiles[sid]
-        row = rows_by_id[sid]
+        row = purchase_rows_by_id.get(sid) or rows_by_id[sid]
         utility, reason = score_profile(profile, needs)
         if purchase_period is None:
             # Une cible sur A1-Janvier n'a pas de période d'achat antérieure
@@ -475,10 +619,10 @@ def build_coverage_snapshot(
     catalog_rows: Sequence[Mapping[str, object]],
     needs: Sequence[DecisionNeed] = DEFAULT_NEEDS,
 ) -> dict[str, object]:
-    """Mesure la couverture du socle gratuit/déjà acheté avant tout achat payant."""
+    """Mesure la couverture du socle disponible par unités d'information distinctes."""
     rows_by_id = {str(r["study_id"]): r for r in catalog_rows}
-    covered: dict[str, float] = {}
     available_ids: list[str] = []
+    available_profiles: list[StudyProfile] = []
     for sid, profile in profiles.items():
         row = rows_by_id.get(sid)
         if not row:
@@ -487,13 +631,25 @@ def build_coverage_snapshot(
         bought = bool(row.get("boughtByTeam", row.get("bought_by_team", row.get("bought_any_period", False))))
         if price <= 0 or bought:
             available_ids.append(sid)
-            for need_id, cov in _profile_coverages(profile, needs).items():
-                covered[need_id] = min(1.0, covered.get(need_id, 0.0) + cov)
+            available_profiles.append(profile)
+    covered = _need_coverages_from_available(available_profiles, needs)
     weighted_total = sum(n.weight for n in needs) or 1.0
     weighted_covered = sum(n.weight * min(1.0, covered.get(n.need_id, 0.0)) for n in needs)
+    by_need = {
+        n.need_id: {
+            "label": n.label,
+            "weight": n.weight,
+            "coverage_percent": round(100.0 * min(1.0, covered.get(n.need_id, 0.0)), 2),
+            "mandatory": n.mandatory,
+        }
+        for n in needs
+    }
+    missing = [v["label"] for v in by_need.values() if v["coverage_percent"] < 100.0]
     return {
         "covered": {k: round(v, 4) for k, v in covered.items()},
         "coverage_percent": round(100.0 * weighted_covered / weighted_total, 2),
+        "coverage_by_need": by_need,
+        "missing_need_labels": missing,
         "available_document_count": len(available_ids),
         "available_study_ids": tuple(available_ids),
     }
