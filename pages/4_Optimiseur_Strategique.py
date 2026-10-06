@@ -8,6 +8,7 @@ from sqlalchemy.engine import URL
 
 from forecast_engine import (
     PRODUCTS,
+    _num,
     build_period_data,
     build_study_data,
     extract_own_sales_history,
@@ -191,7 +192,7 @@ if not base_eval["feasible"]:
 quality_values=sorted(set([max(0,base_quality-10),max(0,base_quality-5),base_quality,min(100,base_quality+5),min(100,base_quality+10)]))
 candidates=generate_candidate_grid(baseline_scenario,budget,quality_values)
 
-if st.button("🚀 Lancer l'optimisation", type="primary", use_container_width=True):
+if st.button("🚀 Lancer l'optimisation", type="primary", width="stretch"):
     evaluated=[]
     progress=st.progress(0)
     for i,sc in enumerate(candidates):
