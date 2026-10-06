@@ -600,6 +600,71 @@ class SubakouaAPIClient:
             "Le catalogue API la connaît mais aucun lien/carte exploitable n'a été trouvé."
         )
 
+    def _find_visible_purchase_dialog(self, page: Page):
+        """Retourne le dialogue d'achat réellement visible, indépendamment de l'accessibility tree."""
+        dialogs = page.locator('[role="dialog"]')
+        visible = []
+        try:
+            count = min(dialogs.count(), 30)
+        except Exception:
+            count = 0
+        for i in range(count):
+            dlg = dialogs.nth(i)
+            try:
+                if dlg.is_visible():
+                    visible.append(dlg)
+            except Exception:
+                continue
+        return visible[-1] if visible else None
+
+    def _click_purchase_confirm(self, page: Page, dialog) -> bool:
+        """Clique le bouton Confirmer avec fallbacks DOM/JS pour PrimeNG/Angular."""
+        patterns = [
+            re.compile(r"^\s*Confirmer\s*$", re.I),
+            re.compile(r"Confirmer", re.I),
+        ]
+        for pattern in patterns:
+            try:
+                buttons = dialog.locator('button').filter(has_text=pattern)
+                count = min(buttons.count(), 10)
+                for i in range(count - 1, -1, -1):
+                    btn = buttons.nth(i)
+                    if not btn.is_visible():
+                        continue
+                    try:
+                        btn.click(timeout=5000)
+                        return True
+                    except Exception:
+                        try:
+                            btn.click(timeout=3000, force=True)
+                            return True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # Le HTML d'audit montre un <button type="button"><span class="p-button-label">Confirmer</span>.
+        # Si les locators Playwright échouent à cause d'Angular, déclenche le clic DOM directement.
+        try:
+            clicked = page.evaluate("""() => {
+                const dialogs = Array.from(document.querySelectorAll('[role=\"dialog\"]')).filter(el => {
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+                });
+                const dlg = dialogs[dialogs.length - 1];
+                if (!dlg) return false;
+                const btn = Array.from(dlg.querySelectorAll('button')).find(b =>
+                    (b.innerText || b.textContent || '').trim().toLocaleLowerCase().includes('confirmer')
+                );
+                if (!btn) return false;
+                btn.click();
+                return true;
+            }""")
+            return bool(clicked)
+        except Exception:
+            return False
+
     def purchase_study(
         self,
         purchase_period: str,
@@ -610,43 +675,68 @@ class SubakouaAPIClient:
     ) -> dict[str, Any]:
         """Achète une étude via l'interface réelle de Subakoua.
 
-        Le portail ouvre une boîte de dialogue de confirmation ; on ne considère
-        l'achat comme réussi qu'après le clic sur « Confirmer » et la vérification
-        du catalogue live (`boughtByTeam=true`).
+        La navigation est volontairement instrumentée étape par étape : un achat ne
+        doit jamais rester silencieux plusieurs minutes après le login.
         """
         if self.page is None:
             raise SubakouaAPIError("Aucune page Playwright attachée au client : achat UI impossible.")
 
         page = self.page
         wanted_period = self.period_label(purchase_period)
-        page.goto(self.dashboard_url, wait_until="domcontentloaded", timeout=self.timeout)
-        page.wait_for_timeout(700)
+        self.logger.info("Achat UI démarré | étude=%s | libellé=%s | période=%s", study_id, label or study_id, wanted_period)
+
+        # Après le login, la page est déjà /companies. Ne recharge surtout pas cette
+        # page inutilement : cela pouvait bloquer le premier achat alors que la session
+        # était correctement établie. Pour les achats suivants, on revient au dashboard.
+        try:
+            if "/companies" not in (page.url or "").lower():
+                self.logger.info("Achat UI | retour dashboard : %s", self.dashboard_url)
+                page.goto(self.dashboard_url, wait_until="domcontentloaded", timeout=self.timeout)
+                page.wait_for_timeout(700)
+            else:
+                self.logger.info("Achat UI | dashboard déjà ouvert : %s", page.url)
+        except Exception as exc:
+            raise SubakouaAPIError(f"Impossible d'ouvrir le dashboard avant achat {study_id}: {exc}") from exc
+
+        self.logger.info("Achat UI | sélection période : %s", wanted_period)
         self._select_purchase_period(page, wanted_period)
-        # La barre de recherche globale est disponible directement depuis
-        # l'en-tête des pages : on tente l'ouverture de l'étude sans changer
-        # de zone. Le fallback _open_study_area reste disponible pour les
-        # variantes de portail qui n'exposent pas cette barre.
+        self.logger.info("Achat UI | recherche de l'étude : %s", study_id)
+
         try:
             self._open_study(page, study_id, label)
         except SubakouaAPIError:
+            self.logger.info("Achat UI | recherche primaire échouée, ouverture de la zone Études/Documents")
             self._open_study_area(page)
             self._select_purchase_period(page, wanted_period)
             self._open_study(page, study_id, label)
 
-        # Le portail peut conserver plusieurs composants p-dialog montés dans le DOM.
-        # `get_by_role("dialog")` peut alors cibler un composant non visible en
-        # premier rang. On prend explicitement le dernier dialogue visible.
-        visible_dialogs = page.locator('div[role="dialog"]:visible')
-        try:
-            visible_dialogs.first.wait_for(state="visible", timeout=7000)
-        except Exception as exc:
+        self.logger.info("Achat UI | bouton Acheter exécuté, attente de la confirmation")
+        # Attente robuste : on cherche le dialog réel et, à défaut, le texte de la demande.
+        dialog = None
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            dialog = self._find_visible_purchase_dialog(page)
+            if dialog is not None:
+                break
+            try:
+                body = page.locator('body').inner_text(timeout=1000)
+                if "Confirmez-vous l'achat" in body:
+                    dialog = self._find_visible_purchase_dialog(page)
+                    if dialog is not None:
+                        break
+            except Exception:
+                pass
+            page.wait_for_timeout(250)
+
+        if dialog is None:
             raise SubakouaAPIError(
                 f"La fenêtre de confirmation d'achat n'est pas apparue pour {study_id}. URL={page.url}"
-            ) from exc
-        dialog = visible_dialogs.last
+            )
+
+        body = dialog.inner_text()
+        self.logger.info("Achat UI | dialogue détecté : %s", body.replace("\n", " ")[:250])
 
         if expected_price is not None:
-            body = dialog.inner_text()
             candidates = {
                 f"{expected_price:,.2f}".replace(",", "§").replace(".", ",").replace("§", "."),
                 f"{expected_price:.2f}",
@@ -657,46 +747,28 @@ class SubakouaAPIClient:
                     f"Prix affiché différent pour {study_id} : attendu {expected_price:.2f} €. Dialogue={body!r}"
                 )
 
-        # Sélecteur CSS volontairement utilisé en premier : dans l'audit, le
-        # bouton est bien un <button type="button"> contenant un span
-        # `.p-button-label` avec le texte `Confirmer`.
-        confirm = dialog.locator('button').filter(has_text=re.compile(r"^\s*Confirmer\s*$", re.I)).last
-        try:
-            confirm.wait_for(state="visible", timeout=7000)
-        except Exception:
-            # Fallback PrimeNG plus permissif pour les variations d'accessibility tree.
-            confirm = dialog.locator('button:visible').filter(has_text=re.compile(r"Confirmer", re.I)).last
-            try:
-                confirm.wait_for(state="visible", timeout=3000)
-            except Exception as exc:
-                raise SubakouaAPIError(
-                    f"Bouton Confirmer introuvable dans la fenêtre d'achat de {study_id}. "
-                    f"Dialogue={dialog.inner_text()!r}"
-                ) from exc
+        self.logger.info("Achat UI | clic Confirmer : %s", study_id)
+        if not self._click_purchase_confirm(page, dialog):
+            raise SubakouaAPIError(
+                f"Bouton Confirmer introuvable dans la fenêtre d'achat de {study_id}. Dialogue={body!r}"
+            )
 
-        try:
-            confirm.click(timeout=7000)
-        except Exception:
-            # Dernier recours : le bouton est visible mais une animation PrimeNG
-            # peut intercepter ponctuellement le clic.
-            confirm.click(timeout=3000, force=True)
-
+        self.logger.info("Achat UI | Confirmer cliqué, vérification de l'achat côté catalogue")
         try:
             dialog.wait_for(state="hidden", timeout=10000)
         except PlaywrightTimeoutError:
-            page.wait_for_timeout(1800)
+            page.wait_for_timeout(1200)
 
-        # Vérification métier après le clic de confirmation. Le backend peut mettre
-        # quelques centaines de ms à refléter boughtByTeam=true : on réessaie.
         live = None
-        for _ in range(5):
+        for attempt in range(1, 7):
             try:
                 live = next((x for x in self.catalog(wanted_period, [study_id]) if x.study_id == study_id), None)
                 if live is not None and live.bought_by_team:
                     break
-            except Exception:
-                pass
-            page.wait_for_timeout(800)
+            except Exception as exc:
+                self.logger.warning("Achat UI | vérification %s/6 impossible : %s", attempt, exc)
+            page.wait_for_timeout(700)
+
         if live is None or not live.bought_by_team:
             raise SubakouaAPIError(
                 f"Le clic 'Confirmer' a été effectué mais l'achat de {study_id} n'est pas confirmé par le catalogue live."
@@ -732,4 +804,5 @@ def start_authenticated_client(config: Any, logger: logging.Logger | None = None
     legacy.login(page, context, config, log)
     api = SubakouaAPIClient(context, logger=log, base_url=legacy.DOMAINE_BASE, timeout_ms=config.timeout_ms, page=page, dashboard_url=legacy.URL_DASHBOARD)
     api.get_player_context(refresh=True)
+    log.info("Client Subakoua prêt | page=%s | moteur d'achat disponible", page.url)
     return pw, browser, context, page, api
