@@ -907,6 +907,185 @@ def build_12m_forecast(
     return pd.DataFrame(rows), out_results
 
 
+
+# ---------------------------------------------------------------------------
+# Validation hors-échantillon et prévision roulante
+# ---------------------------------------------------------------------------
+
+FORECAST_CANDIDATE_METHODS = (
+    "niveau saisonnier",
+    "tendance amortie + saisonnalité",
+    "Holt amorti + saisonnalité",
+)
+
+
+def _forecast_with_method(
+    series: Sequence[float],
+    future_month_indices: Sequence[int],
+    structural_factors: Mapping[int, float] | None,
+    method: str,
+) -> np.ndarray:
+    """Prévision déterministe d'un modèle candidat pour le backtest.
+
+    Le but est de comparer des méthodes avec exactement les mêmes informations
+    disponibles au cutoff. Aucun modèle n'a accès aux observations futures.
+    """
+    values = np.asarray([max(0.0, float(v)) for v in series], dtype=float)
+    horizon = len(future_month_indices)
+    if horizon == 0:
+        return np.asarray([], dtype=float)
+    factors = dict(structural_factors or {i: 1.0 for i in range(12)})
+    hist_factors = np.asarray([max(0.01, float(factors.get(i % 12, 1.0))) for i in range(len(values))], dtype=float)
+    future_factors = np.asarray([max(0.01, float(factors.get(i % 12, 1.0))) for i in future_month_indices], dtype=float)
+    deseason = values / hist_factors
+
+    if method == "niveau saisonnier" or len(values) == 0:
+        base_level = float(deseason[-1]) if len(deseason) else 0.0
+        return np.maximum(0.0, np.repeat(base_level, horizon) * future_factors)
+
+    if method == "Holt amorti + saisonnalité" and Holt is not None and len(values) >= 4 and np.nanstd(deseason) > 0:
+        try:
+            fit = Holt(deseason, damped_trend=True, initialization_method="estimated").fit(optimized=True)
+            base = np.maximum(0.0, np.asarray(fit.forecast(horizon), dtype=float))
+            return np.maximum(0.0, base * future_factors)
+        except Exception:
+            pass
+
+    # Tendance amortie : on conserve la logique historique du moteur, mais en
+    # la calculant uniquement sur les données disponibles avant le cutoff.
+    base = _damped_linear_forecast(deseason, horizon)
+    return np.maximum(0.0, base * future_factors)
+
+
+def backtest_forecast_methods(
+    sales_history: pd.DataFrame,
+    structural: Mapping[int, Mapping[int, float]],
+    products: Sequence[str] = PRODUCTS,
+    min_train: int = 2,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Backtest one-step-ahead des modèles candidats sur les mois réels disponibles.
+
+    Retourne :
+    - détails par cutoff / produit / méthode ;
+    - synthèse avec MAE, WAPE et MAPE.
+
+    Chaque prévision n'utilise que l'historique strictement antérieur à la cible.
+    """
+    if sales_history is None or sales_history.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    hist = sales_history.sort_values("index").drop_duplicates("index", keep="last").copy()
+    real_indices = sorted(int(x) for x in hist["index"].tolist())
+    details = []
+    for target_pos in range(min_train, len(real_indices)):
+        target_idx = real_indices[target_pos]
+        train = hist.loc[hist["index"] < target_idx].sort_values("index")
+        target = hist.loc[hist["index"] == target_idx].iloc[0]
+        month_idx = target_idx % 12
+        for product in products:
+            values = train[product].astype(float).to_numpy() if product in train else np.zeros(len(train))
+            factors = structural.get(PRODUCT_GROUP.get(product, 3), {i: 1.0 for i in range(12)})
+            actual = float(target.get(product, 0.0) or 0.0)
+            for method in FORECAST_CANDIDATE_METHODS:
+                pred_arr = _forecast_with_method(values, [month_idx], factors, method)
+                pred = float(pred_arr[0]) if len(pred_arr) else 0.0
+                abs_err = abs(pred - actual)
+                ape = abs_err / max(abs(actual), 1e-9)
+                details.append({
+                    "cutoff": period_label_from_index(target_idx - 1),
+                    "target_period": period_label_from_index(target_idx),
+                    "target_index": target_idx,
+                    "product": product,
+                    "method": method,
+                    "actual": actual,
+                    "forecast": pred,
+                    "abs_error": abs_err,
+                    "ape": ape,
+                })
+    det = pd.DataFrame(details)
+    if det.empty:
+        return det, pd.DataFrame()
+    summary_rows = []
+    for method, g in det.groupby("method"):
+        total_actual = float(g["actual"].sum())
+        summary_rows.append({
+            "method": method,
+            "n_predictions": int(len(g)),
+            "MAE": float(g["abs_error"].mean()),
+            "WAPE": float(g["abs_error"].sum() / total_actual) if total_actual > 0 else np.nan,
+            "MAPE": float(g["ape"].mean()),
+        })
+    summary = pd.DataFrame(summary_rows).sort_values(["WAPE", "MAE"], na_position="last").reset_index(drop=True)
+    return det, summary
+
+
+def select_backtest_method(summary: pd.DataFrame, default: str = "niveau saisonnier") -> str:
+    if summary is None or summary.empty:
+        return default
+    eligible = summary.dropna(subset=["WAPE"]).sort_values(["WAPE", "MAE"], ascending=[True, True])
+    return str(eligible.iloc[0]["method"]) if not eligible.empty else default
+
+
+def rolling_forecast_12m(
+    sales_history: pd.DataFrame,
+    structural: Mapping[int, Mapping[int, float]],
+    anchor_period: str,
+    method: str | None = None,
+    horizon: int = 12,
+    products: Sequence[str] = PRODUCTS,
+) -> tuple[pd.DataFrame, dict[str, ForecastResult]]:
+    """Forecast roulant : dernier mois réel + 12 mois futurs à partir de l'ancrage.
+
+    Cette vue est adaptée à la décision opérationnelle : si l'ancrage est juin,
+    le premier mois prévisionnel est juillet et l'horizon va jusqu'à juin de
+    l'année suivante.
+    """
+    if sales_history is None or sales_history.empty or anchor_period not in PERIOD_INDEX:
+        return pd.DataFrame(), {}
+    anchor_idx = period_index(anchor_period)
+    hist = sales_history.loc[sales_history["index"] <= anchor_idx].sort_values("index").copy()
+    if hist.empty:
+        return pd.DataFrame(), {}
+    future_indices = list(range(anchor_idx + 1, anchor_idx + horizon + 1))
+    chosen = method or "niveau saisonnier"
+    results: dict[str, ForecastResult] = {}
+    for product in products:
+        ser = hist[product].astype(float).to_numpy() if product in hist else np.zeros(len(hist))
+        factors = structural.get(PRODUCT_GROUP.get(product, 3), {i: 1.0 for i in range(12)})
+        pred = _forecast_with_method(ser, [i % 12 for i in future_indices], factors, chosen)
+        sigma = float(np.std(ser / np.asarray([max(0.01, float(factors.get(i % 12, 1.0))) for i in hist["index"]], dtype=float))) if len(ser) > 1 else max(1.0, float(ser[-1]) * 0.25)
+        results[product] = ForecastResult(product, len(ser), chosen, tuple(pred), tuple(np.maximum(0.0, pred - 1.96 * sigma)), tuple(np.maximum(0.0, pred + 1.96 * sigma)), tuple(float(factors.get(i, 1.0)) for i in range(12)))
+
+    anchor_row = hist.loc[hist["index"] == anchor_idx].tail(1)
+    rows = []
+    if not anchor_row.empty:
+        ar = anchor_row.iloc[0]
+        row = {"index": anchor_idx, "periode": period_label_from_index(anchor_idx), "statut": "Réel"}
+        for p in products:
+            row[p] = float(ar.get(p, 0.0) or 0.0)
+        row["Total unités"] = float(sum(row[p] for p in products))
+        rows.append(row)
+    for j, idx in enumerate(future_indices):
+        row = {"index": idx, "periode": period_label_from_index(idx), "statut": "Prévision"}
+        for p in products:
+            row[p] = float(results[p].forecast[j])
+        row["Total unités"] = float(sum(row[p] for p in products))
+        rows.append(row)
+    return pd.DataFrame(rows), results
+
+
+def latest_observed_period(sales_history: pd.DataFrame, anchor_limit: str | None = None) -> str | None:
+    """Retourne le dernier mois réellement observé dans l'historique des ventes."""
+    if sales_history is None or sales_history.empty:
+        return None
+    hist = sales_history.copy()
+    if anchor_limit in PERIOD_INDEX:
+        hist = hist.loc[hist["index"] <= PERIOD_INDEX[anchor_limit]]
+    if hist.empty:
+        return None
+    idx = int(hist["index"].max())
+    return period_label_from_index(idx)
+
+
 def compute_market_forecast(
     forecast_df: pd.DataFrame,
     structural: Mapping[int, Mapping[int, float]],

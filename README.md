@@ -1,32 +1,30 @@
-# ERP Subakoua — Pilotage stratégique 12 mois v2.6.1
+# ERP Subakoua — v2.8
 
-Correctif du moteur de prévision : la page de pilotage sait désormais exploiter les payloads API-first stockés dans `erp_etudes` (notamment `ensaacvm` pour les ventes mensuelles et `peeumreusreprv` pour la saisonnalité / marché potentiel), tout en conservant un fallback vers l'ancien schéma `erp_donnees`.
+## Stack
+- Streamlit
+- MySQL Aiven
+- SQLAlchemy + PyMySQL
+- Scraper API-first Subakoua
+- Prévision + backtest + optimiseur stratégique exploratoire
 
-## Correctif principal
+## v2.8 — calibration historique & décision roulante
+- Le pilotage s'ancre automatiquement sur le dernier mois de ventes réellement observé.
+- Les périodes futures éventuellement présentes dans la base sont exclues de la calibration.
+- Backtest hors-échantillon un pas en avant des modèles de forecast.
+- Sélection du modèle par WAPE : niveau saisonnier, tendance amortie ou Holt amorti.
+- Forecast roulant : mois réel d'ancrage + 12 mois futurs.
+- La prochaine décision est explicitement calculée (ex. juin réel → juillet à décider).
+- L'optimiseur stratégique réutilise le même ancrage et le même forecast roulant.
 
-La version précédente lisait uniquement `erp_donnees` et attendait une structure DOM/normalisée de type :
+## Interprétation
+Avec six mois d'historique, le système peut comparer les modèles hors-échantillon mais ne dispose pas encore d'un historique suffisant pour identifier proprement une saisonnalité annuelle statistique 12 mois. La saisonnalité structurelle fournie par Subakoua reste donc une information explicite du modèle. Les effets prix/publicité/qualité restent des sensibilités descriptives tant qu'ils ne sont pas validés statistiquement.
 
-`donnees_internes -> Marketing -> Ventes mensuelles -> Tableau_1`
-
-Or le nouveau scraper API-first stocke les payloads bruts dans :
-
-`erp_etudes -> study_id=ensaacvm -> payload.sales`
-
-Le moteur v2.6.1 accepte désormais les deux formats.
-
-## Tests
-
-- Tests forecast : 7/7 PASS
-- Compilation Python : PASS
+## Secrets
+Ne jamais pousser `.env` ou les secrets Streamlit. Utiliser Streamlit Secrets en production.
 
 ## Déploiement
-
-Remplacer les fichiers du dépôt Git sans toucher au `.env`, puis :
-
 ```powershell
 git add .
-git commit -m "Correction forecast API-first"
+git commit -m "Ajout calibration backtest et decision roulante v2.8"
 git push
 ```
-
-Streamlit Cloud redéploiera l'application.

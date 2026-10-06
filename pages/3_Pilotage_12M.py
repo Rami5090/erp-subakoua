@@ -16,9 +16,14 @@ from forecast_engine import (
     extract_structural_seasonality,
     extract_market_potential,
     extract_competitive_snapshot,
-    build_12m_forecast,
+    backtest_forecast_methods,
+    select_backtest_method,
+    rolling_forecast_12m,
+    latest_observed_period,
     compute_market_forecast,
     ordered_periods,
+    period_index,
+    period_label_from_index,
 )
 from strategic_engine import current_competitive_metrics, strategic_alerts
 
@@ -88,10 +93,24 @@ if not periods:
     st.error("Aucune période exploitable dans les données." )
     st.stop()
 
-anchor = st.selectbox("Période d'ancrage du plan", periods, index=len(periods) - 1, help="Les observations jusqu'à cette période servent à estimer le reste de l'année.")
+sales = extract_own_sales_history(period_data, study_data=study_data)
+latest_real = latest_observed_period(sales)
+if latest_real is None:
+    st.error("Aucune période de ventes réellement observée n'est disponible.")
+    st.stop()
+# Pour empêcher toute fuite d'information, l'ancrage est limité au dernier mois
+# réellement observé dans les ventes. Les études futures peuvent exister dans la
+# base, mais ne doivent pas servir à préparer une décision historique.
+real_periods = [p for p in periods if period_index(p) <= period_index(latest_real)]
+default_anchor_idx = real_periods.index(latest_real) if latest_real in real_periods else len(real_periods) - 1
+anchor = st.selectbox(
+    "Période d'ancrage du plan",
+    real_periods,
+    index=default_anchor_idx,
+    help="Dernier mois réellement observé par défaut. Les données futures ne sont jamais utilisées pour calibrer la décision.",
+)
 own_company = st.number_input("N° entreprise pilotée", 1, 9, 3, 1)
 
-sales = extract_own_sales_history(period_data, study_data=study_data)
 struct = extract_structural_seasonality(period_data, study_data=study_data)
 potential = extract_market_potential(period_data, study_data=study_data)
 competitive = extract_competitive_snapshot(period_data, int(own_company), study_data=study_data, anchor_period=anchor)
@@ -127,10 +146,25 @@ with st.expander("🔎 Diagnostic des sources", expanded=False):
     if not sales.empty:
         st.dataframe(sales[["periode", *PRODUCTS]].tail(12).round(1), width="stretch", hide_index=True)
 
-forecast_df, results = build_12m_forecast(sales, struct, anchor)
+# Calibration hors-échantillon sur les seules périodes réelles jusqu'à l'ancrage.
+sales_to_anchor = sales.loc[sales["index"] <= period_index(anchor)].copy()
+backtest_details, backtest_summary = backtest_forecast_methods(sales_to_anchor, struct)
+selected_method = select_backtest_method(backtest_summary)
+with st.expander("🧪 Validation hors-échantillon", expanded=False):
+    st.write(f"Historique réel utilisé : {len(sales_to_anchor)} période(s) jusqu'à {anchor}.")
+    if not backtest_summary.empty:
+        bt = backtest_summary.copy()
+        bt["WAPE"] = bt["WAPE"] * 100.0
+        bt["MAPE"] = bt["MAPE"] * 100.0
+        st.dataframe(bt.round({"MAE": 1, "WAPE": 2, "MAPE": 2}), width="stretch", hide_index=True)
+        st.success(f"Méthode retenue pour la décision suivante : **{selected_method}** (meilleur WAPE hors-échantillon).")
+    else:
+        st.info("Pas assez de périodes réelles pour départager les modèles hors-échantillon : le moteur conserve le niveau saisonnier.")
+
+# Prévision opérationnelle : mois d'ancrage réel + 12 mois futurs.
+forecast_df, results = rolling_forecast_12m(sales, struct, anchor, method=selected_method, horizon=12)
 if results:
-    models = sorted({r.model for r in results.values()})
-    st.caption("Modèle(s) utilisé(s) : " + " · ".join(models))
+    st.caption("Modèle retenu pour la trajectoire : " + selected_method + f" · ancrage réel : {anchor} · prochaine décision : {period_label_from_index(period_index(anchor)+1)}")
 if forecast_df.empty:
     st.error("Impossible de construire le forecast : aucune série de ventes valide n'a été reconnue jusqu'à la période d'ancrage.")
     st.info("Le pilote accepte désormais les ventes API ensaacvm (payload brut) et les anciennes données normalisées. Vérifie que l'étude « Ventes mensuelles » a bien été synchronisée dans erp_etudes ou que le contenu de erp_donnees contient une table de ventes exploitable.")
@@ -174,7 +208,7 @@ chart = (
     )
     .properties(height=380)
 )
-st.altair_chart(chart, use_container_width=True)
+st.altair_chart(chart, width="stretch")
 st.dataframe(forecast_df[["periode", "statut", *PRODUCTS, "Total unités"]].round(1), width="stretch", hide_index=True)
 
 st.subheader("🎯 Part de marché : trajectoire de base vs cible")
@@ -195,12 +229,15 @@ elif market.calibration_method.startswith("proxy"):
 
 m1, m2, m3 = st.columns(3)
 last_share = market.baseline_share_forecast[-1] if market.baseline_share_forecast else None
-m1.metric("PDM globale projetée fin d'année", f"{last_share * 100:.2f} %" if last_share is not None and pd.notna(last_share) else "—")
+m1.metric("PDM globale projetée fin d'horizon", f"{last_share * 100:.2f} %" if last_share is not None and pd.notna(last_share) else "—")
 finite_gaps = [float(x) for x in market.unit_gap if pd.notna(x)]
 m2.metric("Écart moyen à la cible", f"{sum(finite_gaps) / len(finite_gaps):,.0f} u" if finite_gaps else "—")
 m3.metric("Méthode de marché", market.calibration_method)
 for alert in strategic_alerts(list(market.baseline_share_forecast), target_share, current_share):
     st.warning("⚠️ " + alert)
+
+st.subheader("🗓️ Position dans le cycle décisionnel")
+st.info(f"Dernier mois réel reconnu : **{latest_real}** · prochaine décision : **{period_label_from_index(period_index(latest_real)+1)}** · horizon projeté : 12 mois.")
 
 st.subheader("🧭 Prérequis pour l'optimiseur stratégique")
 preq = [
@@ -226,4 +263,4 @@ else:
     st.info("Les données concurrentielles détaillées ne sont pas disponibles dans les sources actuellement synchronisées.")
 
 st.subheader("🧪 Méthode scientifique")
-st.info("Le moteur ne force pas un Holt-Winters annuel lorsque l'historique est insuffisant. Avec 1 à 7 observations, il ancre le niveau observé et applique la saisonnalité structurelle ; de 8 à 23 mois, Holt amorti sur série désaisonnalisée ; à partir de 24 mois, ETS/Holt-Winters saisonnier 12 mois. Les effets causaux prix/publicité/qualité restent séparés tant qu'ils ne sont pas calibrés statistiquement.")
+st.info("Le moteur verrouille l'ancrage sur le dernier mois réellement observé, compare plusieurs modèles hors-échantillon (niveau saisonnier, tendance amortie, Holt amorti) puis retient celui qui minimise l'erreur WAPE disponible. Tant que l'historique reste court, la saisonnalité structurelle Subakoua complète l'information. ETS/Holt-Winters saisonnier 12 mois n'est activé qu'avec un historique suffisamment long. Les effets causaux prix/publicité/qualité restent séparés tant qu'ils ne sont pas statistiquement validés.")

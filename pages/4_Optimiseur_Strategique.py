@@ -14,8 +14,13 @@ from forecast_engine import (
     extract_own_sales_history,
     extract_structural_seasonality,
     extract_competitive_snapshot,
-    build_12m_forecast,
     ordered_periods,
+    period_index,
+    period_label_from_index,
+    backtest_forecast_methods,
+    select_backtest_method,
+    rolling_forecast_12m,
+    latest_observed_period,
 )
 from optimizer_engine import (
     DEFAULT_TIMES,
@@ -30,7 +35,7 @@ from optimizer_engine import (
 
 st.set_page_config(page_title="Optimiseur stratégique", layout="wide")
 st.title("🎯 Optimiseur stratégique — maximiser la part de marché")
-st.caption("Analyse de sensibilité empirique : le moteur n'attribue pas d'élasticité causale non validée. Lorsque la PDM globale est absente, l'objectif porte explicitement sur le segment concurrentiel observé.")
+st.caption("Analyse de sensibilité empirique : le moteur calibre sur les périodes réellement observées jusqu'à l'ancrage, effectue un backtest hors-échantillon du forecast, puis teste des scénarios sur le benchmark segmentiel lorsque la PDM globale est indisponible.")
 
 
 def secret(section: str, key: str, default: str = "") -> str:
@@ -103,12 +108,21 @@ if not periods:
     st.error("Aucune période exploitable.")
     st.stop()
 
-anchor=st.selectbox("Période d'ancrage", periods, index=len(periods)-1)
+sales=extract_own_sales_history(period_data,study_data=study_data)
+latest_real=latest_observed_period(sales)
+if latest_real is None:
+    st.error("Aucune période de ventes réellement observée n'est disponible.")
+    st.stop()
+real_periods=[p for p in periods if period_index(p) <= period_index(latest_real)]
+default_anchor_idx=real_periods.index(latest_real) if latest_real in real_periods else len(real_periods)-1
+anchor=st.selectbox("Période d'ancrage / dernière période réelle", real_periods, index=default_anchor_idx, help="Le moteur interdit toute fuite vers des périodes futures lors de la calibration.")
 own_company=int(st.number_input("N° entreprise",1,9,3,1))
 
-sales=extract_own_sales_history(period_data,study_data=study_data)
 struct=extract_structural_seasonality(period_data,study_data=study_data)
-forecast_df, _ = build_12m_forecast(sales, struct, anchor)
+sales_to_anchor=sales.loc[sales["index"] <= period_index(anchor)].copy()
+backtest_details, backtest_summary=backtest_forecast_methods(sales_to_anchor, struct)
+selected_method=select_backtest_method(backtest_summary)
+forecast_df, _ = rolling_forecast_12m(sales, struct, anchor, method=selected_method, horizon=12)
 competitive=extract_competitive_snapshot(period_data,own_company,study_data=study_data,anchor_period=anchor)
 
 if forecast_df.empty or not competitive.get("rows"):
@@ -155,10 +169,17 @@ cap=load_capacity(engine)
 
 st.subheader("📚 État du modèle")
 c1,c2,c3,c4=st.columns(4)
-c1.metric("Ventes actuelles",f"{sum(float(sales.iloc[-1][p]) for p in PRODUCTS):,.0f} u" if not sales.empty else "—")
+actual_sales_row=sales_to_anchor.tail(1)
+actual_total=float(actual_sales_row[PRODUCTS].sum(axis=1).iloc[0]) if not actual_sales_row.empty else 0.0
+c1.metric("Ventes actuelles",f"{actual_total:,.0f} u")
 c2.metric("PDM segment observée",f"{segment_share*100:.2f} %" if segment_share is not None else "—")
 c3.metric("Concurrents",str(max(0,len(rows)-1)))
 c4.metric("Calibration",f"{cal.n_obs} obs / {cal.n_periods} période(s)" if cal else "Non disponible")
+if not backtest_summary.empty:
+    best_wape=float(backtest_summary.iloc[0]["WAPE"])*100.0
+    st.info(f"Validation forecast : méthode retenue **{selected_method}** · WAPE hors-échantillon **{best_wape:.1f} %** sur {len(sales_to_anchor)} période(s) réelles. Décision préparée pour **{period_label_from_index(period_index(anchor)+1)}**.")
+else:
+    st.info(f"Validation forecast : historique trop court pour comparer les modèles. Décision préparée pour **{period_label_from_index(period_index(anchor)+1)}**.")
 if cal:
     st.info(f"Calibration descriptive régularisée : {cal.confidence} — R² descriptif={cal.r2:.2f}. Les scénarios sont ancrés sur la PDM observée et les variations sont volontairement rétrécies lorsque l'historique est court. {cal.note}")
 else:
