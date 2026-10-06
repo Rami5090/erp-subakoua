@@ -745,8 +745,37 @@ def extract_competitive_snapshot(
         share = float(monitoring["market_share"])
     if total_market is None and own and share and own.get("ventes", 0) > 0:
         total_market = float(own["ventes"]) / float(share)
-    share_scope = "overall_monitoring" if monitoring is not None and share is not None else ("competitive_segment" if share is not None else None)
-    return {"period": period, "rows": rows, "own": own, "total_market": total_market, "share": share, "share_scope": share_scope}
+    segment_share = None
+    segment_total_market = total_market
+    if rows and own:
+        pct_seg = _num(own.get("part_marche"))
+        if pct_seg is not None:
+            segment_share = pct_seg / 100.0 if pct_seg > 1 else pct_seg
+        if segment_total_market is None:
+            sales_vals = [float(r["ventes"]) for r in rows if r.get("ventes") is not None]
+            if sales_vals:
+                segment_total_market = float(sum(sales_vals))
+    global_share = float(monitoring["market_share"]) if monitoring and monitoring.get("market_share") is not None else None
+    global_total_market = None
+    if monitoring is not None and global_share is not None and own and own.get("ventes") is not None and own["ventes"] > 0:
+        global_total_market = float(own["ventes"]) / global_share if global_share > 0 else None
+    share_scope = "overall_monitoring" if global_share is not None else ("competitive_segment" if segment_share is not None else None)
+    return {
+        "period": period,
+        "rows": rows,
+        "own": own,
+        # Compatibilité historique : share/total_market restent les valeurs
+        # du périmètre effectivement observé. Les champs global_* sont la
+        # seule source utilisée comme PDM globale par l'interface.
+        "total_market": global_total_market if global_share is not None else segment_total_market,
+        "share": global_share if global_share is not None else segment_share,
+        "share_scope": share_scope,
+        "global_share": global_share,
+        "global_total_market": global_total_market,
+        "segment_share": segment_share,
+        "segment_total_market": segment_total_market,
+        "segment_own": own if segment_share is not None else None,
+    }
 
 def _damped_linear_forecast(values: np.ndarray, horizon: int) -> np.ndarray:
     if len(values) == 0:

@@ -96,9 +96,13 @@ struct = extract_structural_seasonality(period_data, study_data=study_data)
 potential = extract_market_potential(period_data, study_data=study_data)
 competitive = extract_competitive_snapshot(period_data, int(own_company), study_data=study_data, anchor_period=anchor)
 metrics = current_competitive_metrics(competitive)
-current_share = competitive.get("share")
-default_target = min(0.50, max(0.01, float(current_share or 0.10) + 0.03))
-target_share = st.slider("🎯 Objectif de part de marché", 0.01, 0.50, float(default_target), 0.005, format="%.1f%%")
+global_share = competitive.get("global_share", competitive.get("share") if competitive.get("share_scope") == "overall_monitoring" else None)
+segment_share = competitive.get("segment_share")
+current_share = global_share
+# Saisie en points de pourcentage : 13.0 signifie 13 %, puis conversion en fraction pour le moteur.
+default_target_pct = 13.0
+target_pct = st.slider("🎯 Objectif de part de marché globale", 0.0, 50.0, default_target_pct, 0.5, format="%.1f %%", help="Objectif global uniquement. Si la PDM globale n'est pas disponible, les calculs d'écart restent indéterminés.")
+target_share = target_pct / 100.0
 
 with st.expander("🔎 Diagnostic des sources", expanded=False):
     st.write(f"Périodes historiques : {len(period_data)} | Études API : {len(studies)} lignes")
@@ -127,17 +131,19 @@ if forecast_df.empty:
 market = compute_market_forecast(forecast_df, struct, potential, competitive, target_share, anchor)
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("PDM actuelle", f"{current_share * 100:.2f} %" if current_share is not None else "—")
+c1.metric("PDM globale actuelle", f"{current_share * 100:.2f} %" if current_share is not None else "—")
 own_snapshot = competitive.get("own") or {}
 current_sales = own_snapshot.get("ventes")
 if current_sales is None:
     actual_rows = forecast_df.loc[forecast_df["statut"] == "Réel"].tail(1)
     current_sales = float(actual_rows["Total unités"].iloc[0]) if not actual_rows.empty else 0.0
 c2.metric("Ventes actuelles", f"{current_sales:,.0f} u")
-c3.metric("Prix actuel", f"{metrics['own_price']:.2f} €" if metrics.get('own_price') is not None else "—")
+c3.metric("Prix segment observé", f"{metrics['own_price']:.2f} €" if metrics.get('own_price') is not None else "—")
 c4.metric("Concurrents observés", str(metrics.get("competitor_count", 0)))
 if current_share is None:
-    st.info("PDM globale indisponible : le tableau de bord (monitoring) n'est pas synchronisé pour cette période. Aucune valeur globale n'est inventée.")
+    st.info("PDM globale indisponible : le tableau de bord (monitoring) n'est pas synchronisé pour cette période. Le benchmark par segment reste visible, mais aucune PDM globale n'est inventée.")
+    if segment_share is not None:
+        st.caption(f"Référence disponible : PDM segmentielle = {segment_share * 100:.2f} % (ne sert pas de PDM globale).")
 elif competitive.get("share_scope") == "competitive_segment":
     st.info("Une part de marché concurrentielle par segment est disponible, mais elle n'est pas utilisée comme PDM globale de l'entreprise.")
 elif competitive.get("rows") and len(competitive.get("rows") or []) < 3:
@@ -167,7 +173,7 @@ mt = pd.DataFrame({
     "Ventes prévues (u)": market.own_sales_forecast,
     "Marché projeté (u)": market.market_volume_proxy,
     "PDM base (%)": [x * 100 if pd.notna(x) else None for x in market.baseline_share_forecast],
-    "PDM cible (%)": [target_share * 100] * len(market.horizon_months),
+    "PDM cible (%)": [target_pct] * len(market.horizon_months),
     "Unités à produire/vendre pour cible": market.required_units_for_target,
     "Écart à combler (u)": market.unit_gap,
 })
