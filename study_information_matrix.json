@@ -1,0 +1,2559 @@
+[
+  {
+    "study_id": "bankStatements",
+    "label": "[REDACTED]",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/bankStatements",
+    "response_keys": "clazz, readAllowed, studyId, price, initialBankAmount, finalBankAmount, totalReceipts, totalDisbursements, competitiveMarketReceipts, competitiveNegotiatedSales, otherExploitationProductReceipts, collectedInterests, otherFinancialProducts, workstationSales, otherExceptionalProducts, collectedVAT, bankLoans, actionObligationSales, savingsAccountWithdrawal, capitalIncrease, providerMaterialPurchases, negotiatedMaterialPurchases, providerProductPurchases, otherPurchasesAndExteriorServices, taxes, wagesAndSeverancePay, socialCharges, otherExploitationExpenses, vatPayment, taxesLiquidation, taxesLiquidationAndAccount, loanInterests, monthlyLoanRefund, otherFinancialCharges, workstationPurchases, otherExceptionalCharges, actionObligationPurchases, freeLoanRefund, savingsAccountInvestments, paidDividends",
+    "domain": "pilotage",
+    "tags": [
+      "capacity",
+      "cash",
+      "finance",
+      "investment",
+      "material",
+      "payment",
+      "price",
+      "stock",
+      "supplier",
+      "vat"
+    ],
+    "decision_levers": [
+      "prix",
+      "achats",
+      "capacite",
+      "investissement",
+      "fournisseurs",
+      "tresorerie",
+      "tva",
+      "stocks",
+      "delais_paiement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 85.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "companyResults",
+    "label": "Résultats",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/company/companyResults",
+    "response_keys": "clazz, readAllowed, studyId, price, results, turnover, profitability, equity, rentability, cumResults, cumTurnover, cumProfitability, cumEquity, cumRentability",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "companyStock",
+    "label": "Les stocks",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "pilotage",
+    "tags": [
+      "bfr",
+      "material",
+      "stock"
+    ],
+    "decision_levers": [
+      "achats",
+      "bfr",
+      "stocks"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 80.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "enafgeqlevss",
+    "label": "Audit du service / administration-finance",
+    "price": 200.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/administrationStaffEvaluation",
+    "response_keys": "clazz, readAllowed, studyId, price, exampleWages, realActivity, teamPayroll, standardPayroll, payrollRating, dispersionIndex, dispersionRating, totalStaffQuality, internalCorporateSocialResponsibility, staffSatisfaction",
+    "domain": "rh",
+    "tags": [
+      "hr",
+      "payroll",
+      "price",
+      "quality",
+      "staff_quality"
+    ],
+    "decision_levers": [
+      "prix",
+      "qualite",
+      "rh",
+      "masse_salariale"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 55.0,
+    "recurring": "mensuel",
+    "purchase_class": "analytique_200",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enapgeqlevss",
+    "label": "Audit du service / approvisionnement",
+    "price": 200.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/supplyStaffEvaluation",
+    "response_keys": "clazz, readAllowed, studyId, price, exampleWages, realActivity, teamPayroll, standardPayroll, payrollRating, dispersionIndex, dispersionRating, totalStaffQuality, internalCorporateSocialResponsibility, staffSatisfaction",
+    "domain": "approvisionnement",
+    "tags": [
+      "material",
+      "price",
+      "quality",
+      "stock"
+    ],
+    "decision_levers": [
+      "prix",
+      "qualite",
+      "achats",
+      "stocks"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 70.0,
+    "recurring": "mensuel",
+    "purchase_class": "analytique_200",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enapgeqlquesmp",
+    "label": "Qualité des entrées et sorties des matières",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/materialQuality",
+    "response_keys": "clazz, readAllowed, studyId, price, mapEnapgeqlquesmpResMoisEqMat",
+    "domain": "approvisionnement",
+    "tags": [
+      "material",
+      "price",
+      "quality",
+      "stock"
+    ],
+    "decision_levers": [
+      "prix",
+      "qualite",
+      "achats",
+      "stocks"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 70.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enapgeqtcofr",
+    "label": "Suivi des commandes fournisseurs",
+    "price": 5000.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/provider/material/ordersMonitoring",
+    "response_keys": "clazz, readAllowed, studyId, price, enapgeqtcofrResMoisEqMats, enapgeqtcofrResMoisEqProd",
+    "domain": "approvisionnement",
+    "tags": [
+      "bfr",
+      "material",
+      "payment",
+      "price",
+      "stock",
+      "supplier"
+    ],
+    "decision_levers": [
+      "prix",
+      "achats",
+      "fournisseurs",
+      "bfr",
+      "stocks",
+      "delais_paiement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 85.0,
+    "recurring": "mensuel",
+    "purchase_class": "investissement_informationnel_5000",
+    "strategic_only": true,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enapgeqtcuesmp",
+    "label": "Coût des entrées et sorties des matières",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/materialValue",
+    "response_keys": "clazz, readAllowed, studyId, price, mapEnapgeqtcuesmpMoisEqMat",
+    "domain": "approvisionnement",
+    "tags": [
+      "cost",
+      "material",
+      "price",
+      "production",
+      "stock"
+    ],
+    "decision_levers": [
+      "prix",
+      "production",
+      "achats",
+      "couts",
+      "stocks"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enprgeqlccqp",
+    "label": "Composantes de la qualité des produits",
+    "price": 250.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/companyQualityComponents",
+    "response_keys": "clazz, readAllowed, studyId, price, mapEnprgeqlccqpProd",
+    "domain": "production",
+    "tags": [
+      "price",
+      "quality"
+    ],
+    "decision_levers": [
+      "prix",
+      "qualite"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 55.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enprgeqlevss",
+    "label": "Audit du service / production",
+    "price": 200.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/productionStaffEvaluation",
+    "response_keys": "clazz, readAllowed, studyId, price, exampleWages, realActivity, teamPayroll, standardPayroll, payrollRating, dispersionIndex, dispersionRating, totalStaffQuality, internalCorporateSocialResponsibility, staffSatisfaction",
+    "domain": "production",
+    "tags": [
+      "cost",
+      "price",
+      "production",
+      "quality"
+    ],
+    "decision_levers": [
+      "prix",
+      "qualite",
+      "production",
+      "couts"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 70.0,
+    "recurring": "mensuel",
+    "purchase_class": "analytique_200",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enprgeqlquespf",
+    "label": "Qualité des entrées et sorties des produits",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/productQuality",
+    "response_keys": "clazz, readAllowed, studyId, price, productsInsAndOutsQualitiesByProductRef",
+    "domain": "production",
+    "tags": [
+      "price",
+      "quality"
+    ],
+    "decision_levers": [
+      "prix",
+      "qualite"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 55.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enprgeqtatdb",
+    "label": "Ateliers : disponibilités et besoins théoriques",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/company/timeConsumption",
+    "response_keys": "clazz, readAllowed, studyId, price, listEnprgeqtatdbMoisEqProd, listEnprgeqtatdbMoisEqAt",
+    "domain": "production",
+    "tags": [
+      "capacity",
+      "investment",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "capacite",
+      "investissement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enprgeqtcuespf",
+    "label": "Coût des entrées et sorties des produits finis",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/productValue",
+    "response_keys": "clazz, readAllowed, studyId, price, productsInsAndOutsCostsByProductRef",
+    "domain": "production",
+    "tags": [
+      "cost",
+      "price",
+      "production"
+    ],
+    "decision_levers": [
+      "prix",
+      "production",
+      "couts"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enprgeqtmpdb",
+    "label": "Matières : disponibilités et besoins théoriques",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/company/materialConsumption",
+    "response_keys": "clazz, readAllowed, studyId, price, listEnprgeqtmpdbMoisEqProd, listEnprgeqtmpdbMoisEqMat",
+    "domain": "production",
+    "tags": [
+      "material",
+      "price",
+      "stock"
+    ],
+    "decision_levers": [
+      "prix",
+      "achats",
+      "stocks"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "enprgeqtpp",
+    "label": "Processus de production",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/company/productionProcess",
+    "response_keys": "clazz, readAllowed, studyId, price, mapEnprgeqtppProduit",
+    "domain": "production",
+    "tags": [
+      "cost",
+      "price",
+      "production"
+    ],
+    "decision_levers": [
+      "prix",
+      "production",
+      "couts"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "ensaacvm",
+    "label": "Ventes mensuelles",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/company/monthlySales",
+    "response_keys": "clazz, readAllowed, studyId, price, month, listEnsaacvmProd, tableauVentes, listeTableauVentes, sales",
+    "domain": "marketing",
+    "tags": [
+      "market_share",
+      "price",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "ifrsStatementOfCashFlow",
+    "label": "[REDACTED]",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/ifrs/ifrsStatementOfCashFlow",
+    "response_keys": "clazz, readAllowed, studyId, price, operatingActivities, investingActivities, financingActivities, netFlow, initialTreasury, finalTreasury",
+    "domain": "finance",
+    "tags": [
+      "cash",
+      "finance",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "tresorerie"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "ifrsStatementOfFinancialPosition",
+    "label": "[REDACTED]",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/ifrs/ifrsStatementOfFinancialPosition",
+    "response_keys": "clazz, readAllowed, studyId, price, assets, equityAndLiability",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "ifrsStatementOfProfitAndLoss",
+    "label": "[REDACTED]",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/ifrs/ifrsStatementOfProfitAndLoss",
+    "response_keys": "clazz, readAllowed, studyId, price, displayLeasing, grossProfit, ebit, netFinancialOperations, totalProfitBeforeTax, incomeTaxExpense, profitFromContinuingOperations, otherDiscontinuedOperations, totalProfit",
+    "domain": "finance",
+    "tags": [
+      "price",
+      "tax"
+    ],
+    "decision_levers": [
+      "prix",
+      "fiscalite"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "initialBalanceSheet",
+    "label": "Bilan au 1er janvier année 0",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/teams/{team}/company/initialBalanceSheet",
+    "response_keys": "clazz, readAllowed, studyId, price, inco200, capi, terr211, resleg, cons213, cons2813, constructionNet, rese106, po215, po281, installationTechNet, repo119, resu12, proris15, empr16, detfr401, detcl, tva4457, isdu444, asso457, overdraft, sumBrut, sumBrut1, sumAmorProv, sumAmorProv1, sumNet, sumPassif, sumActif1, sumPassif1, sumPassif2, ec331, currentAsset, otherCurrentAssets",
+    "domain": "finance",
+    "tags": [
+      "cash",
+      "finance",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "tresorerie"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "monitoring",
+    "label": "Tableau de bord",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/company/monitoring",
+    "response_keys": "clazz, readAllowed, studyId, price, monitoringTurnoverData, corporateSocialResponsibilityMarketingRatingEvolution, bankAccountAmountEvolution, staffSatisfactionEvolution, monthlyResult, cumulativeResult, clientSatisfaction, marketShares, remainingStocks",
+    "domain": "pilotage",
+    "tags": [
+      "market_share",
+      "price",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pcgToIfrsBonds",
+    "label": "Traitement des obligations",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/pcgToIfrs/pcgToIfrsBonds",
+    "response_keys": "clazz, readAllowed, studyId, price, bondInformationList",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pcgToIfrsDepreciation",
+    "label": "Répartition des dépréciations hors VMP",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/pcgToIfrs/pcgToIfrsDepreciation",
+    "response_keys": "clazz, readAllowed, studyId, price, pcgToIfrsCostOfSalesDepreciation, pcgToIfrsAdministrationExpensesDepreciationCharges",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pcgToIfrsExternalLoads",
+    "label": "Répartition des charges externes",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/pcgToIfrs/externalLoadsDistribution",
+    "response_keys": "clazz, readAllowed, studyId, price, mixedCharges, workstationsCosts, otherExternalLoads, totalSalesCosts, totalDistributionCosts, totalAdministrationCosts",
+    "domain": "finance",
+    "tags": [
+      "capacity",
+      "investment",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "capacite",
+      "investissement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pcgToIfrsLeasing",
+    "label": "Traitement du crédit-bail",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/pcgToIfrs/leasing",
+    "response_keys": "clazz, readAllowed, studyId, price, workstationLeasingList, totalCostsInPcg, totalLoanInformation, totalLoanDistribution, totalAmortization",
+    "domain": "finance",
+    "tags": [
+      "capacity",
+      "investment",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "capacite",
+      "investissement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pcgToIfrsMonthlyLoansDistribution",
+    "label": "Répartition des emprunts mensualisés",
+    "price": 50.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "finance",
+    "tags": [
+      "cash",
+      "finance"
+    ],
+    "decision_levers": [
+      "tresorerie"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pcgToIfrsStaffCostsDistribution",
+    "label": "Répartition des charges de personnel",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/pcgToIfrs/staffCostsDistribution",
+    "response_keys": "clazz, readAllowed, studyId, price, grossMonthlySalaries, severancePays, staffRelatedTaxes, salesTotalCosts, distributionTotalCosts, administrationTotalCosts",
+    "domain": "rh",
+    "tags": [
+      "hr",
+      "payroll",
+      "price",
+      "staff_quality"
+    ],
+    "decision_levers": [
+      "prix",
+      "rh",
+      "masse_salariale"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pcgToIfrsStocks",
+    "label": "Traitement des actions",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/pcgToIfrs/pcgToIfrsStocks",
+    "response_keys": "clazz, readAllowed, studyId, price, stocksInformationList",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peassodb",
+    "label": "Dommages aux biens",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/insurance/propertyDamages",
+    "response_keys": "clazz, readAllowed, studyId, price",
+    "domain": "assurance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peassoptex",
+    "label": "Pertes d'exploitation",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/insurance/operatingLosses",
+    "response_keys": "clazz, readAllowed, studyId, price",
+    "domain": "assurance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peassorc",
+    "label": "Responsabilité civile",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/insurance/civilLiability",
+    "response_keys": "clazz, readAllowed, studyId, price",
+    "domain": "assurance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pebaemecta",
+    "label": "Tableau d'amortissement",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/bank/loan/1",
+    "response_keys": "clazz, readAllowed, studyId, price, currentMonthlyLoanAmortizationTable, teamMonthlyLoansNumbers",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pebaifpuao",
+    "label": "Portefeuille actions",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/bank/actions",
+    "response_keys": "clazz, readAllowed, studyId, price, actionA1, actionA2, actionA3",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pebaifpuoo",
+    "label": "Portefeuille obligations",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/bank/obligations",
+    "response_keys": "clazz, readAllowed, studyId, price, obligationO1, obligationO2, obligationO3",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedcahm",
+    "label": "Achats et variations de stocks",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/purchasesStockChanges",
+    "response_keys": "clazz, readAllowed, studyId, price, listePeeedcahMatiere, listePeeedcahProduit, totalMp624, totalCoutLivraisonCommande, totalTolimp, totalMpex624, totalAchatHorsTransport, totalToexmp, totalTotalAchats, totalMp603, totalToexpf, totalTomamp, totalTomapf, totalMaterials, totalProducts",
+    "domain": "finance",
+    "tags": [
+      "bfr",
+      "material",
+      "price",
+      "stock"
+    ],
+    "decision_levers": [
+      "prix",
+      "achats",
+      "bfr",
+      "stocks"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 80.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedcahsx",
+    "label": "Autres achats et charges externes",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/otherPurchasesExternalExpenses",
+    "response_keys": "clazz, readAllowed, studyId, price, workshopCosts, totalConsumption, totalMaintenance, fcon602, turnover, netTurnover, ass616Charges, int622Charges, pubpf623, pub623Charges, mp624Charges, ban627Charges, po612Charges, ffou606, fmis625, vmis625, ftel626, vtel626, vfou606, achatsVariablesConso, vcon602, achatsFourVariables, depMisRec, fraisPosTel, totChargesExternes, ass616, mapEass616, mapEind627, externalResearchCosts, etu617, ban627, puben, variationDueToProductionServiceQuality, philanthropicContributionsPartnerships",
+    "domain": "finance",
+    "tags": [
+      "cost",
+      "price",
+      "production",
+      "quality"
+    ],
+    "decision_levers": [
+      "prix",
+      "qualite",
+      "production",
+      "couts"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 70.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedccg",
+    "label": "Chiffre d'affaires",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/turnover",
+    "response_keys": "clazz, readAllowed, studyId, price, toCares1, toCares2, totalCanet1, totalCanet2, totalRes1709, totalRes2709, totalCanetpf, listePeeedccgNegociationMatiere, listePeeedccgResMoisEqProd, totalProduitNegocie, totalMatiereNegocie, soldOffProductsSales, totalSoldOffProductsPrice, displayRepresentativesDetail, displayAChannelDetail, displayBChannelDetail",
+    "domain": "finance",
+    "tags": [
+      "market_share",
+      "price",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedcchfi",
+    "label": "Charges financières",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/financialExpenses",
+    "response_keys": "clazz, readAllowed, studyId, price, e1, e2, e3, e4, actionA1, actionA2, actionA3, obligationsO1, obligationsO2, obligationsO3, obligationA, obligationB, obligationC, stockA, stockB, stockC, bantauxa, bantauxm, bandecou, elibint661, elibtauxm, elibtauxa, elibcrd, agio661, int661, esc665, act686, obl686, vmp686, act667, obl667, vmp667, fina6, charfin, afficheE1, afficheE2, afficheE3, afficheE4, afficheEsc1, afficheEsc2, afficheEsc3, tesca",
+    "domain": "finance",
+    "tags": [
+      "cash",
+      "finance",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "tresorerie"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedccscl",
+    "label": "Créances clients",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/customerReceivables",
+    "response_keys": "clazz, readAllowed, studyId, price, irrecouvrables, irrecouvrablesPrec, cl0, clex0, clmp0, cl1, clex1, clmp1, cl2, clex2, clmp2, cl3, clex3, clmp3, totalcl, totalclex, totalclmp, totalGeneral, cl0Prec, clex0Prec, clmp0Prec, cl1Prec, clex1Prec, clmp1Prec, cl2Prec, clex2Prec, clmp2Prec, cl3Prec, clex3Prec, clmp3Prec, totalclPrec, totalclexPrec, totalclmpPrec, totalGeneralPrec, encaissement, encaissementPrec",
+    "domain": "finance",
+    "tags": [
+      "bfr",
+      "cash",
+      "finance",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "tresorerie",
+      "bfr"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedcdadpm",
+    "label": "Dotations aux amortissements et dépréciations",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/depreciationAmortization",
+    "response_keys": "clazz, readAllowed, studyId, price, listePeeedcdadpAtelier, listePeeedcdadpMatiere, listePeeedcdadpProduit, po681, cons68, totalDotationsSurAteliers, totalDotationsSurMatieres, totalDotationsSurProduits, totalDotationsSurPlacements, nadmst, nfin, cl1Prec, cl491, cl491Prec, cl68, dotationsAuxAmortissements, dotationsAuxDepreciationsSurActifCirculant, actionA1, actionA2, actionA3, obligationsO1, obligationsO2, obligationsO3",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedcitesm",
+    "label": "Charges de personnel",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/wageCosts",
+    "response_keys": "clazz, readAllowed, studyId, price, supplyDirector, supplyExecutive, supplyEmployee, totalSupplyDirector, totalSupplyExecutive, totalSupplyEmployee, totalSupplyWages, totalSupplyFiringFees, administrationDirector, administrationExecutive, administrationEmployee, totalAdministrationDirector, totalAdministrationExecutive, totalAdministrationEmployee, totalAdministrationWages, totalAdministrationFiringFees, administrationOvertimeAndBonus, productionDirector, productionExecutive, productionEmployee, totalProductionDirectorWages, totalProductionExecutiveWages, totalProductionEmployeeWages, totalProductionDirector, totalProductionExecutive, totalProductionEmployee, totalProductionWages, totalProductionFiringFees, productionResearchQuality, productionResearchProductivity, totalProductionQualityResearchWages, totalProductionProductivityResearchWages, innovation, totalInnovationWages, innovationResearchFiringFees, marketingAFS, totalAfterSalesWages, marketingRepresentative, representativeCommissionRate, representativeTurnover, representativeTotalCommission, totalRepresentativeWages, totalDistributionWages, totalDistributionFiringFees, totalCompanyWages, firingFees, employerSocialChargesRate, supplyEmployerCharges, administrationEmployerCharges, productionEmployerCharges, innovationEmployerCharges, afterSalesEmployerCharges, representativeEmployerCharges, chargesRecherche, chargesServices, totalDistributionEmployerCharges, totalEmployerCharges, wagesTaxRate, total, totalWageTaxes, rmrsali641, nbMonthPaidOnDismissal, prosal642, prolic642, pross6452, supplyTaxes, administrationTaxes, distributionTaxes, productionTaxes, innovationTaxes",
+    "domain": "rh",
+    "tags": [
+      "cost",
+      "hr",
+      "payroll",
+      "price",
+      "production",
+      "quality",
+      "staff_quality",
+      "vat"
+    ],
+    "decision_levers": [
+      "prix",
+      "qualite",
+      "production",
+      "tva",
+      "rh",
+      "masse_salariale",
+      "couts"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 70.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedcpehc",
+    "label": "Produits d'exploitation sur stocks et clients",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/operatingRevenues",
+    "response_keys": "clazz, readAllowed, studyId, price, storedProduction, depreciationRecovery, listePeeedcpehcProduit, displayOutlets",
+    "domain": "finance",
+    "tags": [
+      "bfr",
+      "cost",
+      "material",
+      "price",
+      "production",
+      "stock"
+    ],
+    "decision_levers": [
+      "prix",
+      "production",
+      "achats",
+      "bfr",
+      "couts",
+      "stocks"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 80.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedcpofi",
+    "label": "Produits financiers",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/financialProducts",
+    "response_keys": "clazz, readAllowed, studyId, price, livpla, livtauxm, fina7, interetProduitsAssimiles, liv762, stockDividends, bondInterests, depreciationCharges, financialProductsSellingRevenue",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedsbiak",
+    "label": "Bilan version simplifiée",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/balanceSheetSimple",
+    "response_keys": "clazz, readAllowed, studyId, price, inco200, capi, terr211, resleg, cons213, cons2813, constructionNet, rese106, po215, po281, installationTechNet, repo119, resu12, proris15, empr16, detfr401, detcl, tva4457, isdu444, asso457, overdraft, sumBrut, sumBrut1, sumAmorProv, sumAmorProv1, sumNet, sumPassif, sumActif1, sumPassif1, sumPassif2, ec331, currentAsset, otherCurrentAssets",
+    "domain": "finance",
+    "tags": [
+      "cash",
+      "finance",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "tresorerie"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedsbidt",
+    "label": "Bilan version détaillée",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/balanceSheetDetailed",
+    "response_keys": "clazz, readAllowed, studyId, price, inco200, inco200Prec, terr211, terr211Prec, cons213, cons2813, cons213Net, cons213NetPrec, po215, po281, po215Net, po215NetPrec, totalActifImmobilise, totalActifImmobiliseAmor, totalActifImmobiliseNet, totalActifImmobiliseNetPrec, mp310, mp391, mp310Net, mp310NetPrec, encoursa, encoursaPrec, encoursb, encoursbPrec, pf355, pf39, pf355Net, pf355NetPrec, cl411, cl491, cl411Net, cl411NetPrec, tva4456, tva4456Prec, aco444, aco444Prec, act503, act5903, act503Net, act503NetPrec, obl506, obl5906, obl506Net, obl506NetPrec, vmpBrut, vmpAmor, vmpNet, vmpNetPrec, livpla, livplaPrec, ban51, ban51Prec, totalActifCirculant, totalActifCirculantAmor, totalActifCirculantNet, totalActifCirculantNetPrec, totalActif, totalActifAmor, totalActifNet, totalActifNetPrec, capi, capiPrec, resleg, reslegPrec, rese106, rese106Prec, repo119, repo119Prec, resu12, resu12Prec, totalCapitauxPropres, totalCapitauxPropresPrec, proris15, proris15Prec, empr16, empr16Prec, emprLibre, emprLibrePrec, detfr401, detfr401Prec, detcl, detclPrec, tva4457, tva4457Prec, isdu444, isdu444Prec, asso457, asso457Prec, bandecou, bandecouPrec, totalDettes, totalDettesPrec, totalPassif, totalPassifPrec, activerExercicePrec",
+    "domain": "finance",
+    "tags": [
+      "cash",
+      "finance",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "tresorerie"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedscrdl",
+    "label": "Compte de résultat détaillé",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/incomeStatementDetailed",
+    "response_keys": "clazz, readAllowed, studyId, price, afficheExercicePrecedent, incomeStatementDetailed, incomeStatementDetailedPrec",
+    "domain": "finance",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedscrsm",
+    "label": "Compte de résultat simplifié",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/incomeStatementSimple",
+    "response_keys": "clazz, readAllowed, studyId, price, competitiveMarketTurnover, negociatedProductsTurnover, ca707, biensLivraisons, productsInStock, workstationSalesProducts, otherExploitationProducts, totalExploitationProducts, productsPurchases, materialsPurchases, materialsStockVariation, externalServicesCharges, taxes, wageBills, socialCharges, workstationsNetValueSold, amortization, depreciationProvision, otherExploitationCharges, totalExploitationCharges, exploitationResult, financialProducts, exceptionalProducts, financialCharges, exceptionalCharges, financialAndExceptionalResult, incomeTaxes, netResult",
+    "domain": "finance",
+    "tags": [
+      "capacity",
+      "investment",
+      "material",
+      "price",
+      "stock"
+    ],
+    "decision_levers": [
+      "prix",
+      "achats",
+      "capacite",
+      "investissement",
+      "stocks"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeedsftt",
+    "label": "Tableau de trésorerie méthode indirecte",
+    "price": 100.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/type/MONTHLY/accountant/cashSimple",
+    "response_keys": "clazz, readAllowed, studyId, price, reprisesAcquisitionImmoCorporelles, reprisesCessionsImmoCorporelles, po775, dotationsDepreciations, fluxDepreciations, resultatNet, fluxVmp, fluxMp, fluxPf, fluxCl, sumDotAmorProv, dotationsPlusMoinsValue, reprisesPlusMoinsValue, fluxPlusMoinsValue, sumMargeBrutAutoFinance, dotationsDettesFiscalesSociales, reprisesStocksProduits, reprisesClients, reprisesDetfr, fluxDettesFiscalesSociales, reprisesDettesFiscalesSociales, fluxStocksMatieres, fluxStocksEnCours, fluxStocksProduits, fluxClients, fluxAccomptesSurIs, fluxEtatTvaDed, sumActifsExpCirDot, sumActifsExpCirRep, sumActifsExpCirFlu, fluxFournisseurs, sumPassifsExploitationCirculantsDot, sumPassifsExploitationCirculantsRep, sumPassifsExploitationCirculantsFlux, variationBfr, versementsDividendes, fluxNetTresorerie, dotationsAcquisitionImmoCorporelles, fluxAcquisitionImmoCorporelles, dotationsTvaImmo, reprisesTvaImmo, fluxTvaImmo, dotationsAcquisitionImmoFinancieres, reprisesAcquisitionImmoFinancieres, fluxAcquisitionImmoFinancieres, dotationsCessionsImmoFinancieres, reprisesCessionsImmoFinancieres, fluxCessionsImmoFinancieres, placementsSurLivret, retraitPlacementsSurLivret, fluxNetImmo, fluxNetTresorerieLieFinancement, soldeTresorerieInitial, soldeTresorerieFinal, vmp686, vmp786, mp681, mp78, pf681, pf78, cl68, cl78, enc76, dotationsMp310, pf355, cl411, dotationsAco444, dotationsTva4456, detfr401, reprisesMp310, reprisesEc331, ec331, reprisesAco444, reprisesTva4456, fnpla, fninv, enccapi, encemp, loansRefunds, banfn, fluxCessionsImmoCorporelles",
+    "domain": "finance",
+    "tags": [
+      "bfr",
+      "cash",
+      "finance",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "tresorerie",
+      "bfr"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeefsisp",
+    "label": "Impôts sur les sociétés",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/corporationTaxes",
+    "response_keys": "clazz, readAllowed, studyId, price, tisnor, tismin, isca, isres, tisaco, profitLoss, cumresis, isdu444, repdef, repdefPrec",
+    "domain": "finance",
+    "tags": [
+      "price",
+      "tax"
+    ],
+    "decision_levers": [
+      "prix",
+      "fiscalite"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeefstvp",
+    "label": "TVA",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/vat",
+    "response_keys": "clazz, readAllowed, studyId, price, vatRate, competitiveMarketSalesGrossAmount, competitiveMarketSalesVatAmount, materialsNegotiatedSalesGrossAmount, materialsNegotiatedSalesVatAmount, productsNegotiatedSalesGrossAmount, productsNegotiatedSalesVatAmount, totalSalesGrossAmount, totalSalesVatAmount, otherExploitationProductsGrossAmount, otherExploitationProductsVatAmount, otherExceptionalProductsGrossAmount, otherExceptionalProductsVatAmount, workstationsSalesGrossAmount, workstationsSalesVatAmount, irrecoverableDebtsGrossAmount, irrecoverableDebtsVatAmount, totalGrossAmountFromSourcesOtherThanSales, totalVatAmountFromSourcesOtherThanSales, totalInputVat, materialsBoughtFromProvidersGrossAmount, materialsBoughtFromProvidersVatAmount, materialsBoughtThroughDealsGrossAmount, materialsBoughtThroughDealsVatAmount, productsBoughtThroughDealsGrossAmount, productsBoughtThroughDealsVatAmount, totalPurchasesGrossAmount, totalPurchasesVatAmount, otherChargesGrossAmount, otherChargesVatAmount, otherOperatingChargesGrossAmount, otherOperatingChargesVatAmount, totalGrossAmountFromSourcesOtherThanPurchases, totalVatAmountFromSourcesOtherThanPurchases, workstationsPurchasesGrossAmount, workstationsPurchasesVatAmount, totalVatOutput, constructionsAndFields",
+    "domain": "finance",
+    "tags": [
+      "capacity",
+      "investment",
+      "material",
+      "payment",
+      "price",
+      "stock",
+      "supplier",
+      "vat"
+    ],
+    "decision_levers": [
+      "prix",
+      "achats",
+      "capacite",
+      "investissement",
+      "fournisseurs",
+      "tva",
+      "stocks",
+      "delais_paiement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 70.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeumreucjsacl",
+    "label": "Satisfaction clients",
+    "price": 5000.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/marketStudies/customerSatisfaction",
+    "response_keys": "clazz, readAllowed, studyId, price, customerSatisfaction",
+    "domain": "marketing",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "investissement_informationnel_5000",
+    "strategic_only": true,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeumreusrcddi",
+    "label": "Canaux de distribution",
+    "price": 5000.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "marketing",
+    "tags": [
+      "marketing"
+    ],
+    "decision_levers": [
+      "marketing"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "investissement_informationnel_5000",
+    "strategic_only": true,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "peeumreusrdpcl",
+    "label": "Délais de paiement",
+    "price": 5000.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "marketing",
+    "tags": [
+      "bfr",
+      "payment",
+      "supplier"
+    ],
+    "decision_levers": [
+      "fournisseurs",
+      "bfr",
+      "delais_paiement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 70.0,
+    "recurring": "mensuel",
+    "purchase_class": "investissement_informationnel_5000",
+    "strategic_only": true,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "peeumreusreprv",
+    "label": "Eléments de prévision des ventes",
+    "price": 5000.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/marketStudies/salesForecast",
+    "response_keys": "clazz, readAllowed, studyId, price, listPeeumreusreprvMoisProd, listCoefSaisonnier",
+    "domain": "marketing",
+    "tags": [
+      "forecast",
+      "market_potential",
+      "market_share",
+      "price",
+      "sales",
+      "seasonality"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "prevision",
+      "prix"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "structurel",
+    "purchase_class": "investissement_informationnel_5000",
+    "strategic_only": true,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "peeumreusrpdpf",
+    "label": "Publicité",
+    "price": 5000.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "marketing",
+    "tags": [
+      "advertising"
+    ],
+    "decision_levers": [
+      "marketing"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "investissement_informationnel_5000",
+    "strategic_only": true,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "peeumreusrpvpf",
+    "label": "Prix de vente des produits finis",
+    "price": 5000.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "marketing",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "investissement_informationnel_5000",
+    "strategic_only": true,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pefrimcv",
+    "label": "Conditions de ventes des machines",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "marketing",
+    "tags": [
+      "capacity",
+      "investment",
+      "market_share",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "capacite",
+      "investissement"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 90.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pefrimfh",
+    "label": "Fiches machines",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "production",
+    "tags": [
+      "capacity",
+      "investment"
+    ],
+    "decision_levers": [
+      "capacite",
+      "investissement"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pefrimpofr",
+    "label": "Profil des fournisseurs de machines",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "production",
+    "tags": [
+      "bfr",
+      "capacity",
+      "investment",
+      "payment",
+      "supplier"
+    ],
+    "decision_levers": [
+      "capacite",
+      "investissement",
+      "fournisseurs",
+      "bfr",
+      "delais_paiement"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 85.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pefrimta",
+    "label": "Tarifs des machines",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "production",
+    "tags": [
+      "capacity",
+      "investment"
+    ],
+    "decision_levers": [
+      "capacite",
+      "investissement"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pefrmpcv",
+    "label": "Conditions de ventes des matières",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "marketing",
+    "tags": [
+      "market_share",
+      "material",
+      "sales",
+      "stock"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "achats",
+      "stocks"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 90.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pefrmpfh",
+    "label": "Fiches matières",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "approvisionnement",
+    "tags": [
+      "material",
+      "stock"
+    ],
+    "decision_levers": [
+      "achats",
+      "stocks"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pefrmppofr",
+    "label": "Profil des fournisseurs de matières",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/provider/material/providerProfile",
+    "response_keys": "clazz, readAllowed, studyId, price, averageRiskReliabilityPercentage, highRiskReliabilityPercentage, providersProfiles",
+    "domain": "approvisionnement",
+    "tags": [
+      "bfr",
+      "material",
+      "payment",
+      "price",
+      "stock",
+      "supplier"
+    ],
+    "decision_levers": [
+      "prix",
+      "achats",
+      "fournisseurs",
+      "bfr",
+      "stocks",
+      "delais_paiement"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 85.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pefrmpta",
+    "label": "Tarifs des matières",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "approvisionnement",
+    "tags": [
+      "material",
+      "stock"
+    ],
+    "decision_levers": [
+      "achats",
+      "stocks"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pefrpffh",
+    "label": "Fiches produits",
+    "price": 0.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/provider/material/productSheet",
+    "response_keys": "clazz, readAllowed, studyId, price, listePefrpffhProduit",
+    "domain": "pilotage",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "structurel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "pevcecdlpf",
+    "label": "Evolution comparée des délais paiement",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "concurrence"
+    ],
+    "decision_levers": [
+      "concurrence"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcecprpf",
+    "label": "Evolution comparée des prix de ventes des produits finis",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "market_share",
+      "price",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcecpuen",
+    "label": "Evolution comparée de la publicité de marque",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "advertising"
+    ],
+    "decision_levers": [
+      "marketing"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcecpupf",
+    "label": "Evolution comparée des publicités produits",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "advertising"
+    ],
+    "decision_levers": [
+      "marketing"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcfcimsaca",
+    "label": "Immobilisations, rémunération du personnel et chiffre d'affaires",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "capacity",
+      "investment",
+      "market_share",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "capacite",
+      "investissement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 90.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcfcimsars",
+    "label": "Immobilisations, rémunération du personnel et marge",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "capacity",
+      "investment"
+    ],
+    "decision_levers": [
+      "capacite",
+      "investissement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcfcpfpuca",
+    "label": "Prix de vente, publicité et chiffre d'affaires",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "advertising",
+      "market_share",
+      "price",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "prix",
+      "marketing"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcfcpfpurs",
+    "label": "Prix de vente, publicité et marge",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "advertising",
+      "price"
+    ],
+    "decision_levers": [
+      "prix",
+      "marketing"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcfcpfquca",
+    "label": "Prix de vente, qualité des produits et chiffre d'affaires",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "market_share",
+      "price",
+      "quality",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "prix",
+      "qualite"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 80.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcfcpfqurs",
+    "label": "Prix de vente, qualité des produits et marge",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "price",
+      "quality"
+    ],
+    "decision_levers": [
+      "prix",
+      "qualite"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 55.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvfrc",
+    "label": "Comparaison des résultats comptables",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "tax"
+    ],
+    "decision_levers": [
+      "fiscalite"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvfsn",
+    "label": "Comparaison des capitaux propres",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "concurrence"
+    ],
+    "decision_levers": [
+      "concurrence"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvicddi",
+    "label": "Comparaison des canaux de distribution",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "concurrence"
+    ],
+    "decision_levers": [
+      "concurrence"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvicpca",
+    "label": "Comparaison des chiffres d'affaires",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "concurrence"
+    ],
+    "decision_levers": [
+      "concurrence"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvicpdp",
+    "label": "Comparaison des délais de paiement clients",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "bfr",
+      "payment",
+      "supplier"
+    ],
+    "decision_levers": [
+      "fournisseurs",
+      "bfr",
+      "delais_paiement"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 70.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvicppq",
+    "label": "Comparaison des publicités de marque",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "advertising"
+    ],
+    "decision_levers": [
+      "marketing"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvicpps",
+    "label": "Comparaison des publicités produits",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "advertising"
+    ],
+    "decision_levers": [
+      "marketing"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvicppv",
+    "label": "Comparaison des prix",
+    "price": 0.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "gratuit",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvicpve",
+    "label": "Comparaison des ventes des produits finis",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "market_share",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "pevcvipm",
+    "label": "Comparaison des parts de marché",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "concurrence",
+    "tags": [
+      "concurrence"
+    ],
+    "decision_levers": [
+      "concurrence"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "potentialMarketStudy",
+    "label": "Marché potentiel, couverture, demandes et ventes",
+    "price": 100.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "marketing",
+    "tags": [
+      "forecast",
+      "market_potential",
+      "market_share",
+      "sales",
+      "seasonality"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "prevision"
+    ],
+    "horizons": [
+      "long",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "structurel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "productionCostDetailStudy",
+    "label": "Calcul des coûts de production",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/accountsDetail/productionCostDetail",
+    "response_keys": "clazz, readAllowed, studyId, price, productsProductionCostDetails, allProductsDirectCostsTotal",
+    "domain": "production",
+    "tags": [
+      "cost",
+      "price",
+      "production"
+    ],
+    "decision_levers": [
+      "prix",
+      "production",
+      "couts"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 65.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  },
+  {
+    "study_id": "salePricePaymentDelayResultKeyFactor",
+    "label": "Prix de vente, délai de paiement et marge",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "marketing",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "salePricePaymentDelayTurnoverKeyFactor",
+    "label": "Prix de vente, délai de paiement et chiffre d'affaires",
+    "price": 250.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "marketing",
+    "tags": [
+      "market_share",
+      "price",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche",
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "mensuel",
+    "purchase_class": "strategique_250",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "salesToMarketAverageComparison",
+    "label": "Cartographie des chiffres d'affaires",
+    "price": 200.0,
+    "endpoint_known": false,
+    "endpoint_path": "",
+    "response_keys": "",
+    "domain": "pilotage",
+    "tags": [
+      "market_share",
+      "sales"
+    ],
+    "decision_levers": [
+      "part_de_marche"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 75.0,
+    "recurring": "mensuel",
+    "purchase_class": "analytique_200",
+    "strategic_only": false,
+    "mapping_basis": "label_only",
+    "mapping_confidence": 0.75
+  },
+  {
+    "study_id": "workstationsSalesExceptionalChargesAndProducts",
+    "label": "Produits et charges d'exploitation sur cessions",
+    "price": 50.0,
+    "endpoint_known": true,
+    "endpoint_path": "/api/sessions/{session}/months/{month}/teams/{team}/accountant/workstationsSalesExceptionalChargesAndProducts",
+    "response_keys": "clazz, readAllowed, studyId, price, workshopSalesExceptionalCharges, totalNetValueSold, workshopSalesExceptionalProducts, totalCharges",
+    "domain": "pilotage",
+    "tags": [
+      "price"
+    ],
+    "decision_levers": [
+      "prix"
+    ],
+    "horizons": [
+      "court",
+      "moyen"
+    ],
+    "importance": 50.0,
+    "recurring": "mensuel",
+    "purchase_class": "tactique_50_100",
+    "strategic_only": false,
+    "mapping_basis": "api_keys+label",
+    "mapping_confidence": 0.95
+  }
+]

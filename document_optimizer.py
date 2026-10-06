@@ -14,6 +14,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import document_strategy
+
 BASE_DIR = Path(__file__).resolve().parent
 CATALOG_PATH = BASE_DIR / "subakoua_study_catalog.csv"
 ENDPOINT_CATALOG_PATH = BASE_DIR / "study_api_catalog.json"
@@ -225,18 +227,20 @@ def load_profiles() -> dict[str, StudyProfile]:
                 endpoint_known=endpoint_known,
                 response_keys=response_keys,
             )
-            override = OVERRIDES.get(sid, {})
+            strategy = document_strategy.matrix_by_study_id().get(sid, {})
+            merged = dict(strategy)
+            merged.update(OVERRIDES.get(sid, {}))
             profiles[sid] = StudyProfile(
                 study_id=sid,
                 label=label,
                 price=price,
-                domain=str(override.get("domain", base.domain)),
-                tags=tuple(override.get("tags", base.tags)),
-                decision_levers=tuple(override.get("decision_levers", base.decision_levers)),
-                horizons=tuple(override.get("horizons", base.horizons)),
-                importance=float(override.get("importance", base.importance)),
-                recurring=str(override.get("recurring", base.recurring)),
-                strategic_only=bool(override.get("strategic_only", base.strategic_only)),
+                domain=str(merged.get("domain", base.domain)),
+                tags=tuple(merged.get("tags", base.tags)),
+                decision_levers=tuple(merged.get("decision_levers", base.decision_levers)),
+                horizons=tuple(merged.get("horizons", base.horizons)),
+                importance=float(merged.get("importance", base.importance)),
+                recurring=str(merged.get("recurring", base.recurring)),
+                strategic_only=bool(merged.get("strategic_only", base.strategic_only)),
                 endpoint_known=endpoint_known,
                 response_keys=response_keys,
             )
@@ -351,6 +355,20 @@ def build_purchase_plan(
     chosen: set[str] = set()
     candidates: list[StudyProfile] = []
 
+    # 1) Socle de couverture : études déjà achetées OU gratuites.
+    #    Leur contribution doit être déduite avant toute recommandation payante.
+    for sid, profile in profiles.items():
+        row = rows_by_id.get(sid)
+        if not row:
+            continue
+        price = float(row.get("price", profile.price) or 0)
+        bought = bool(row.get("boughtByTeam", row.get("bought_by_team", row.get("bought_any_period", False))))
+        if bought or price <= 0:
+            local = _profile_coverages(profile, needs)
+            for need_id, cov in local.items():
+                covered[need_id] = min(1.0, covered.get(need_id, 0.0) + cov)
+
+    # 2) Candidats payants restants.
     for sid, profile in profiles.items():
         row = rows_by_id.get(sid)
         if not row:
@@ -413,22 +431,57 @@ def build_purchase_plan(
 
 def build_information_matrix(profiles: Mapping[str, StudyProfile], needs: Sequence[DecisionNeed] = DEFAULT_NEEDS) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
+    strategy = document_strategy.matrix_by_study_id()
     for p in profiles.values():
         coverage = _profile_coverages(p, needs)
+        s = strategy.get(p.study_id, {})
+        utility = score_profile(p, needs)[0]
         rows.append({
             "study_id": p.study_id,
             "label": p.label,
             "price": p.price,
-            "domain": p.domain,
-            "endpoint_known": p.endpoint_known,
-            "tags": ", ".join(p.tags),
-            "decision_levers": ", ".join(p.decision_levers),
-            "covered_needs": ", ".join(k for k in coverage),
-            "utility": round(score_profile(p, needs)[0], 3),
-            "utility_per_euro": round(score_profile(p, needs)[0] / p.price, 5) if p.price else None,
-            "strategic_only": p.strategic_only,
+            "classe_achat": s.get("purchase_class", ""),
+            "domaine": p.domain,
+            "endpoint_api": "✅" if p.endpoint_known else "⚠️",
+            "base_mapping": s.get("mapping_basis", ""),
+            "confiance_mapping": s.get("mapping_confidence", ""),
+            "leviers": ", ".join(p.decision_levers),
+            "horizons": ", ".join(p.horizons),
+            "besoins_couverts": ", ".join(k for k in coverage),
+            "utilite": round(utility, 3),
+            "utilite_par_euro": round(utility / p.price, 5) if p.price else None,
+            "strategique_seulement": p.strategic_only,
         })
-    return sorted(rows, key=lambda r: (-(r["utility"] or 0), r["price"], r["label"]))
+    return sorted(rows, key=lambda r: (-(r["utilite"] or 0), r["price"], r["label"]))
+
+
+def build_coverage_snapshot(
+    profiles: Mapping[str, StudyProfile],
+    catalog_rows: Sequence[Mapping[str, object]],
+    needs: Sequence[DecisionNeed] = DEFAULT_NEEDS,
+) -> dict[str, object]:
+    """Mesure la couverture du socle gratuit/déjà acheté avant tout achat payant."""
+    rows_by_id = {str(r["study_id"]): r for r in catalog_rows}
+    covered: dict[str, float] = {}
+    available_ids: list[str] = []
+    for sid, profile in profiles.items():
+        row = rows_by_id.get(sid)
+        if not row:
+            continue
+        price = float(row.get("price", profile.price) or 0)
+        bought = bool(row.get("boughtByTeam", row.get("bought_by_team", row.get("bought_any_period", False))))
+        if price <= 0 or bought:
+            available_ids.append(sid)
+            for need_id, cov in _profile_coverages(profile, needs).items():
+                covered[need_id] = min(1.0, covered.get(need_id, 0.0) + cov)
+    weighted_total = sum(n.weight for n in needs) or 1.0
+    weighted_covered = sum(n.weight * min(1.0, covered.get(n.need_id, 0.0)) for n in needs)
+    return {
+        "covered": {k: round(v, 4) for k, v in covered.items()},
+        "coverage_percent": round(100.0 * weighted_covered / weighted_total, 2),
+        "available_document_count": len(available_ids),
+        "available_study_ids": tuple(available_ids),
+    }
 
 
 def serialize_profiles() -> list[dict[str, object]]:

@@ -70,9 +70,10 @@ class PlannedPeriod:
     live_rows: int
     already_available_count: int
     free_count: int
-    proposed_purchase_count: int
-    proposed_cost: float
-    recommended_ids: tuple[str, ...]
+    baseline_coverage_percent: float = 0.0
+    proposed_purchase_count: int = 0
+    proposed_cost: float = 0.0
+    recommended_ids: tuple[str, ...] = ()
 
 
 def load_local_catalog() -> list[dict[str, str]]:
@@ -104,12 +105,14 @@ def plan_for_period(
         allow_5000=allow_5000,
     )
     purchase_period = optimizer.next_period(optimizer.period_code_to_label(api.period_code(target_period)), -1)
+    coverage = optimizer.build_coverage_snapshot(profiles, live_rows)
     summary = PlannedPeriod(
         target_period=optimizer.period_code_to_label(api.period_code(target_period)),
         purchase_period=purchase_period,
         live_rows=len(live_rows),
         already_available_count=sum(1 for r in live_rows if bool(r.get("bought_by_team", r.get("boughtByTeam", False)))),
         free_count=sum(1 for r in live_rows if float(r.get("price", 0) or 0) <= 0),
+        baseline_coverage_percent=float(coverage["coverage_percent"]),
         proposed_purchase_count=len(plan),
         proposed_cost=round(sum(x.price for x in plan), 2),
         recommended_ids=tuple(x.study_id for x in plan),

@@ -1,0 +1,92 @@
+﻿study_id,label,price,domain,decision_levers,horizons,importance,purchase_class,endpoint_known,mapping_confidence
+pefrimcv,Conditions de ventes des machines,0.0,marketing,"['part_de_marche', 'capacite', 'investissement']","['long', 'moyen']",90.0,gratuit,False,0.75
+pefrmpcv,Conditions de ventes des matières,0.0,marketing,"['part_de_marche', 'achats', 'stocks']","['long', 'moyen']",90.0,gratuit,False,0.75
+bankStatements,[REDACTED],0.0,pilotage,"['prix', 'achats', 'capacite', 'investissement', 'fournisseurs', 'tresorerie', 'tva', 'stocks', 'delais_paiement']","['court', 'moyen']",85.0,gratuit,True,0.95
+pefrimpofr,Profil des fournisseurs de machines,0.0,production,"['capacite', 'investissement', 'fournisseurs', 'bfr', 'delais_paiement']","['long', 'moyen']",85.0,gratuit,False,0.75
+pefrmppofr,Profil des fournisseurs de matières,0.0,approvisionnement,"['prix', 'achats', 'fournisseurs', 'bfr', 'stocks', 'delais_paiement']","['long', 'moyen']",85.0,gratuit,True,0.95
+companyStock,Les stocks,0.0,pilotage,"['achats', 'bfr', 'stocks']","['court', 'moyen']",80.0,gratuit,False,0.75
+ensaacvm,Ventes mensuelles,0.0,marketing,"['part_de_marche', 'prix']","['court', 'moyen']",75.0,gratuit,True,0.95
+monitoring,Tableau de bord,0.0,pilotage,"['part_de_marche', 'prix']","['court', 'moyen']",75.0,gratuit,True,0.95
+pevcecprpf,Evolution comparée des prix de ventes des produits finis,0.0,concurrence,"['part_de_marche', 'prix']","['court', 'moyen']",75.0,gratuit,False,0.75
+enprgeqtpp,Processus de production,0.0,production,"['prix', 'production', 'couts']","['long', 'moyen']",65.0,gratuit,True,0.95
+initialBalanceSheet,Bilan au 1er janvier année 0,0.0,finance,"['prix', 'tresorerie']","['court', 'moyen']",65.0,gratuit,True,0.95
+peeedccscl,Créances clients,0.0,finance,"['prix', 'tresorerie', 'bfr']","['court', 'moyen']",65.0,gratuit,True,0.95
+pefrimfh,Fiches machines,0.0,production,"['capacite', 'investissement']","['long', 'moyen']",65.0,gratuit,False,0.75
+pefrimta,Tarifs des machines,0.0,production,"['capacite', 'investissement']","['long', 'moyen']",65.0,gratuit,False,0.75
+pefrmpfh,Fiches matières,0.0,approvisionnement,"['achats', 'stocks']","['long', 'moyen']",65.0,gratuit,False,0.75
+pefrmpta,Tarifs des matières,0.0,approvisionnement,"['achats', 'stocks']","['long', 'moyen']",65.0,gratuit,False,0.75
+peassodb,Dommages aux biens,0.0,assurance,['prix'],"['court', 'moyen']",50.0,gratuit,True,0.95
+peassorc,Responsabilité civile,0.0,assurance,['prix'],"['court', 'moyen']",50.0,gratuit,True,0.95
+pebaemecta,Tableau d'amortissement,0.0,finance,['prix'],"['court', 'moyen']",50.0,gratuit,True,0.95
+pebaifpuao,Portefeuille actions,0.0,finance,['prix'],"['court', 'moyen']",50.0,gratuit,True,0.95
+pebaifpuoo,Portefeuille obligations,0.0,finance,['prix'],"['court', 'moyen']",50.0,gratuit,True,0.95
+pefrpffh,Fiches produits,0.0,pilotage,['prix'],"['long', 'moyen']",50.0,gratuit,True,0.95
+pevcvicppv,Comparaison des prix,0.0,concurrence,['prix'],"['court', 'moyen']",50.0,gratuit,False,0.75
+peeedcahm,Achats et variations de stocks,50.0,finance,"['prix', 'achats', 'bfr', 'stocks']","['court', 'moyen']",80.0,tactique_50_100,True,0.95
+peeedcpehc,Produits d'exploitation sur stocks et clients,50.0,finance,"['prix', 'production', 'achats', 'bfr', 'couts', 'stocks']","['court', 'moyen']",80.0,tactique_50_100,True,0.95
+enapgeqlquesmp,Qualité des entrées et sorties des matières,50.0,approvisionnement,"['prix', 'qualite', 'achats', 'stocks']","['court', 'moyen']",70.0,tactique_50_100,True,0.95
+peeedcahsx,Autres achats et charges externes,50.0,finance,"['prix', 'qualite', 'production', 'couts']","['court', 'moyen']",70.0,tactique_50_100,True,0.95
+peeedcitesm,Charges de personnel,50.0,rh,"['prix', 'qualite', 'production', 'tva', 'rh', 'masse_salariale', 'couts']","['court', 'moyen']",70.0,tactique_50_100,True,0.95
+peeefstvp,TVA,50.0,finance,"['prix', 'achats', 'capacite', 'investissement', 'fournisseurs', 'tva', 'stocks', 'delais_paiement']","['court', 'moyen']",70.0,tactique_50_100,True,0.95
+enapgeqtcuesmp,Coût des entrées et sorties des matières,50.0,approvisionnement,"['prix', 'production', 'achats', 'couts', 'stocks']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+enprgeqtcuespf,Coût des entrées et sorties des produits finis,50.0,production,"['prix', 'production', 'couts']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+pcgToIfrsExternalLoads,Répartition des charges externes,50.0,finance,"['prix', 'capacite', 'investissement']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+pcgToIfrsLeasing,Traitement du crédit-bail,50.0,finance,"['prix', 'capacite', 'investissement']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+pcgToIfrsMonthlyLoansDistribution,Répartition des emprunts mensualisés,50.0,finance,['tresorerie'],"['court', 'moyen']",65.0,tactique_50_100,False,0.75
+peeedcchfi,Charges financières,50.0,finance,"['prix', 'tresorerie']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+productionCostDetailStudy,Calcul des coûts de production,50.0,production,"['prix', 'production', 'couts']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+enprgeqlquespf,Qualité des entrées et sorties des produits,50.0,production,"['prix', 'qualite']","['court', 'moyen']",55.0,tactique_50_100,True,0.95
+pcgToIfrsBonds,Traitement des obligations,50.0,finance,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+pcgToIfrsDepreciation,Répartition des dépréciations hors VMP,50.0,finance,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+pcgToIfrsStaffCostsDistribution,Répartition des charges de personnel,50.0,rh,"['prix', 'rh', 'masse_salariale']","['court', 'moyen']",50.0,tactique_50_100,True,0.95
+pcgToIfrsStocks,Traitement des actions,50.0,finance,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+peassoptex,Pertes d'exploitation,50.0,assurance,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+peeedcdadpm,Dotations aux amortissements et dépréciations,50.0,finance,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+peeedcpofi,Produits financiers,50.0,finance,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+peeefsisp,Impôts sur les sociétés,50.0,finance,"['prix', 'fiscalite']","['court', 'moyen']",50.0,tactique_50_100,True,0.95
+workstationsSalesExceptionalChargesAndProducts,Produits et charges d'exploitation sur cessions,50.0,pilotage,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+peeedccg,Chiffre d'affaires,100.0,finance,"['part_de_marche', 'prix']","['court', 'moyen']",75.0,tactique_50_100,True,0.95
+potentialMarketStudy,"Marché potentiel, couverture, demandes et ventes",100.0,marketing,"['part_de_marche', 'prevision']","['long', 'moyen']",75.0,tactique_50_100,False,0.75
+enprgeqtatdb,Ateliers : disponibilités et besoins théoriques,100.0,production,"['prix', 'capacite', 'investissement']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+enprgeqtmpdb,Matières : disponibilités et besoins théoriques,100.0,production,"['prix', 'achats', 'stocks']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+ifrsStatementOfCashFlow,[REDACTED],100.0,finance,"['prix', 'tresorerie']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+peeedsbiak,Bilan version simplifiée,100.0,finance,"['prix', 'tresorerie']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+peeedsbidt,Bilan version détaillée,100.0,finance,"['prix', 'tresorerie']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+peeedscrsm,Compte de résultat simplifié,100.0,finance,"['prix', 'achats', 'capacite', 'investissement', 'stocks']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+peeedsftt,Tableau de trésorerie méthode indirecte,100.0,finance,"['prix', 'tresorerie', 'bfr']","['court', 'moyen']",65.0,tactique_50_100,True,0.95
+companyResults,Résultats,100.0,finance,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+ifrsStatementOfFinancialPosition,[REDACTED],100.0,finance,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+ifrsStatementOfProfitAndLoss,[REDACTED],100.0,finance,"['prix', 'fiscalite']","['court', 'moyen']",50.0,tactique_50_100,True,0.95
+peeedscrdl,Compte de résultat détaillé,100.0,finance,['prix'],"['court', 'moyen']",50.0,tactique_50_100,True,0.95
+salesToMarketAverageComparison,Cartographie des chiffres d'affaires,200.0,pilotage,['part_de_marche'],"['court', 'moyen']",75.0,analytique_200,False,0.75
+enapgeqlevss,Audit du service / approvisionnement,200.0,approvisionnement,"['prix', 'qualite', 'achats', 'stocks']","['court', 'moyen']",70.0,analytique_200,True,0.95
+enprgeqlevss,Audit du service / production,200.0,production,"['prix', 'qualite', 'production', 'couts']","['court', 'moyen']",70.0,analytique_200,True,0.95
+enafgeqlevss,Audit du service / administration-finance,200.0,rh,"['prix', 'qualite', 'rh', 'masse_salariale']","['court', 'moyen']",55.0,analytique_200,True,0.95
+pevcfcimsaca,"Immobilisations, rémunération du personnel et chiffre d'affaires",250.0,concurrence,"['part_de_marche', 'capacite', 'investissement']","['court', 'moyen']",90.0,strategique_250,False,0.75
+pevcfcpfquca,"Prix de vente, qualité des produits et chiffre d'affaires",250.0,concurrence,"['part_de_marche', 'prix', 'qualite']","['court', 'moyen']",80.0,strategique_250,False,0.75
+pevcfcpfpuca,"Prix de vente, publicité et chiffre d'affaires",250.0,concurrence,"['part_de_marche', 'prix', 'marketing']","['court', 'moyen']",75.0,strategique_250,False,0.75
+pevcvicpve,Comparaison des ventes des produits finis,250.0,concurrence,['part_de_marche'],"['court', 'moyen']",75.0,strategique_250,False,0.75
+salePricePaymentDelayTurnoverKeyFactor,"Prix de vente, délai de paiement et chiffre d'affaires",250.0,marketing,"['part_de_marche', 'prix']","['court', 'moyen']",75.0,strategique_250,False,0.75
+pevcvicpdp,Comparaison des délais de paiement clients,250.0,concurrence,"['fournisseurs', 'bfr', 'delais_paiement']","['court', 'moyen']",70.0,strategique_250,False,0.75
+pevcfcimsars,"Immobilisations, rémunération du personnel et marge",250.0,concurrence,"['capacite', 'investissement']","['court', 'moyen']",65.0,strategique_250,False,0.75
+enprgeqlccqp,Composantes de la qualité des produits,250.0,production,"['prix', 'qualite']","['court', 'moyen']",55.0,strategique_250,True,0.95
+pevcfcpfqurs,"Prix de vente, qualité des produits et marge",250.0,concurrence,"['prix', 'qualite']","['court', 'moyen']",55.0,strategique_250,False,0.75
+pevcecdlpf,Evolution comparée des délais paiement,250.0,concurrence,['concurrence'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcecpuen,Evolution comparée de la publicité de marque,250.0,concurrence,['marketing'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcecpupf,Evolution comparée des publicités produits,250.0,concurrence,['marketing'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcfcpfpurs,"Prix de vente, publicité et marge",250.0,concurrence,"['prix', 'marketing']","['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcvfrc,Comparaison des résultats comptables,250.0,concurrence,['fiscalite'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcvfsn,Comparaison des capitaux propres,250.0,concurrence,['concurrence'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcvicddi,Comparaison des canaux de distribution,250.0,concurrence,['concurrence'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcvicpca,Comparaison des chiffres d'affaires,250.0,concurrence,['concurrence'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcvicppq,Comparaison des publicités de marque,250.0,concurrence,['marketing'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcvicpps,Comparaison des publicités produits,250.0,concurrence,['marketing'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+pevcvipm,Comparaison des parts de marché,250.0,concurrence,['concurrence'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+salePricePaymentDelayResultKeyFactor,"Prix de vente, délai de paiement et marge",250.0,marketing,['prix'],"['court', 'moyen']",50.0,strategique_250,False,0.75
+enapgeqtcofr,Suivi des commandes fournisseurs,5000.0,approvisionnement,"['prix', 'achats', 'fournisseurs', 'bfr', 'stocks', 'delais_paiement']","['court', 'moyen']",85.0,investissement_informationnel_5000,True,0.95
+peeumreusreprv,Eléments de prévision des ventes,5000.0,marketing,"['part_de_marche', 'prevision', 'prix']","['long', 'moyen']",75.0,investissement_informationnel_5000,True,0.95
+peeumreusrdpcl,Délais de paiement,5000.0,marketing,"['fournisseurs', 'bfr', 'delais_paiement']","['court', 'moyen']",70.0,investissement_informationnel_5000,False,0.75
+peeumreucjsacl,Satisfaction clients,5000.0,marketing,['prix'],"['court', 'moyen']",50.0,investissement_informationnel_5000,True,0.95
+peeumreusrcddi,Canaux de distribution,5000.0,marketing,['marketing'],"['court', 'moyen']",50.0,investissement_informationnel_5000,False,0.75
+peeumreusrpdpf,Publicité,5000.0,marketing,['marketing'],"['court', 'moyen']",50.0,investissement_informationnel_5000,False,0.75
+peeumreusrpvpf,Prix de vente des produits finis,5000.0,marketing,['prix'],"['court', 'moyen']",50.0,investissement_informationnel_5000,False,0.75
