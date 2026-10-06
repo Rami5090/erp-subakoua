@@ -28,3 +28,4 @@ git add .
 git commit -m "Ajout calibration backtest et decision roulante v2.8"
 git push
 ```
+# v2.8.3 — robust study purchase UI lookup

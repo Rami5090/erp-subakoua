@@ -383,12 +383,12 @@ def afficher_tableau_dynamique(donnees):
         if isinstance(donnees, list) and len(donnees) > 0 and isinstance(donnees[0], dict):
             df = pd.DataFrame(donnees)
             for col in df.select_dtypes(include=['object']).columns: df[col] = df[col].astype(str)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
             return True
         if isinstance(donnees, dict) and all(isinstance(v, (list, int, float, str)) for v in donnees.values()):
             df = pd.DataFrame.from_dict(donnees, orient='index')
             for col in df.select_dtypes(include=['object']).columns: df[col] = df[col].astype(str)
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width="stretch")
             return True
     except Exception: pass
     return False
@@ -817,7 +817,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.write(" ")
             st.button(
                 "↺ Réinitialiser les décisions",
-                use_container_width=True,
+                width="stretch",
                 on_click=reinitialiser_decisions_simulation,
                 help="Réinitialise les décisions du simulateur vers les valeurs par défaut / M-1.",
             )
@@ -866,7 +866,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         )
         nom_scenario = st.session_state.get("ui_nom_scenario", "Scénario de travail")
         with sc2:
-            if st.button("📂 Charger", use_container_width=True, disabled=scenario_selection == "— Aucun scénario —"):
+            if st.button("📂 Charger", width="stretch", disabled=scenario_selection == "— Aucun scénario —"):
                 token = scenario_selection.split(" · ", 1)[0]
                 data_scenario = charger_scenario_seed(token, tour_id_actif)
                 raw_params = data_scenario.get("Parametres_JSON", {}) if data_scenario else {}
@@ -886,7 +886,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 placeholder="Nom du scénario…",
             )
         with sc4:
-            if st.button("💾 Sauver", use_container_width=True, disabled=engine is None):
+            if st.button("💾 Sauver", width="stretch", disabled=engine is None):
                 nom = str(st.session_state.get("ui_nom_scenario", "Scénario de travail")).strip() or "Scénario de travail"
                 token_seed = hashlib.sha1(f"{tour_id_actif}:{nom}".encode("utf-8")).hexdigest()[:16]
                 parametres_sim = {
@@ -1018,7 +1018,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     'matiere': 'Matière', 'fournisseur': 'Fournisseur',
                     'delai_mois': 'Délai (mois)', 'montant_ht': 'Montant HT (€)'
                 })
-                st.dataframe(achats_view, use_container_width=True, hide_index=True)
+                st.dataframe(achats_view, width="stretch", hide_index=True)
             else:
                 st.info("Aucun achat net à déclencher avec les paramètres actuels.")
             c_ach1, c_ach2 = st.columns(2)
@@ -1539,7 +1539,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 float(bfr_projection_detail.variation_vs_m1 or 0.0),
             ],
         }
-        st.dataframe(pd.DataFrame(bfr_view), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(bfr_view), width="stretch", hide_index=True)
 
         st.divider()
         st.markdown("##### 🏦 Pont de Trésorerie")
@@ -1555,7 +1555,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             {"Étape": "Flux financement", "Impact (€)": float(projection.flux_financement)},
             {"Étape": "Solde final", "Impact (€)": float(projection.tresorerie_finale)},
         ])
-        st.dataframe(waterfall, use_container_width=True, hide_index=True)
+        st.dataframe(waterfall, width="stretch", hide_index=True)
         st.caption(
             f"Contrôle : {float(projection.tresorerie_initiale):,.2f} + "
             f"{float(projection.flux_exploitation):,.2f} + {float(projection.flux_investissement):,.2f} + "

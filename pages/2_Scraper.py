@@ -174,7 +174,7 @@ with st.expander("🔐 Connexions", expanded=True):
 
 b1, b2, b3 = st.columns(3)
 with b1:
-    if st.button("🧪 Tester login + API", use_container_width=True):
+    if st.button("🧪 Tester login + API", width="stretch"):
         if not sub_user or not sub_pass:
             st.error("Identifiants Subakoua manquants.")
         else:
@@ -198,7 +198,7 @@ with b1:
                     if pw:
                         pw.stop()
 with b2:
-    if st.button("🔎 Découvrir les périodes", use_container_width=True):
+    if st.button("🔎 Découvrir les périodes", width="stretch"):
         if not sub_user or not sub_pass:
             st.error("Identifiants Subakoua manquants.")
         else:
@@ -213,7 +213,7 @@ with b2:
             except Exception as exc:
                 st.error(f"Découverte impossible : {exc}")
 with b3:
-    if st.button("↻ Périodes locales de secours", use_container_width=True):
+    if st.button("↻ Périodes locales de secours", width="stretch"):
         st.session_state["scraper_periods"] = list(legacy.MOIS_DISPONIBLES)
         st.session_state["scraper_periods_source"] = "local"
         st.rerun()
@@ -257,7 +257,7 @@ with tab_plan:
     if selected_periods:
         st.caption("Objectif stratégique : **maximiser la part de marché**, puis couvrir prévision, production et sécurité financière.")
 
-    if st.button("📐 Analyser le catalogue live et calculer le plan", type="primary", use_container_width=True, disabled=not selected_periods):
+    if st.button("📐 Analyser le catalogue live et calculer le plan", type="primary", width="stretch", disabled=not selected_periods):
         if not sub_user or not sub_pass:
             st.error("Identifiants Subakoua manquants.")
         else:
@@ -294,13 +294,13 @@ with tab_plan:
             for need_id, info in cov.items():
                 row[f"Couverture · {info.get('label', need_id)}"] = info.get("coverage_percent", 0.0)
             summary_rows.append(row)
-        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
         st.caption("La couverture est calculée par informations distinctes explicitement cartographiées, et non par simple recouvrement de mots-clés.")
 
     st.subheader("📚 Matrice documentaire")
     with st.expander("Voir le classement document → décision → valeur / €", expanded=False):
         matrix = optimizer.build_information_matrix(optimizer.load_profiles())
-        st.dataframe(pd.DataFrame(matrix), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(matrix), width="stretch", hide_index=True)
 
     if plan_rows:
         plan = plan_items_from_dicts(plan_rows)
@@ -319,7 +319,7 @@ with tab_plan:
             }
             for x in plan
         ])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
         purchasable = smart_scraper.only_purchasable_now(plan, current_period)
         total_now = sum(x.price for x in purchasable)
@@ -336,11 +336,11 @@ with tab_plan:
         )
         now_df = pd.DataFrame([{"Document": x.label, "Prix (€)": x.price, "Cible": x.target_period, "Endpoint": "✅" if x.endpoint_known else "⚠️"} for x in purchasable])
         if not now_df.empty:
-            st.dataframe(now_df, use_container_width=True, hide_index=True)
+            st.dataframe(now_df, width="stretch", hide_index=True)
         else:
             st.info("Aucun achat du plan n'est actuellement exigible sur la période courante. Les autres restent à planifier.")
 
-        if st.button("💳 Acheter maintenant les études exigibles", type="secondary", use_container_width=True, disabled=(not purchasable or not authorize)):
+        if st.button("💳 Acheter maintenant les études exigibles", type="secondary", width="stretch", disabled=(not purchasable or not authorize)):
             cfg = make_config(sub_user, sub_pass)
             pw = browser = context = None
             try:
@@ -362,7 +362,7 @@ with tab_plan:
 
         if st.session_state.get("smart_purchase_results"):
             st.subheader("🧾 Résultat des achats")
-            st.dataframe(pd.DataFrame(st.session_state["smart_purchase_results"]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(st.session_state["smart_purchase_results"]), width="stretch", hide_index=True)
 
 with tab_sync:
     st.subheader("📥 Lire les études accessibles et synchroniser Aiven")
@@ -381,7 +381,7 @@ with tab_sync:
     default_ids = [sid for sid in saved_plan_ids if sid in options]
     selected_ids = st.multiselect("Études API à lire", list(options), default=default_ids or list(options)[:8], format_func=lambda sid: options[sid])
 
-    if st.button("📥 Synchroniser les études sélectionnées", type="primary", use_container_width=True, disabled=(not target_periods or not selected_ids)):
+    if st.button("📥 Synchroniser les études sélectionnées", type="primary", width="stretch", disabled=(not target_periods or not selected_ids)):
         if not sub_user or not sub_pass:
             st.error("Identifiants Subakoua manquants.")
         elif not db_host or not db_name or not db_user or not db_pass:
@@ -416,7 +416,7 @@ with tab_sync:
                             pw.stop()
 
     if st.session_state.get("smart_sync_results"):
-        st.dataframe(pd.DataFrame(st.session_state["smart_sync_results"]), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(st.session_state["smart_sync_results"]), width="stretch", hide_index=True)
 
 with tab_legacy:
     st.warning("Mode de secours conservé pour les études dont aucun endpoint API n'a encore été cartographié. Il ne doit pas être privilégié lorsqu'une API connue existe.")
@@ -436,7 +436,7 @@ with tab_legacy:
     selected_legacy_modules = [(display, key) for display, key in module_options if display in selected_legacy_labels]
     force = st.checkbox("Forcer le rescraping", value=False, key="legacy_force")
 
-    if st.button("🧱 Lancer le secours DOM", use_container_width=True, disabled=(not selected_legacy_periods or not selected_legacy_modules)):
+    if st.button("🧱 Lancer le secours DOM", width="stretch", disabled=(not selected_legacy_periods or not selected_legacy_modules)):
         if not sub_user or not sub_pass:
             st.error("Identifiants Subakoua manquants.")
         else:

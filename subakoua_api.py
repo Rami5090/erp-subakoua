@@ -254,17 +254,132 @@ class SubakouaAPIClient:
                 return
         raise SubakouaAPIError("Zone Études/Documents introuvable dans le portail Subakoua.")
 
-    def _open_study(self, page: Page, study_id: str, label: str) -> None:
-        """Ouvre la fiche/carte d'une étude puis son bouton Acheter."""
-        buy = page.get_by_role("button", name=re.compile(r"acheter", re.I))
-
-        # Cas 1 : la carte comporte directement son bouton Acheter.
-        for needle in (label, study_id):
-            if not needle:
-                continue
-            loc = page.get_by_text(needle, exact=True)
+    def _click_buy_visible(self, page: Page, scope=None) -> bool:
+        """Clique sur le premier bouton Acheter visible dans le scope donné."""
+        root = scope or page
+        for pattern in (
+            r"acheter",
+            r"acheter l[’\']étude",
+        ):
             try:
-                count = min(loc.count(), 30)
+                loc = root.get_by_role("button", name=re.compile(pattern, re.I))
+                if self._click_first_visible(loc, timeout=5000):
+                    page.wait_for_timeout(600)
+                    return True
+            except Exception:
+                pass
+        return False
+
+    @staticmethod
+    def _visible_text_locator(page: Page, label: str):
+        """Retrouve le libellé même si Angular ajoute du contenu autour du titre."""
+        if not label:
+            return None
+        try:
+            loc = page.get_by_text(label, exact=False)
+            count = min(loc.count(), 50)
+            for i in range(count):
+                item = loc.nth(i)
+                if item.is_visible():
+                    return item
+        except Exception:
+            pass
+        return None
+
+    def _search_global_study(self, page: Page, study_id: str, label: str) -> bool:
+        """Utilise la barre de recherche globale du portail Subakoua.
+
+        L'audit montre que la barre ``#search-query`` est présente dans
+        l'en-tête des pages d'études et qu'elle alimente dynamiquement
+        ``okw-main-header-filtered-studies-list``. Cette voie est plus fiable
+        que de dépendre des cartes d'une page catalogue particulière.
+        """
+        queries = [q for q in (label, study_id) if q]
+        for query in queries:
+            try:
+                inp = page.locator('input#search-query').first
+                inp.wait_for(state='visible', timeout=5000)
+                inp.fill("")
+                inp.fill(query)
+                # Le composant Angular filtre dynamiquement. Une légère attente
+                # laisse le temps à la liste des résultats de se monter.
+                page.wait_for_timeout(900)
+
+                container = page.locator('okw-main-header-filtered-studies-list').first
+                if container.count() == 0:
+                    continue
+
+                # Cherche d'abord un lien/bouton dont le texte correspond au résultat.
+                result_re = re.compile(re.escape(query), re.I)
+                clickables = container.locator(
+                    'a, button, [role="link"], [role="button"], li, [tabindex="0"]'
+                )
+                count = min(clickables.count(), 100)
+                for i in range(count):
+                    node = clickables.nth(i)
+                    try:
+                        if not node.is_visible():
+                            continue
+                        txt = " ".join(node.inner_text().split())
+                        if result_re.search(txt) or (label and re.search(re.escape(label), txt, re.I)):
+                            node.click(timeout=5000)
+                            page.wait_for_timeout(900)
+                            return True
+                    except Exception:
+                        continue
+
+                # Fallback : trouver le texte du résultat puis remonter dans le DOM.
+                text_nodes = container.get_by_text(query, exact=False)
+                for i in range(min(text_nodes.count(), 20)):
+                    node = text_nodes.nth(i)
+                    try:
+                        if not node.is_visible():
+                            continue
+                        ancestor = node
+                        for _ in range(8):
+                            try:
+                                if ancestor.evaluate(
+                                    "el => ['A','BUTTON'].includes(el.tagName) || el.getAttribute('role') === 'link' || el.getAttribute('role') === 'button'"
+                                ):
+                                    ancestor.click(timeout=5000)
+                                    page.wait_for_timeout(900)
+                                    return True
+                            except Exception:
+                                pass
+                            ancestor = ancestor.locator('xpath=..')
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        return False
+
+    def _open_study(self, page: Page, study_id: str, label: str) -> None:
+        """Ouvre une étude et son bouton Acheter.
+
+        Le catalogue API peut connaître une étude alors que son libellé n'est pas
+        présent comme texte exact dans le DOM (cartes Angular, traduction,
+        titre tronqué, etc.). On cherche donc d'abord l'identifiant dans les
+        attributs/href, puis le libellé de façon souple, puis une recherche UI.
+        """
+        # 0) Voie prioritaire observée dans l'audit : recherche globale.
+        if self._search_global_study(page, study_id, label):
+            if self._click_buy_visible(page):
+                return
+
+        # 1) Cas le plus fiable : l'identifiant est présent dans href/data-* du DOM.
+        id_selectors = [
+            f'[data-study-id="{study_id}"]',
+            f'[data-studyid="{study_id}"]',
+            f'[data-id="{study_id}"]',
+            f'a[href*="{study_id}"]',
+            f'button[value="{study_id}"]',
+            f'[id*="{study_id}"]',
+        ]
+        for selector in id_selectors:
+            try:
+                loc = page.locator(selector)
+                count = min(loc.count(), 20)
             except Exception:
                 count = 0
             for i in range(count):
@@ -272,25 +387,97 @@ class SubakouaAPIClient:
                 try:
                     if not item.is_visible():
                         continue
-                    ancestor = item
-                    for _ in range(6):
-                        try:
-                            local_buy = ancestor.get_by_role("button", name=re.compile(r"acheter", re.I))
-                            if local_buy.count() and self._click_first_visible(local_buy):
-                                return
-                        except Exception:
-                            pass
-                        ancestor = ancestor.locator("xpath=..")
-
-                    # Cas 2 : clic sur le libellé ouvre la fiche de l'étude.
+                    # Le bouton peut être directement sur la carte.
+                    if self._click_buy_visible(page, item):
+                        return
                     item.click(timeout=5000)
                     page.wait_for_timeout(700)
-                    if self._click_first_visible(buy):
+                    if self._click_buy_visible(page):
                         return
                 except Exception:
                     continue
 
-        raise SubakouaAPIError(f"Étude introuvable dans l'interface : {label or study_id} ({study_id}).")
+        # 2) Libellé souple (exact=False), puis remontée de plusieurs niveaux
+        # pour couvrir les structures Angular profondément imbriquées.
+        item = self._visible_text_locator(page, label)
+        if item is not None:
+            ancestor = item
+            for _ in range(12):
+                try:
+                    if self._click_buy_visible(page, ancestor):
+                        return
+                except Exception:
+                    pass
+                try:
+                    ancestor.click(timeout=5000)
+                    page.wait_for_timeout(700)
+                    if self._click_buy_visible(page):
+                        return
+                except Exception:
+                    pass
+                ancestor = ancestor.locator("xpath=..")
+
+        # 3) Recherche éventuelle dans un champ de recherche du catalogue.
+        if label:
+            try:
+                inputs = page.locator("input")
+                for i in range(min(inputs.count(), 30)):
+                    inp = inputs.nth(i)
+                    if not inp.is_visible():
+                        continue
+                    meta = " ".join([
+                        str(inp.get_attribute("placeholder") or ""),
+                        str(inp.get_attribute("aria-label") or ""),
+                        str(inp.get_attribute("name") or ""),
+                    ]).lower()
+                    if any(token in meta for token in ("recherch", "search", "étude", "etude", "document")):
+                        inp.fill(label)
+                        page.wait_for_timeout(900)
+                        item = self._visible_text_locator(page, label)
+                        if item is not None:
+                            ancestor = item
+                            for _ in range(12):
+                                if self._click_buy_visible(page, ancestor):
+                                    return
+                                try:
+                                    ancestor.click(timeout=5000)
+                                    page.wait_for_timeout(600)
+                                    if self._click_buy_visible(page):
+                                        return
+                                except Exception:
+                                    pass
+                                ancestor = ancestor.locator("xpath=..")
+            except Exception:
+                pass
+
+        # 4) Dernier essai : tout élément visible contenant l'identifiant ou le titre.
+        try:
+            all_clickables = page.locator("a, button, [role='button'], [role='link']")
+            for i in range(min(all_clickables.count(), 200)):
+                node = all_clickables.nth(i)
+                if not node.is_visible():
+                    continue
+                text = " ".join(node.inner_text().split()).lower()
+                attrs = " ".join([
+                    str(node.get_attribute("href") or ""),
+                    str(node.get_attribute("data-study-id") or ""),
+                    str(node.get_attribute("data-id") or ""),
+                ]).lower()
+                if study_id.lower() in attrs or (label and label.lower() in text):
+                    try:
+                        node.click(timeout=5000)
+                        page.wait_for_timeout(700)
+                        if self._click_buy_visible(page):
+                            return
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        raise SubakouaAPIError(
+            f"Étude introuvable dans l'interface : {label or study_id} ({study_id}). "
+            "Le catalogue API la connaît mais aucun lien/carte exploitable n'a été trouvé."
+        )
 
     def purchase_study(
         self,
@@ -314,9 +501,16 @@ class SubakouaAPIClient:
         page.goto(self.dashboard_url, wait_until="domcontentloaded", timeout=self.timeout)
         page.wait_for_timeout(700)
         self._select_purchase_period(page, wanted_period)
-        self._open_study_area(page)
-        self._select_purchase_period(page, wanted_period)
-        self._open_study(page, study_id, label)
+        # La barre de recherche globale est disponible directement depuis
+        # l'en-tête des pages : on tente l'ouverture de l'étude sans changer
+        # de zone. Le fallback _open_study_area reste disponible pour les
+        # variantes de portail qui n'exposent pas cette barre.
+        try:
+            self._open_study(page, study_id, label)
+        except SubakouaAPIError:
+            self._open_study_area(page)
+            self._select_purchase_period(page, wanted_period)
+            self._open_study(page, study_id, label)
 
         dialog = page.get_by_role("dialog")
         dialog.wait_for(state="visible", timeout=7000)
