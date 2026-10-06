@@ -629,7 +629,8 @@ def _competition_rows_from_any(obj: Any, own_company_number: int) -> list[dict[s
     def ensure(c: int) -> dict[str, Any]:
         return by_company.setdefault(c, {"entreprise": c, "ventes": None, "part_marche": None, "part_marche_valeur": None,
                                          "prix": None, "qualite": None, "chiffre_affaires": None,
-                                         "publicite": None, "axe_1": None, "axe_2": None,
+                                         "publicite": None, "publicite_marque": None, "publicite_produit": None,
+                                         "axe_1": None, "axe_2": None,
                                          "is_own": c == own_company_number})
 
     def walk(node: Any, section: str = "") -> None:
@@ -658,10 +659,20 @@ def _competition_rows_from_any(obj: Any, own_company_number: int) -> list[dict[s
                     if k in node:
                         v = _num(node.get(k));
                         if v is not None: rec["chiffre_affaires"] = v
-                for k in ("Publicité de marque", "Publicité produit (€)", "Publicité", "publicité"):
+                for k in ("Publicité de marque", "Publicité"):
                     if k in node:
                         v = _num(node.get(k));
-                        if v is not None: rec["publicite"] = v
+                        if v is not None:
+                            rec["publicite_marque"] = v
+                            # Compatibilité : publicite = marque lorsque la source est connue.
+                            if rec.get("publicite") is None:
+                                rec["publicite"] = v
+                if "Publicité produit (€)" in node:
+                    v = _num(node.get("Publicité produit (€)"));
+                    if v is not None:
+                        rec["publicite_produit"] = v
+                if rec.get("publicite") is None and rec.get("publicite_produit") is not None:
+                    rec["publicite"] = rec["publicite_produit"]
                 if "Axe 1" in node: rec["axe_1"] = node.get("Axe 1")
                 if "Axe 2" in node: rec["axe_2"] = node.get("Axe 2")
             for key, value in node.items():
