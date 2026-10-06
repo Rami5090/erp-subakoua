@@ -57,3 +57,8 @@ def test_strategic_5000_excluded_by_default():
     rows = [{"study_id": "enapgeqtcofr", "price": 5000, "boughtByTeam": False}]
     plan = d.build_purchase_plan(profiles, rows, target_period="Année 1 - Juillet", budget=10_000, allow_5000=False)
     assert not plan
+
+
+def test_try_next_period_handles_before_first_period():
+    import document_optimizer as o
+    assert o.try_next_period("Année 1 - Janvier", -1) is None

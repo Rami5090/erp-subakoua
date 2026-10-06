@@ -285,11 +285,18 @@ def period_month_id(period: str) -> int:
 def next_period(period: str, offset: int = 1) -> str:
     seq = period_to_seq(period) + offset
     if seq < 1:
-        year, month = 0, 12 + seq
         raise ValueError("La période résultante est antérieure à Année 1 - Janvier")
     year = (seq - 1) // 12 + 1
     month = (seq - 1) % 12 + 1
     return f"Année {year} - {MONTH_NAMES[month - 1]}"
+
+
+def try_next_period(period: str, offset: int = 1) -> str | None:
+    """Version non bloquante de next_period pour les analyses historiques."""
+    try:
+        return next_period(period, offset)
+    except ValueError:
+        return None
 
 
 def _profile_coverages(profile: StudyProfile, needs: Sequence[DecisionNeed]) -> dict[str, float]:
@@ -404,24 +411,32 @@ def build_purchase_plan(
         candidates = [p for p in candidates if p.study_id != picked.study_id]
 
     plan: list[PlanItem] = []
-    purchase_period = next_period(target_period, -purchase_lead_periods)
+    purchase_period = try_next_period(target_period, -purchase_lead_periods)
     for sid in chosen:
         profile = profiles[sid]
         row = rows_by_id[sid]
         utility, reason = score_profile(profile, needs)
+        if purchase_period is None:
+            # Une cible sur A1-Janvier n'a pas de période d'achat antérieure
+            # dans le modèle : on conserve l'analyse mais on interdit tout achat.
+            status = "HORS FENÊTRE D'ACHAT"
+            purchase_label = "Impossible — avant A1-Janvier"
+        else:
+            status = "RECOMMANDÉ" if profile.endpoint_known else "RECOMMANDÉ · endpoint à résoudre"
+            purchase_label = purchase_period
         plan.append(
             PlanItem(
                 study_id=sid,
                 label=profile.label,
                 price=float(row.get("price", profile.price) or 0),
-                purchase_period=purchase_period,
+                purchase_period=purchase_label,
                 target_period=target_period,
                 already_available=False,
                 endpoint_known=profile.endpoint_known,
                 utility=round(utility, 3),
                 efficiency=round(utility / max(1.0, profile.price), 5),
                 reason=reason,
-                status="RECOMMANDÉ" if profile.endpoint_known else "RECOMMANDÉ · endpoint à résoudre",
+                status=status,
                 covered_needs=tuple(n.need_id for n in needs if n.need_id in _profile_coverages(profile, needs)),
             )
         )

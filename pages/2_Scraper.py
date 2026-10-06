@@ -315,6 +315,9 @@ with tab_plan:
 
         purchasable = smart_scraper.only_purchasable_now(plan, current_period)
         total_now = sum(x.price for x in purchasable)
+        historical_only = any(x.status == "HORS FENÊTRE D'ACHAT" for x in plan)
+        if historical_only:
+            st.info("La période cible est antérieure au premier mois du jeu : elle peut être analysée, mais aucun achat documentaire ne peut être planifié en amont.")
         st.metric("Achats réellement exigibles maintenant", f"{len(purchasable)} · {total_now:,.0f} €")
 
         authorize = st.checkbox(

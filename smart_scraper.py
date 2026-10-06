@@ -104,10 +104,11 @@ def plan_for_period(
         budget=budget,
         allow_5000=allow_5000,
     )
-    purchase_period = optimizer.next_period(optimizer.period_code_to_label(api.period_code(target_period)), -1)
+    target_label = optimizer.period_code_to_label(api.period_code(target_period))
+    purchase_period = optimizer.try_next_period(target_label, -1) or "Impossible — avant A1-Janvier"
     coverage = optimizer.build_coverage_snapshot(profiles, live_rows)
     summary = PlannedPeriod(
-        target_period=optimizer.period_code_to_label(api.period_code(target_period)),
+        target_period=target_label,
         purchase_period=purchase_period,
         live_rows=len(live_rows),
         already_available_count=sum(1 for r in live_rows if bool(r.get("bought_by_team", r.get("boughtByTeam", False)))),
