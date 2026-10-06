@@ -1,37 +1,32 @@
-# ERP Subakoua — Scraper API-first + Optimiseur documentaire v2.5
+# ERP Subakoua — Pilotage stratégique 12 mois v2.6.1
 
-Cette version poursuit la reconstruction du scraper à partir de l'audit web Subakoua.
+Correctif du moteur de prévision : la page de pilotage sait désormais exploiter les payloads API-first stockés dans `erp_etudes` (notamment `ensaacvm` pour les ventes mensuelles et `peeumreusreprv` pour la saisonnalité / marché potentiel), tout en conservant un fallback vers l'ancien schéma `erp_donnees`.
 
-## Nouveautés v2.5
+## Correctif principal
 
-- Matrice explicite de 91 études : document → information → levier → horizon → coût.
-- 54 études avec endpoint API connu ; 37 restent volontairement en `label_only` tant que leur endpoint n'est pas cartographié.
-- Le plan d'achat déduit maintenant d'abord la couverture des études gratuites ou déjà achetées avant de recommander des études payantes.
-- La couverture de base est exposée par période dans le diagnostic du plan.
-- Les études ≥ 5 000 € restent interdites par défaut à l'achat automatique.
-- Toute correspondance sémantique non confirmée par l'API porte une confiance explicite.
-- Les achats réels restent séparés du calcul du plan et nécessitent une autorisation explicite.
+La version précédente lisait uniquement `erp_donnees` et attendait une structure DOM/normalisée de type :
 
-## Fichiers clés
+`donnees_internes -> Marketing -> Ventes mensuelles -> Tableau_1`
 
-- `subakoua_api.py` : client API-first.
-- `smart_scraper.py` : orchestration planification/achat/lecture.
-- `document_strategy.py` : matrice métier des 91 études.
-- `document_optimizer.py` : couverture et optimisation sous budget.
-- `pages/2_Scraper.py` : interface Streamlit.
-- `study_information_matrix.csv` / `.json` : matrice générée.
+Or le nouveau scraper API-first stocke les payloads bruts dans :
 
-## Important
+`erp_etudes -> study_id=ensaacvm -> payload.sales`
 
-Les prix, IDs et endpoints connus sont issus de l'audit web fourni. La relation étude → levier de décision est une couche analytique du projet : elle doit être revue si une nouvelle règle Subakoua ou un changement de document est constaté.
+Le moteur v2.6.1 accepte désormais les deux formats.
 
-Les secrets `.env` et les données propriétaires ne doivent jamais être poussés sur GitHub.
+## Tests
 
+- Tests forecast : 7/7 PASS
+- Compilation Python : PASS
 
-## v2.5.2 — couverture documentaire corrigée
-- La couverture n'est plus calculée par simple recouvrement de tags.
-- Chaque besoin de pilotage est décomposé en unités d'information explicitement cartographiées.
-- Les études gratuites/déjà achetées couvrent uniquement les informations qu'elles fournissent réellement.
-- Les documents payants sont évalués sur leur gain marginal réel.
-- Le catalogue de la période cible sert à mesurer ce qui sera disponible; le catalogue de la période d'achat sert à déterminer ce qui est effectivement achetable.
-- Le diagnostic affiche désormais la couverture par besoin, et non seulement un agrégat opaque.
+## Déploiement
+
+Remplacer les fichiers du dépôt Git sans toucher au `.env`, puis :
+
+```powershell
+git add .
+git commit -m "Correction forecast API-first"
+git push
+```
+
+Streamlit Cloud redéploiera l'application.

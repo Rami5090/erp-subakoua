@@ -1,4 +1,3 @@
-import json
 import pandas as pd
 from forecast_engine import *
 
@@ -8,6 +7,36 @@ def test_structural_normalized():
     data={"Année 1 - Janvier":{"etudes_marche":{"Etudes structurelles":{"Prévision des ventes":{"Tableau_2":[row]}}}}}
     s=extract_structural_seasonality(data)
     assert abs(sum(s[3].values())/12-1)<1e-9
+
+
+def test_api_monthly_sales_payload_is_supported():
+    study={"Année 1 - Janvier":{"ensaacvm":{
+        "readAllowed": True,
+        "studyId":"ensaacvm",
+        "sales":[{"month":13,"monthlySalesByProducts":[
+            {"productId":"SHORTY_C","sales":27},
+            {"productId":"MONO_C","sales":160},
+            {"productId":"SHORTY_T","sales":49},
+            {"productId":"MONO_T","sales":302},
+            {"productId":"MONO_F","sales":2640},
+        ]}]
+    }}}
+    f=extract_own_sales_history({}, study_data=study)
+    assert len(f)==1
+    assert f.iloc[0]["Integral 7"]==2640
+    assert f.iloc[0]["Total" if "Total" in f.columns else "Integral 7"] >= 0
+
+
+def test_api_seasonality_and_market_potential():
+    payload={"peeumreusreprv":{
+        "listCoefSaisonnier":[{"nomProd":"SHORTY_C",**{f"coef{i}":float(i) for i in range(1,13)}}],
+        "listPeeumreusreprvMoisProd":[{"nomProd":"SHORTY_C","mbase50":5400}]
+    }}
+    data={"Année 1 - Janvier":payload}
+    s=extract_structural_seasonality({}, study_data=data)
+    mp=extract_market_potential({}, study_data=data)
+    assert 3 in s and len(s[3])==12
+    assert mp["Shorty 3"]==5400
 
 
 def test_hybrid_forecast_uses_seasonality():
@@ -34,3 +63,13 @@ def test_competition_snapshot():
     snap=extract_competitive_snapshot(data,3)
     assert snap['own']['ventes']==200
     assert 0.66 < snap['share'] < 0.67
+
+
+def test_12m_forecast_works_with_one_real_month():
+    sales=pd.DataFrame([{"periode":"Année 1 - Janvier","index":0,"Shorty 3":27,"Integral 3":160,"Shorty 5":49,"Integral 5":302,"Integral 7":2640}])
+    factors={3:{i:1 for i in range(12)},5:{i:1 for i in range(12)},7:{i:1 for i in range(12)}}
+    f,_=build_12m_forecast(sales,factors,"Année 1 - Janvier")
+    assert not f.empty
+    assert len(f)==12
+    assert f.loc[f['periode']=='Année 1 - Janvier','statut'].iloc[0]=='Réel'
+    assert f.loc[f['periode']=='Année 1 - Février','statut'].iloc[0]=='Prévision'
