@@ -109,13 +109,21 @@ with st.expander("🔎 Diagnostic des sources", expanded=False):
     st.write(f"Historique de ventes reconnu : {len(sales)} période(s)")
     st.write(f"Saisonnalité structurelle : {'disponible (' + str(len(struct)) + ' familles produit)' if struct else 'NON DISPONIBLE'}")
     st.write(f"Marché potentiel structurel : {'disponible (' + str(len(potential)) + ' produits)' if potential else 'NON DISPONIBLE'}")
-    monitoring_ok = any(_study_payload_has_monitoring(study_data.get(p, {})) for p in study_data)
-    st.write(f"Tableau de bord / PDM : {'disponible' if monitoring_ok else 'NON DISPONIBLE'}")
+    # Le monitoring peut être stocké dans erp_etudes ou, pour les exports legacy,
+    # directement dans erp_donnees. On ne doit pas déclarer « non disponible »
+    # uniquement parce que la table API est vide.
+    monitoring_legacy = any(_study_payload_has_monitoring(period_data.get(p, {})) for p in period_data)
+    monitoring_api = any(_study_payload_has_monitoring(study_data.get(p, {})) for p in study_data)
+    st.write(f"Tableau de bord / PDM : {'disponible' if (monitoring_api or monitoring_legacy) else 'NON DISPONIBLE'}")
     st.write(f"Concurrence détaillée : {'disponible (' + str(len(competitive.get('rows') or [])) + ' entreprises)' if competitive.get('rows') else 'NON DISPONIBLE'}")
     scope = competitive.get("share_scope")
     st.write(f"Périmètre PDM : {'global (tableau de bord)' if scope == 'overall_monitoring' else 'segment concurrentiel' if scope == 'competitive_segment' else 'indéterminé'}")
+    if scope == "competitive_segment":
+        st.info("Le benchmark concurrentiel couvre actuellement un segment produit ; il ne doit pas être interprété comme la PDM globale de l'entreprise.")
+    if not potential:
+        st.warning("Le marché potentiel structurel n'est pas synchronisé. La trajectoire de PDM globale restera indéterminée tant qu'une base de marché globale n'est pas disponible.")
     if not struct:
-        st.warning("La saisonnalité structurelle n'est pas synchronisée. Avec un seul mois réel, le forecast sera une extrapolation de niveau et ne doit pas être interprété comme une prévision saisonnière fiable.")
+        st.warning("La saisonnalité structurelle n'est pas synchronisée. Avec un seul mois réel, le forecast serait une extrapolation de niveau et ne doit pas être interprété comme une prévision saisonnière fiable.")
     if not sales.empty:
         st.dataframe(sales[["periode", *PRODUCTS]].tail(12).round(1), width="stretch", hide_index=True)
 
@@ -132,22 +140,24 @@ market = compute_market_forecast(forecast_df, struct, potential, competitive, ta
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("PDM globale actuelle", f"{current_share * 100:.2f} %" if current_share is not None else "—")
-own_snapshot = competitive.get("own") or {}
-current_sales = own_snapshot.get("ventes")
-if current_sales is None:
-    actual_rows = forecast_df.loc[forecast_df["statut"] == "Réel"].tail(1)
-    current_sales = float(actual_rows["Total unités"].iloc[0]) if not actual_rows.empty else 0.0
-c2.metric("Ventes actuelles", f"{current_sales:,.0f} u")
-c3.metric("Prix segment observé", f"{metrics['own_price']:.2f} €" if metrics.get('own_price') is not None else "—")
+actual_rows = forecast_df.loc[forecast_df["statut"] == "Réel"].tail(1)
+current_total_sales = float(actual_rows["Total unités"].iloc[0]) if not actual_rows.empty else 0.0
+c2.metric("Ventes globales actuelles", f"{current_total_sales:,.0f} u")
+if segment_share is not None:
+    c3.metric("PDM segment observée", f"{segment_share * 100:.2f} %")
+elif metrics.get("own_price") is not None:
+    c3.metric("Prix observé", f"{metrics['own_price']:.2f} €")
+else:
+    c3.metric("PDM segment observée", "—")
 c4.metric("Concurrents observés", str(metrics.get("competitor_count", 0)))
 if current_share is None:
-    st.info("PDM globale indisponible : le tableau de bord (monitoring) n'est pas synchronisé pour cette période. Le benchmark par segment reste visible, mais aucune PDM globale n'est inventée.")
+    st.info("La PDM globale réelle n'est pas disponible pour cette période. Le benchmark concurrentiel par segment reste exploitable ; aucune PDM globale n'est inventée.")
     if segment_share is not None:
-        st.caption(f"Référence disponible : PDM segmentielle = {segment_share * 100:.2f} % (ne sert pas de PDM globale).")
+        st.caption(f"Référence segmentielle : {segment_share * 100:.2f} % ; ventes du segment de l'entreprise : {float((competitive.get('own') or {}).get('ventes') or 0):,.0f} u.")
 elif competitive.get("share_scope") == "competitive_segment":
-    st.info("Une part de marché concurrentielle par segment est disponible, mais elle n'est pas utilisée comme PDM globale de l'entreprise.")
+    st.info("La PDM globale réelle est distincte du benchmark segmentiel ; les deux sont affichés séparément.")
 elif competitive.get("rows") and len(competitive.get("rows") or []) < 3:
-    st.warning("La PDM est connue, mais la vue concurrentielle détaillée est incomplète. Pour piloter contre les 8 concurrents, il faut synchroniser au minimum l'étude de parts de marché et/ou de ventes concurrentes.")
+    st.warning("La vue concurrentielle détaillée est incomplète. Pour piloter contre les 8 concurrents, il faut synchroniser les études de parts de marché et/ou de ventes concurrentes.")
 
 st.subheader("📈 Trajectoire 12 mois")
 chart_df = forecast_df.sort_values("index").copy()
@@ -184,11 +194,27 @@ elif market.calibration_method.startswith("proxy"):
     st.info("La trajectoire de PDM est un proxy structurel : elle ne remplace pas une observation réelle du marché concurrentiel.")
 
 m1, m2, m3 = st.columns(3)
-m1.metric("PDM projetée fin d'année", f"{market.baseline_share_forecast[-1] * 100:.2f} %" if market.baseline_share_forecast else "—")
-m2.metric("Écart moyen", f"{sum(market.unit_gap) / len(market.unit_gap):,.0f} u" if market.unit_gap else "0 u")
-m3.metric("Méthode marché", market.calibration_method)
+last_share = market.baseline_share_forecast[-1] if market.baseline_share_forecast else None
+m1.metric("PDM globale projetée fin d'année", f"{last_share * 100:.2f} %" if last_share is not None and pd.notna(last_share) else "—")
+finite_gaps = [float(x) for x in market.unit_gap if pd.notna(x)]
+m2.metric("Écart moyen à la cible", f"{sum(finite_gaps) / len(finite_gaps):,.0f} u" if finite_gaps else "—")
+m3.metric("Méthode de marché", market.calibration_method)
 for alert in strategic_alerts(list(market.baseline_share_forecast), target_share, current_share):
     st.warning("⚠️ " + alert)
+
+st.subheader("🧭 Prérequis pour l'optimiseur stratégique")
+preq = [
+    ("✅", "Ventes propres historiques", not sales.empty),
+    ("✅", "Saisonnalité structurelle", bool(struct)),
+    ("✅", "Benchmark concurrentiel", bool(competitive.get("rows"))),
+    ("⚠️", "PDM globale réelle", current_share is not None),
+    ("⚠️", "Marché global / potentiel", bool(potential) or market.current_total_market is not None),
+]
+pcol1, pcol2 = st.columns(2)
+for i, (ico, label, ok) in enumerate(preq):
+    (pcol1 if i % 2 == 0 else pcol2).write(f"{ico} {label} : {'OK' if ok else 'manquant'}")
+if current_share is None or (not potential and market.current_total_market is None):
+    st.warning("L'optimisation de part de marché globale ne doit pas encore être exécutée comme optimisation réelle : il manque un dénominateur de marché global et/ou une PDM globale observée. Le moteur peut néanmoins analyser le forecast et le benchmark segmentiel.")
 
 st.subheader("🏁 Position concurrentielle")
 if competitive.get("rows"):

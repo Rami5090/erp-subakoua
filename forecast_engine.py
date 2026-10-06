@@ -189,36 +189,46 @@ def _find_rows_with_months(obj: Any) -> list[dict[str, Any]]:
 
 
 def _extract_market_potential_from_any(obj: Any) -> dict[str, float]:
-    """Extrait le marché potentiel depuis une structure legacy imbriquée."""
-    for candidate in _find_sections(obj, ["Prévision des ventes"]):
-        def scan(node: Any) -> dict[str, float]:
-            if isinstance(node, list):
-                for row in node:
-                    if not isinstance(row, Mapping):
-                        continue
-                    labels = [_norm_key(row.get(k)) for k in ("Colonne_0", "Produit", "Libellé", "Indicateur", "Mois précédent") if row.get(k) is not None]
-                    if "marche potentiel" in labels or any("marche potentiel" in x for x in labels):
-                        out = {}
-                        for product in PRODUCTS:
-                            v = _num(row.get(product))
-                            if v is not None:
-                                out[product] = max(0.0, v)
-                        if out:
-                            return out
-                    nested = scan(row)
-                    if nested:
-                        return nested
-            elif isinstance(node, Mapping):
-                for value in node.values():
-                    nested = scan(value)
-                    if nested:
-                        return nested
-            return {}
-        out = scan(candidate)
-        if out:
-            return out
-    return {}
+    """Extrait le marché potentiel depuis toute structure legacy imbriquée.
 
+    On privilégie une ligne explicitement libellée « Marché potentiel », quel que
+    soit le niveau de rubrique où le scraper l'a rangée. Cela évite de dépendre
+    du seul emplacement « Prévision des ventes ».
+    """
+    def scan(node: Any) -> dict[str, float]:
+        if isinstance(node, Mapping):
+            # Cas direct : dictionnaire/ligne portant explicitement l'étiquette.
+            labels = []
+            for k in ("Colonne_0", "Produit", "Libellé", "Indicateur", "Mois précédent", "label", "name"):
+                if node.get(k) is not None:
+                    labels.append(_norm_key(node.get(k)))
+            if any("marche potentiel" in x for x in labels):
+                out = {}
+                for product in PRODUCTS:
+                    v = _num(node.get(product))
+                    if v is not None:
+                        out[product] = max(0.0, v)
+                if out:
+                    return out
+            # Cas où les produits sont directement des clés et la rubrique contient
+            # le texte « marché potentiel » dans une clé voisine.
+            for key, value in node.items():
+                nk = _norm_key(key)
+                if "marche potentiel" in nk and isinstance(value, Mapping):
+                    out = {product: max(0.0, _num(value.get(product)) or 0.0) for product in PRODUCTS if _num(value.get(product)) is not None}
+                    if out:
+                        return out
+                nested = scan(value)
+                if nested:
+                    return nested
+        elif isinstance(node, list):
+            for item in node:
+                nested = scan(item)
+                if nested:
+                    return nested
+        return {}
+
+    return scan(obj)
 
 def _extract_seasonality_from_any(obj: Any) -> dict[int, dict[int, float]]:
     """Extrait les coefficients mensuels depuis les différents formats observés."""
@@ -537,10 +547,15 @@ def extract_market_potential(
                 return out
 
     for period in reversed(ordered_periods(period_data)):
+        # Recherche module par module puis dans l'objet « période » complet :
+        # certains exports déplacent la rubrique d'étude dans un autre niveau.
         for module in period_data.get(period, {}).values():
             out = _extract_market_potential_from_any(module)
             if out:
                 return out
+        out = _extract_market_potential_from_any(period_data.get(period, {}))
+        if out:
+            return out
     return {}
 
 def _extract_api_monitoring(period: str, study_data: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> dict[str, Any] | None:
