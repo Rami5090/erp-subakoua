@@ -49,6 +49,18 @@ def get_engine():
 
 
 engine = get_engine()
+
+
+def _study_payload_has_monitoring(payloads):
+    if not isinstance(payloads, dict):
+        return False
+    for key, value in payloads.items():
+        if key == "monitoring" and isinstance(value, dict):
+            return True
+        if isinstance(value, dict) and ("marketShares" in value or "monitoringTurnoverData" in value):
+            return True
+    return False
+
 if engine is None:
     st.error("Connexion Aiven indisponible.")
     st.stop()
@@ -90,11 +102,11 @@ target_share = st.slider("🎯 Objectif de part de marché", 0.01, 0.50, float(d
 with st.expander("🔎 Diagnostic des sources", expanded=False):
     st.write(f"Périodes historiques : {len(period_data)} | Études API : {len(studies)} lignes")
     st.write(f"Historique de ventes reconnu : {len(sales)} période(s)")
-    st.write(f"Saisonnalité structurelle : {'disponible' if struct else 'NON DISPONIBLE'}")
-    st.write(f"Marché potentiel structurel : {'disponible' if potential else 'NON DISPONIBLE'}")
-    monitoring_ok = any(isinstance(study_data.get(p, {}).get("monitoring"), dict) for p in study_data)
+    st.write(f"Saisonnalité structurelle : {'disponible (' + str(len(struct)) + ' familles produit)' if struct else 'NON DISPONIBLE'}")
+    st.write(f"Marché potentiel structurel : {'disponible (' + str(len(potential)) + ' produits)' if potential else 'NON DISPONIBLE'}")
+    monitoring_ok = any(_study_payload_has_monitoring(study_data.get(p, {})) for p in study_data)
     st.write(f"Tableau de bord / PDM : {'disponible' if monitoring_ok else 'NON DISPONIBLE'}")
-    st.write(f"Concurrence détaillée : {'disponible' if competitive.get('rows') else 'NON DISPONIBLE'}")
+    st.write(f"Concurrence détaillée : {'disponible (' + str(len(competitive.get('rows') or [])) + ' entreprises)' if competitive.get('rows') else 'NON DISPONIBLE'}")
     if not struct:
         st.warning("La saisonnalité structurelle n'est pas synchronisée. Avec un seul mois réel, le forecast sera une extrapolation de niveau et ne doit pas être interprété comme une prévision saisonnière fiable.")
     if not sales.empty:
@@ -121,6 +133,8 @@ if current_sales is None:
 c2.metric("Ventes actuelles", f"{current_sales:,.0f} u")
 c3.metric("Prix actuel", f"{metrics['own_price']:.2f} €" if metrics.get('own_price') is not None else "—")
 c4.metric("Concurrents observés", str(metrics.get("competitor_count", 0)))
+if current_share is None:
+    st.info("PDM actuelle indisponible dans les sources synchronisées. Le modèle ne l'invente pas ; la PDM prévisionnelle est présentée comme proxy si le marché potentiel structurel est disponible.")
 
 st.subheader("📈 Trajectoire 12 mois")
 chart = forecast_df.set_index("periode")[PRODUCTS + ["Total unités"]]
@@ -132,12 +146,16 @@ mt = pd.DataFrame({
     "Période": market.horizon_months,
     "Ventes prévues (u)": market.own_sales_forecast,
     "Marché projeté (u)": market.market_volume_proxy,
-    "PDM base (%)": [x * 100 for x in market.baseline_share_forecast],
+    "PDM base (%)": [x * 100 if pd.notna(x) else None for x in market.baseline_share_forecast],
     "PDM cible (%)": [target_share * 100] * len(market.horizon_months),
     "Unités à produire/vendre pour cible": market.required_units_for_target,
     "Écart à combler (u)": market.unit_gap,
 })
 st.dataframe(mt.round(1), width="stretch", hide_index=True)
+if market.calibration_method.startswith("marché indisponible"):
+    st.warning("La PDM réelle et le marché total ne sont pas disponibles pour cette période : les calculs de PDM et d'écart cible sont laissés indéterminés plutôt que de créer un marché fictif.")
+elif market.calibration_method.startswith("proxy"):
+    st.info("La trajectoire de PDM est un proxy structurel : elle ne remplace pas une observation réelle du marché concurrentiel.")
 
 m1, m2, m3 = st.columns(3)
 m1.metric("PDM projetée fin d'année", f"{market.baseline_share_forecast[-1] * 100:.2f} %" if market.baseline_share_forecast else "—")
@@ -154,4 +172,4 @@ else:
     st.info("Les données concurrentielles détaillées ne sont pas disponibles dans les sources actuellement synchronisées.")
 
 st.subheader("🧪 Méthode scientifique")
-st.info("Le moteur ne force pas un Holt-Winters annuel lorsque l'historique est insuffisant. Avec < 8 observations, il utilise une tendance amortie et la saisonnalité structurelle ; de 8 à 23 mois, Holt amorti sur série désaisonnalisée ; à partir de 24 mois, ETS/Holt-Winters saisonnier 12 mois. Les effets causaux prix/publicité/qualité restent séparés tant qu'ils ne sont pas calibrés statistiquement.")
+st.info("Le moteur ne force pas un Holt-Winters annuel lorsque l'historique est insuffisant. Avec 1 à 7 observations, il ancre le niveau observé et applique la saisonnalité structurelle ; de 8 à 23 mois, Holt amorti sur série désaisonnalisée ; à partir de 24 mois, ETS/Holt-Winters saisonnier 12 mois. Les effets causaux prix/publicité/qualité restent séparés tant qu'ils ne sont pas calibrés statistiquement.")

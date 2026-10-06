@@ -91,3 +91,48 @@ def test_monitoring_api_gives_current_share_at_anchor():
     snap=extract_competitive_snapshot({},3,study_data=study,anchor_period="Année 1 - Janvier")
     assert abs(snap["share"]-0.1506)<1e-9
     assert snap["own"]["ventes"] >= 0
+
+
+def test_legacy_wrapped_module_seasonality_and_market_potential():
+    payload={"etudes_marche":{"Etudes structurelles":{"Prévision des ventes":{
+        "Tableau_1":[{"Colonne_0":"Marché potentiel","Shorty 3":5400,"Integral 3":45000,"Shorty 5":6300,"Integral 5":54000,"Integral 7":12600}],
+        "Tableau_2":[{"Produit":3, **{"Janvier":0.1,"Février":0.1,"Mars":0.3,"Avril":0.4,"Mai":1.1,"Juin":3,"Juillet":3.2,"Août":2.5,"Septembre":0.4,"Octobre":0.4,"Novembre":0.3,"Décembre":0.2}}]}}}}
+    period_data={"Année 1 - Janvier":{"etudes_marche":payload}}
+    s=extract_structural_seasonality(period_data)
+    mp=extract_market_potential(period_data)
+    assert 3 in s and s[3][6] > s[3][0]
+    assert mp["Integral 7"] == 12600
+
+
+def test_market_forecast_does_not_invent_market_of_one():
+    sales=pd.DataFrame([{"periode":"Année 1 - Janvier","index":0,"Shorty 3":27,"Integral 3":160,"Shorty 5":49,"Integral 5":302,"Integral 7":2640}])
+    factors={3:{i:1 for i in range(12)}}
+    f,_=build_12m_forecast(sales,factors,"Année 1 - Janvier")
+    result=compute_market_forecast(f,factors,{}, {"share":None,"total_market":None}, 0.13, "Année 1 - Janvier")
+    assert all(np.isnan(x) for x in result.market_volume_proxy)
+    assert all(np.isnan(x) for x in result.baseline_share_forecast)
+    assert result.calibration_method.startswith("marché indisponible")
+
+
+def test_realistic_wrapped_dump_supports_seasonal_forecast():
+    payload = {
+        "etudes_marche": {
+            "Etudes structurelles": {
+                "Prévision des ventes": {
+                    "Tableau_1": [{"Colonne_0": "Marché potentiel", "Shorty 3": 5400, "Integral 3": 45000, "Shorty 5": 6300, "Integral 5": 54000, "Integral 7": 12600}],
+                    "Tableau_2": [
+                        {"Produit": 3, "Janvier": 0.1, "Février": 0.1, "Mars": 0.3, "Avril": 0.4, "Mai": 1.1, "Juin": 3.0, "Juillet": 3.2, "Août": 2.5, "Septembre": 0.4, "Octobre": 0.4, "Novembre": 0.3, "Décembre": 0.2},
+                        {"Produit": 5, "Janvier": 0.2, "Février": 0.2, "Mars": 0.4, "Avril": 0.5, "Mai": 1.2, "Juin": 2.8, "Juillet": 3.0, "Août": 2.0, "Septembre": 0.5, "Octobre": 0.5, "Novembre": 0.4, "Décembre": 0.3},
+                        {"Produit": 7, "Janvier": 2.5, "Février": 2.2, "Mars": 0.5, "Avril": 0.3, "Mai": 0.2, "Juin": 0.2, "Juillet": 0.2, "Août": 0.3, "Septembre": 0.3, "Octobre": 0.8, "Novembre": 2.0, "Décembre": 2.5},
+                    ],
+                }
+            }
+        }
+    }
+    pd_data = {"Année 1 - Janvier": payload}
+    struct = extract_structural_seasonality(pd_data)
+    potential = extract_market_potential(pd_data)
+    sales = pd.DataFrame([{"periode": "Année 1 - Janvier", "index": 0, "Shorty 3": 5, "Integral 3": 106, "Shorty 5": 31, "Integral 5": 347, "Integral 7": 0}])
+    f, _ = build_12m_forecast(sales, struct, "Année 1 - Janvier")
+    assert f.loc[f["periode"] == "Année 1 - Juillet", "Total unités"].iloc[0] != f.loc[f["periode"] == "Année 1 - Janvier", "Total unités"].iloc[0]
+    assert sum(potential.values()) > 0

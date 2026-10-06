@@ -138,6 +138,104 @@ def _find_nested_by_key(obj: Any, predicate) -> dict[str, Any] | None:
     return None
 
 
+
+def _unwrap_legacy_module(value: Any) -> dict[str, Any]:
+    """Normalise un contenu legacy/API pouvant être enveloppé sous etat_actuel."""
+    obj = _json_load(value)
+    if isinstance(obj.get("etat_actuel"), Mapping):
+        return dict(obj["etat_actuel"])
+    return obj
+
+
+def _norm_key(value: Any) -> str:
+    import unicodedata
+    s = str(value or "").strip().lower()
+    s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+    return " ".join(s.split())
+
+
+def _find_sections(obj: Any, names: Sequence[str]) -> list[Any]:
+    """Retourne tous les objets dont la clé/nom correspond à l'un des labels."""
+    targets = {_norm_key(n) for n in names}
+    found: list[Any] = []
+    if isinstance(obj, Mapping):
+        for key, value in obj.items():
+            if _norm_key(key) in targets:
+                found.append(value)
+            if isinstance(value, (Mapping, list)):
+                found.extend(_find_sections(value, names))
+    elif isinstance(obj, list):
+        for value in obj:
+            if isinstance(value, (Mapping, list)):
+                found.extend(_find_sections(value, names))
+    return found
+
+
+def _find_rows_with_months(obj: Any) -> list[dict[str, Any]]:
+    """Cherche récursivement des lignes de tableau contenant Produit + mois."""
+    found: list[dict[str, Any]] = []
+    if isinstance(obj, Mapping):
+        keys = {_norm_key(k) for k in obj.keys()}
+        has_product = "produit" in keys or "nomprod" in keys or "productid" in keys
+        month_hits = sum(1 for m in MONTH_NAMES if _norm_key(m) in keys)
+        if has_product and month_hits >= 4:
+            found.append(dict(obj))
+        for v in obj.values():
+            found.extend(_find_rows_with_months(v))
+    elif isinstance(obj, list):
+        for v in obj:
+            found.extend(_find_rows_with_months(v))
+    return found
+
+
+def _extract_market_potential_from_any(obj: Any) -> dict[str, float]:
+    """Extrait le marché potentiel depuis une structure legacy imbriquée."""
+    for candidate in _find_sections(obj, ["Prévision des ventes"]):
+        rows = candidate.get("Tableau_1", []) if isinstance(candidate, Mapping) else []
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, Mapping) and _norm_key(row.get("Colonne_0")) == "marche potentiel":
+                out = {}
+                for product in PRODUCTS:
+                    v = _num(row.get(product))
+                    if v is not None:
+                        out[product] = max(0.0, v)
+                if out:
+                    return out
+    return {}
+
+
+def _extract_seasonality_from_any(obj: Any) -> dict[int, dict[int, float]]:
+    """Extrait les coefficients mensuels depuis les différents formats observés."""
+    # Format API-first.
+    if isinstance(obj, Mapping):
+        parsed = _structural_from_payload(obj)
+        if parsed:
+            return parsed
+
+    rows = _find_rows_with_months(obj)
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        prod_raw = row.get("Produit", row.get("nomProd", row.get("productId")))
+        if isinstance(prod_raw, (int, float)) and float(prod_raw).is_integer():
+            group = int(prod_raw)
+            if group in (3, 5, 7):
+                grouped.setdefault(group, []).append(row)
+            continue
+        product = PRODUCT_ID_TO_NAME.get(str(prod_raw), str(prod_raw))
+        if product in PRODUCTS:
+            grouped.setdefault(PRODUCT_GROUP[product], []).append(row)
+    out: dict[int, dict[int, float]] = {}
+    for group, group_rows in grouped.items():
+        raw: list[float] = []
+        for month in MONTH_NAMES:
+            vals = [_num(r.get(month)) for r in group_rows]
+            valid = [v for v in vals if v is not None and v >= 0]
+            raw.append(float(np.mean(valid)) if valid else 0.0)
+        if any(raw):
+            mean = float(np.mean(raw)) or 1.0
+            out[group] = {i: max(0.01, raw[i] / mean) for i in range(12)}
+    return out
+
 def build_period_data(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
     """Construit le format historique ``periode -> module -> json``."""
     out: dict[str, dict[str, Any]] = {}
@@ -145,7 +243,7 @@ def build_period_data(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, 
         period = str(row.get("periode", ""))
         module = str(row.get("module", ""))
         if period and module:
-            out.setdefault(period, {})[module] = _json_load(row.get("contenu"))
+            out.setdefault(period, {})[module] = _unwrap_legacy_module(row.get("contenu"))
     return out
 
 
@@ -313,79 +411,46 @@ def extract_structural_seasonality(
     period_data: Mapping[str, Mapping[str, Any]],
     study_data: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
 ) -> dict[int, dict[int, float]]:
-    """Extrait la saisonnalité structurelle avec plusieurs niveaux de secours.
-
-    Priorité : étude API ``peeumreusreprv`` > tout payload contenant
-    ``listCoefSaisonnier`` > ancienne extraction ``Prévision des ventes``.
-    """
+    """Extrait la saisonnalité avec une recherche tolérante dans tous les formats audités."""
     study_data = study_data or {}
 
-    # 1) API explicite par study_id.
+    # 1) Payload API explicitement connu.
     for period in reversed(ordered_periods(study_data)):
-        payload = study_data.get(period, {}).get("peeumreusreprv")
-        if isinstance(payload, Mapping):
-            parsed = _structural_from_payload(payload)
+        payloads = study_data.get(period, {})
+        if not isinstance(payloads, Mapping):
+            continue
+        ordered = []
+        if isinstance(payloads.get("peeumreusreprv"), Mapping):
+            ordered.append(payloads["peeumreusreprv"])
+        ordered.extend(v for v in payloads.values() if isinstance(v, Mapping) and v not in ordered)
+        for payload in ordered:
+            parsed = _extract_seasonality_from_any(payload)
             if parsed:
                 return parsed
 
-    # 2) Robustesse : certaines versions de synchronisation ont stocké le payload
-    # sous une enveloppe ou avec un studyId différent mais le même contenu métier.
-    for period in reversed(ordered_periods(study_data)):
-        period_payloads = study_data.get(period, {})
-        for payload in period_payloads.values():
-            if not isinstance(payload, Mapping):
-                continue
-            parsed = _structural_from_payload(payload)
-            if parsed:
-                return parsed
-
-    # 3) Fallback historique ``erp_donnees``.
+    # 2) Legacy/DOM : on cherche la rubrique sans supposer son emplacement exact.
     for period in reversed(ordered_periods(period_data)):
-        etudes = period_data.get(period, {}).get("etudes_marche", {})
-        if not isinstance(etudes, Mapping):
-            continue
-        rows = etudes.get("Etudes structurelles", {}).get("Prévision des ventes", {}).get("Tableau_2", [])
-        if not isinstance(rows, list) or not rows:
-            continue
-        grouped: dict[int, list[dict[str, Any]]] = {}
-        for row in rows:
-            if not isinstance(row, Mapping):
-                continue
-            try:
-                grouped.setdefault(int(row.get("Produit")), []).append(dict(row))
-            except Exception:
-                continue
-        out: dict[int, dict[int, float]] = {}
-        for group, group_rows in grouped.items():
-            raw = []
-            for month in MONTH_NAMES:
-                nums = [_num(r.get(month)) for r in group_rows]
-                vals = [v for v in nums if v is not None and v > 0]
-                raw.append(float(np.mean(vals)) if vals else 0.0)
-            if not any(raw):
-                continue
-            mean = float(np.mean(raw)) or 1.0
-            out[group] = {i: max(0.01, v / mean) for i, v in enumerate(raw)}
-        if out:
-            return out
-
+        for module in period_data.get(period, {}).values():
+            parsed = _extract_seasonality_from_any(module)
+            if parsed:
+                return parsed
     return {}
 
 def extract_market_potential(
     period_data: Mapping[str, Mapping[str, Any]],
     study_data: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
 ) -> dict[str, float]:
-    """Extrait le marché potentiel structurel avec le même niveau de robustesse que la saisonnalité."""
+    """Extrait le marché potentiel depuis API ou legacy, avec recherche récursive."""
     study_data = study_data or {}
     for period in reversed(ordered_periods(study_data)):
         payloads = study_data.get(period, {})
-        candidates = []
-        explicit = payloads.get("peeumreusreprv") if isinstance(payloads, Mapping) else None
-        if isinstance(explicit, Mapping):
-            candidates.append(explicit)
-        if isinstance(payloads, Mapping):
-            candidates.extend(v for v in payloads.values() if isinstance(v, Mapping) and v is not explicit)
-        for payload in candidates:
+        if not isinstance(payloads, Mapping):
+            continue
+        ordered = []
+        if isinstance(payloads.get("peeumreusreprv"), Mapping):
+            ordered.append(payloads["peeumreusreprv"])
+        ordered.extend(v for v in payloads.values() if isinstance(v, Mapping) and v not in ordered)
+        for payload in ordered:
             payload = _unwrap_api_payload(payload)
             rows = payload.get("listPeeumreusreprvMoisProd", [])
             if not isinstance(rows, list):
@@ -393,42 +458,50 @@ def extract_market_potential(
                 rows = nested.get("listPeeumreusreprvMoisProd", []) if nested else []
             out = {}
             for row in rows if isinstance(rows, list) else []:
-                if not isinstance(row, Mapping):
-                    continue
-                product = PRODUCT_ID_TO_NAME.get(str(row.get("nomProd", "")))
-                if product:
-                    v = _num(row.get("mbase50"))
-                    if v is not None:
-                        out[product] = max(0.0, v)
+                if isinstance(row, Mapping):
+                    product = PRODUCT_ID_TO_NAME.get(str(row.get("nomProd", "")))
+                    if product:
+                        v = _num(row.get("mbase50"))
+                        if v is not None:
+                            out[product] = max(0.0, v)
             if out:
                 return out
-    # Fallback historique : structure explicitement présente dans le dump/erp_donnees.
+
     for period in reversed(ordered_periods(period_data)):
-        rows = period_data[period].get("etudes_marche", {}).get("Etudes structurelles", {}).get("Prévision des ventes", {}).get("Tableau_1", [])
-        for row in rows if isinstance(rows, list) else []:
-            if isinstance(row, Mapping) and str(row.get("Colonne_0", "")).strip().lower() == "marché potentiel":
-                return {p: max(0.0, _num(row.get(p)) or 0.0) for p in PRODUCTS}
+        for module in period_data.get(period, {}).values():
+            out = _extract_market_potential_from_any(module)
+            if out:
+                return out
     return {}
 
 def _extract_api_monitoring(period: str, study_data: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> dict[str, Any] | None:
-    payload = study_data.get(period, {}).get("monitoring")
-    if not isinstance(payload, Mapping):
-        return None
-    payload = _unwrap_api_payload(payload)
-    market_share = _num(payload.get("marketShares"))
-    turnover = payload.get("monitoringTurnoverData") or {}
-    sales_value = None
-    if isinstance(turnover, Mapping):
-        arr = turnover.get("monthlySalesTurnover")
-        if isinstance(arr, list) and arr:
-            sales_value = _num(arr[-1])
-    stocks = payload.get("remainingStocks")
-    return {
-        "market_share": (market_share / 100.0) if market_share is not None else None,
-        "turnover": sales_value,
-        "stocks": stocks if isinstance(stocks, Mapping) else {},
-    }
-
+    """Récupère le tableau de bord même si le payload est enveloppé."""
+    payloads = study_data.get(period, {})
+    candidates = []
+    if isinstance(payloads, Mapping):
+        if isinstance(payloads.get("monitoring"), Mapping):
+            candidates.append(payloads["monitoring"])
+        candidates.extend(v for v in payloads.values() if isinstance(v, Mapping) and v not in candidates)
+    for candidate in candidates:
+        found = _find_nested_by_key(candidate, lambda x: "marketShares" in x or "monitoringTurnoverData" in x)
+        payload = found or candidate
+        if not isinstance(payload, Mapping):
+            continue
+        market_share = _num(payload.get("marketShares"))
+        turnover = payload.get("monitoringTurnoverData") or {}
+        sales_value = None
+        if isinstance(turnover, Mapping):
+            arr = turnover.get("monthlySalesTurnover")
+            if isinstance(arr, list) and arr:
+                sales_value = _num(arr[-1])
+        stocks = payload.get("remainingStocks")
+        if market_share is not None or sales_value is not None:
+            return {
+                "market_share": (market_share / 100.0) if market_share is not None and market_share > 1 else market_share,
+                "turnover": sales_value,
+                "stocks": stocks if isinstance(stocks, Mapping) else {},
+            }
+    return None
 
 def _latest_available_period(study_data: Mapping[str, Any], anchor_period: str | None = None) -> str | None:
     periods = ordered_periods(study_data.keys())
@@ -451,29 +524,48 @@ def extract_competitive_snapshot(
     if not periods:
         return {"period": None, "rows": [], "own": None, "total_market": None, "share": None}
     period = anchor_period if anchor_period in periods else _latest_available_period({p: {} for p in periods}, anchor_period) or periods[-1]
-    veille = period_data.get(period, {}).get("veille_concurrentielle", {})
-    perf = veille.get("Performance commerciale", {}) if isinstance(veille, dict) else {}
-    sales_rows = perf.get("Ventes", {}).get("Tableau_1", []) if isinstance(perf, dict) else []
-    share_rows = perf.get("Parts de marché", {}).get("Tableau_1", []) if isinstance(perf, dict) else []
-    shares = {int(r["Entreprise"]): r for r in share_rows if isinstance(r, dict) and str(r.get("Entreprise", "")).isdigit()}
+
+    # Legacy : chercher la rubrique où qu'elle soit dans le module veille.
+    veille_modules = []
+    if period in period_data:
+        v = period_data.get(period, {}).get("veille_concurrentielle")
+        if v is not None:
+            veille_modules.append(v)
+        for module in period_data.get(period, {}).values():
+            if isinstance(module, Mapping) and module not in veille_modules:
+                sections = _find_sections(module, ["Performance commerciale"])
+                if sections:
+                    veille_modules.append(module)
+    veille = veille_modules[0] if veille_modules else {}
+    perf_sections = _find_sections(veille, ["Performance commerciale"])
+    perf = perf_sections[0] if perf_sections else {}
+    if not isinstance(perf, Mapping):
+        perf = {}
+    sales_rows = perf.get("Ventes", {}).get("Tableau_1", []) if isinstance(perf.get("Ventes"), Mapping) else []
+    share_rows = perf.get("Parts de marché", {}).get("Tableau_1", []) if isinstance(perf.get("Parts de marché"), Mapping) else []
+    shares = {int(r["Entreprise"]): r for r in share_rows if isinstance(r, Mapping) and str(r.get("Entreprise", "")).isdigit()}
     prices: dict[int, float] = {}
     quality: dict[int, float] = {}
-    for section in (veille.get("Facteurs clés", {}) or {}).values() if isinstance(veille, dict) else []:
-        rows = section.get("Tableau_1", []) if isinstance(section, dict) else []
-        for r in rows if isinstance(rows, list) else []:
-            if not isinstance(r, dict) or not str(r.get("Entreprise", "")).isdigit():
-                continue
-            c = int(r["Entreprise"])
-            for key in ("Prix (€)", "Prix"):
-                v = _num(r.get(key))
+    for section in _find_sections(veille, ["Facteurs clés"]):
+        if not isinstance(section, Mapping):
+            continue
+        for subsection in section.values():
+            rows = subsection.get("Tableau_1", []) if isinstance(subsection, Mapping) else []
+            for r in rows if isinstance(rows, list) else []:
+                if not isinstance(r, Mapping) or not str(r.get("Entreprise", "")).isdigit():
+                    continue
+                c = int(r["Entreprise"])
+                for key in ("Prix (€)", "Prix"):
+                    v = _num(r.get(key))
+                    if v is not None:
+                        prices[c] = v
+                v = _num(r.get("Qualité"))
                 if v is not None:
-                    prices[c] = v
-            v = _num(r.get("Qualité"))
-            if v is not None:
-                quality[c] = v
-    rows: list[dict[str, Any]] = []
+                    quality[c] = v
+
+    rows = []
     for r in sales_rows if isinstance(sales_rows, list) else []:
-        if not isinstance(r, dict) or not str(r.get("Entreprise", "")).isdigit():
+        if not isinstance(r, Mapping) or not str(r.get("Entreprise", "")).isdigit():
             continue
         c = int(r["Entreprise"])
         rows.append({
@@ -486,33 +578,44 @@ def extract_competitive_snapshot(
             "is_own": c == own_company_number,
         })
     own = next((r for r in rows if r["is_own"]), None)
+
     monitoring = _extract_api_monitoring(period, study_data)
     if monitoring is None and anchor_period in PERIOD_INDEX:
         eligible_api = [p for p in ordered_periods(study_data) if period_index(p) <= period_index(anchor_period)]
-        if eligible_api:
-            for pp in reversed(eligible_api):
-                monitoring = _extract_api_monitoring(pp, study_data)
-                if monitoring is not None:
-                    period = pp
-                    break
+        for pp in reversed(eligible_api):
+            monitoring = _extract_api_monitoring(pp, study_data)
+            if monitoring is not None:
+                period = pp
+                break
     if own is None and monitoring is not None:
         own_sales_history = extract_own_sales_history(period_data, study_data=study_data)
         own_sales = None
         if not own_sales_history.empty and period in set(own_sales_history["periode"]):
             rr = own_sales_history.loc[own_sales_history["periode"] == period].iloc[-1]
             own_sales = float(sum(rr[p] for p in PRODUCTS))
-        own = {"entreprise": own_company_number, "ventes": own_sales or 0.0, "part_marche": (monitoring.get("market_share") or 0.0) * 100, "part_marche_valeur": 0.0, "prix": None, "qualite": None, "is_own": True}
+        own = {
+            "entreprise": own_company_number,
+            "ventes": own_sales or 0.0,
+            "part_marche": (monitoring.get("market_share") or 0.0) * 100,
+            "part_marche_valeur": 0.0,
+            "prix": None,
+            "qualite": None,
+            "is_own": True,
+        }
         rows.append(own)
     total_market = sum(r["ventes"] for r in rows) if rows else None
     share = None
     if own:
-        share = ((own.get("part_marche") or 0) / 100.0) if own.get("part_marche") else ((own["ventes"] / total_market) if total_market and own["ventes"] else None)
+        own_share_pct = _num(own.get("part_marche"))
+        if own_share_pct is not None and own_share_pct > 0:
+            share = own_share_pct / 100.0
+        elif total_market and own.get("ventes", 0) > 0:
+            share = own["ventes"] / total_market
     if monitoring and monitoring.get("market_share") is not None:
         share = monitoring["market_share"]
     if total_market is None and own and share and own.get("ventes", 0) > 0:
         total_market = own["ventes"] / share
     return {"period": period, "rows": rows, "own": own, "total_market": total_market, "share": share}
-
 
 def _damped_linear_forecast(values: np.ndarray, horizon: int) -> np.ndarray:
     if len(values) == 0:
@@ -637,8 +740,6 @@ def compute_market_forecast(
     own_current = float(actual["Total unités"].iloc[0]) if not actual.empty else 0.0
     if (current_market is None or current_market <= 0) and current_share and own_current > 0:
         current_market = own_current / current_share
-    if current_market is None or current_market <= 0:
-        current_market = max(own_current, float(np.sum(own)), 1.0)
     proxies = []
     for period in future["periode"]:
         mi = month_index_from_label(period)
@@ -654,13 +755,16 @@ def compute_market_forecast(
         mi = month_index_from_label(str(actual["periode"].iloc[0]))
         mi = 0 if mi is None else mi
         anchor_proxy = sum(float(pot or 0) * float(structural.get(PRODUCT_GROUP.get(product, 3), {}).get(mi, 1.0)) for product, pot in market_potential.items())
-    if anchor_proxy and anchor_proxy > 0:
+    if anchor_proxy and anchor_proxy > 0 and current_market and current_market > 0:
         market = proxies * (current_market / anchor_proxy)
         method = "marché calibré sur volume observé + saisonnalité structurelle"
-    else:
-        market = np.maximum(1.0, proxies)
+    elif proxies.size and np.any(proxies > 0):
+        market = proxies.copy()
         method = "proxy marché structurel non calibré"
-    baseline = np.divide(own, market, out=np.zeros_like(own), where=market > 0)
+    else:
+        market = np.full_like(own, np.nan, dtype=float)
+        method = "marché indisponible : aucune série concurrentielle/potentielle"
+    baseline = np.divide(own, market, out=np.full_like(own, np.nan), where=np.isfinite(market) & (market > 0))
     required = market * target_share
-    gap = np.maximum(0.0, required - own)
+    gap = np.where(np.isfinite(required), np.maximum(0.0, required - own), np.nan)
     return MarketForecastResult(anchor_period, tuple(future["periode"]), tuple(own), tuple(market), tuple(baseline), target_share, tuple(required), tuple(gap), float(current_share) if current_share is not None else None, float(current_market) if current_market is not None else None, method)
