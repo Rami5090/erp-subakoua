@@ -73,3 +73,21 @@ def test_12m_forecast_works_with_one_real_month():
     assert len(f)==12
     assert f.loc[f['periode']=='Année 1 - Janvier','statut'].iloc[0]=='Réel'
     assert f.loc[f['periode']=='Année 1 - Février','statut'].iloc[0]=='Prévision'
+
+
+def test_one_point_forecast_applies_structural_seasonality():
+    sales=pd.DataFrame([{"periode":"Année 1 - Janvier","index":0,"Shorty 3":100,"Integral 3":0,"Shorty 5":0,"Integral 5":0,"Integral 7":0}])
+    factors={3:{i:1.0 for i in range(12)},5:{i:1.0 for i in range(12)},7:{i:1.0 for i in range(12)}}
+    factors[3][1]=2.0
+    f,_=build_12m_forecast(sales,factors,"Année 1 - Janvier")
+    feb=float(f.loc[f['periode']=='Année 1 - Février','Shorty 3'].iloc[0])
+    mar=float(f.loc[f['periode']=='Année 1 - Mars','Shorty 3'].iloc[0])
+    assert feb > mar
+    assert feb == 200.0
+
+
+def test_monitoring_api_gives_current_share_at_anchor():
+    study={"Année 1 - Janvier":{"monitoring":{"studyId":"monitoring","readAllowed":True,"marketShares":15.06,"monitoringTurnoverData":{"monthlySalesTurnover":[1000477]},"remainingStocks":{}}}}
+    snap=extract_competitive_snapshot({},3,study_data=study,anchor_period="Année 1 - Janvier")
+    assert abs(snap["share"]-0.1506)<1e-9
+    assert snap["own"]["ventes"] >= 0

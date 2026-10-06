@@ -81,7 +81,7 @@ own_company = st.number_input("N° entreprise pilotée", 1, 9, 3, 1)
 sales = extract_own_sales_history(period_data, study_data=study_data)
 struct = extract_structural_seasonality(period_data, study_data=study_data)
 potential = extract_market_potential(period_data, study_data=study_data)
-competitive = extract_competitive_snapshot(period_data, int(own_company), study_data=study_data)
+competitive = extract_competitive_snapshot(period_data, int(own_company), study_data=study_data, anchor_period=anchor)
 metrics = current_competitive_metrics(competitive)
 current_share = competitive.get("share")
 default_target = min(0.50, max(0.01, float(current_share or 0.10) + 0.03))
@@ -90,12 +90,20 @@ target_share = st.slider("🎯 Objectif de part de marché", 0.01, 0.50, float(d
 with st.expander("🔎 Diagnostic des sources", expanded=False):
     st.write(f"Périodes historiques : {len(period_data)} | Études API : {len(studies)} lignes")
     st.write(f"Historique de ventes reconnu : {len(sales)} période(s)")
-    st.write(f"Saisonnalité structurelle : {'disponible' if struct else 'non disponible'}")
-    st.write(f"Marché potentiel : {'disponible' if potential else 'non disponible'}")
+    st.write(f"Saisonnalité structurelle : {'disponible' if struct else 'NON DISPONIBLE'}")
+    st.write(f"Marché potentiel structurel : {'disponible' if potential else 'NON DISPONIBLE'}")
+    monitoring_ok = any(isinstance(study_data.get(p, {}).get("monitoring"), dict) for p in study_data)
+    st.write(f"Tableau de bord / PDM : {'disponible' if monitoring_ok else 'NON DISPONIBLE'}")
+    st.write(f"Concurrence détaillée : {'disponible' if competitive.get('rows') else 'NON DISPONIBLE'}")
+    if not struct:
+        st.warning("La saisonnalité structurelle n'est pas synchronisée. Avec un seul mois réel, le forecast sera une extrapolation de niveau et ne doit pas être interprété comme une prévision saisonnière fiable.")
     if not sales.empty:
         st.dataframe(sales[["periode", *PRODUCTS]].tail(12).round(1), width="stretch", hide_index=True)
 
 forecast_df, results = build_12m_forecast(sales, struct, anchor)
+if results:
+    models = sorted({r.model for r in results.values()})
+    st.caption("Modèle(s) utilisé(s) : " + " · ".join(models))
 if forecast_df.empty:
     st.error("Impossible de construire le forecast : aucune série de ventes valide n'a été reconnue jusqu'à la période d'ancrage.")
     st.info("Le pilote accepte désormais les ventes API ensaacvm (payload brut) et les anciennes données normalisées. Vérifie que l'étude « Ventes mensuelles » a bien été synchronisée dans erp_etudes ou que le contenu de erp_donnees contient une table de ventes exploitable.")

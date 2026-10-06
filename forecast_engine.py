@@ -93,6 +93,51 @@ def _json_load(value: Any) -> dict[str, Any]:
         return {}
 
 
+def _unwrap_api_payload(payload: Mapping[str, Any] | Any) -> dict[str, Any]:
+    """Déplie les enveloppes possibles utilisées par les synchronisations API.
+
+    Selon la version du scraper ou du stockage, un payload peut être stocké
+    directement, sous ``payload``/``response``, ou dans plusieurs niveaux
+    d'enveloppe. On cherche l'objet métier plutôt que de dépendre d'un format
+    unique de stockage.
+    """
+    if not isinstance(payload, Mapping):
+        return {}
+    current = dict(payload)
+    for _ in range(4):
+        sid = current.get("studyId")
+        if sid:
+            return current
+        for key in ("payload", "response", "data", "result"):
+            nested = current.get(key)
+            if isinstance(nested, Mapping):
+                current = dict(nested)
+                break
+        else:
+            break
+    return current
+
+
+def _find_nested_by_key(obj: Any, predicate) -> dict[str, Any] | None:
+    """Recherche prudente d'un objet métier dans une structure JSON imbriquée."""
+    if isinstance(obj, Mapping):
+        try:
+            if predicate(obj):
+                return dict(obj)
+        except Exception:
+            pass
+        for value in obj.values():
+            found = _find_nested_by_key(value, predicate)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_nested_by_key(value, predicate)
+            if found is not None:
+                return found
+    return None
+
+
 def build_period_data(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
     """Construit le format historique ``periode -> module -> json``."""
     out: dict[str, dict[str, Any]] = {}
@@ -112,7 +157,7 @@ def build_study_data(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, d
         study_id = str(row.get("study_id", ""))
         if period and study_id:
             payload = row.get("payload", row.get("contenu", {}))
-            out.setdefault(period, {})[study_id] = _json_load(payload)
+            out.setdefault(period, {})[study_id] = _unwrap_api_payload(_json_load(payload))
     return out
 
 
@@ -144,8 +189,14 @@ def _num(value: Any) -> float | None:
 
 
 def _extract_sales_from_api_payload(payload: Mapping[str, Any]) -> dict[str, float]:
+    payload = _unwrap_api_payload(payload)
     out: dict[str, float] = {}
     sales = payload.get("sales")
+    if not isinstance(sales, list):
+        nested = _find_nested_by_key(payload, lambda x: isinstance(x.get("sales"), list) or isinstance(x.get("listEnsaacvmProd"), list))
+        if nested:
+            payload = nested
+            sales = payload.get("sales")
     if isinstance(sales, list) and sales:
         item = sales[-1] if isinstance(sales[-1], dict) else {}
         for p in item.get("monthlySalesByProducts", []) if isinstance(item.get("monthlySalesByProducts"), list) else []:
@@ -235,7 +286,11 @@ def extract_own_sales_history(
 
 
 def _structural_from_payload(payload: Mapping[str, Any]) -> dict[int, dict[int, float]]:
+    payload = _unwrap_api_payload(payload)
     rows = payload.get("listCoefSaisonnier", [])
+    if not isinstance(rows, list):
+        nested = _find_nested_by_key(payload, lambda x: isinstance(x.get("listCoefSaisonnier"), list))
+        rows = nested.get("listCoefSaisonnier", []) if nested else []
     out: dict[int, dict[int, float]] = {}
     if not isinstance(rows, list):
         return out
@@ -258,51 +313,87 @@ def extract_structural_seasonality(
     period_data: Mapping[str, Mapping[str, Any]],
     study_data: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
 ) -> dict[int, dict[int, float]]:
+    """Extrait la saisonnalité structurelle avec plusieurs niveaux de secours.
+
+    Priorité : étude API ``peeumreusreprv`` > tout payload contenant
+    ``listCoefSaisonnier`` > ancienne extraction ``Prévision des ventes``.
+    """
     study_data = study_data or {}
-    # API-first : prendre la dernière période disponible qui contient l'étude.
+
+    # 1) API explicite par study_id.
     for period in reversed(ordered_periods(study_data)):
         payload = study_data.get(period, {}).get("peeumreusreprv")
-        if isinstance(payload, dict):
+        if isinstance(payload, Mapping):
             parsed = _structural_from_payload(payload)
             if parsed:
                 return parsed
-    # Fallback historique.
-    tables = []
-    for period in ordered_periods(period_data):
-        table = period_data[period].get("etudes_marche", {}).get("Etudes structurelles", {}).get("Prévision des ventes", {}).get("Tableau_2", [])
-        if isinstance(table, list) and table:
-            tables.append(table)
-    if not tables:
-        return {}
-    grouped: dict[int, list[dict[str, Any]]] = {}
-    for row in tables[-1]:
-        try:
-            grouped.setdefault(int(row.get("Produit")), []).append(row)
-        except Exception:
-            continue
-    out: dict[int, dict[int, float]] = {}
-    for group, rows in grouped.items():
-        raw = []
-        for month in MONTH_NAMES:
-            vals = [_num(row.get(month)) for row in rows]
-            nums = [v for v in vals if v is not None]
-            raw.append(float(np.mean(nums)) if nums else 0.0)
-        mean = float(np.mean(raw)) or 1.0
-        out[group] = {i: max(0.01, v / mean) for i, v in enumerate(raw)}
-    return out
 
+    # 2) Robustesse : certaines versions de synchronisation ont stocké le payload
+    # sous une enveloppe ou avec un studyId différent mais le même contenu métier.
+    for period in reversed(ordered_periods(study_data)):
+        period_payloads = study_data.get(period, {})
+        for payload in period_payloads.values():
+            if not isinstance(payload, Mapping):
+                continue
+            parsed = _structural_from_payload(payload)
+            if parsed:
+                return parsed
+
+    # 3) Fallback historique ``erp_donnees``.
+    for period in reversed(ordered_periods(period_data)):
+        etudes = period_data.get(period, {}).get("etudes_marche", {})
+        if not isinstance(etudes, Mapping):
+            continue
+        rows = etudes.get("Etudes structurelles", {}).get("Prévision des ventes", {}).get("Tableau_2", [])
+        if not isinstance(rows, list) or not rows:
+            continue
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            try:
+                grouped.setdefault(int(row.get("Produit")), []).append(dict(row))
+            except Exception:
+                continue
+        out: dict[int, dict[int, float]] = {}
+        for group, group_rows in grouped.items():
+            raw = []
+            for month in MONTH_NAMES:
+                nums = [_num(r.get(month)) for r in group_rows]
+                vals = [v for v in nums if v is not None and v > 0]
+                raw.append(float(np.mean(vals)) if vals else 0.0)
+            if not any(raw):
+                continue
+            mean = float(np.mean(raw)) or 1.0
+            out[group] = {i: max(0.01, v / mean) for i, v in enumerate(raw)}
+        if out:
+            return out
+
+    return {}
 
 def extract_market_potential(
     period_data: Mapping[str, Mapping[str, Any]],
     study_data: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
 ) -> dict[str, float]:
+    """Extrait le marché potentiel structurel avec le même niveau de robustesse que la saisonnalité."""
     study_data = study_data or {}
     for period in reversed(ordered_periods(study_data)):
-        payload = study_data.get(period, {}).get("peeumreusreprv")
-        if isinstance(payload, dict):
+        payloads = study_data.get(period, {})
+        candidates = []
+        explicit = payloads.get("peeumreusreprv") if isinstance(payloads, Mapping) else None
+        if isinstance(explicit, Mapping):
+            candidates.append(explicit)
+        if isinstance(payloads, Mapping):
+            candidates.extend(v for v in payloads.values() if isinstance(v, Mapping) and v is not explicit)
+        for payload in candidates:
+            payload = _unwrap_api_payload(payload)
+            rows = payload.get("listPeeumreusreprvMoisProd", [])
+            if not isinstance(rows, list):
+                nested = _find_nested_by_key(payload, lambda x: isinstance(x.get("listPeeumreusreprvMoisProd"), list))
+                rows = nested.get("listPeeumreusreprvMoisProd", []) if nested else []
             out = {}
-            for row in payload.get("listPeeumreusreprvMoisProd", []) if isinstance(payload.get("listPeeumreusreprvMoisProd"), list) else []:
-                if not isinstance(row, dict):
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, Mapping):
                     continue
                 product = PRODUCT_ID_TO_NAME.get(str(row.get("nomProd", "")))
                 if product:
@@ -311,23 +402,23 @@ def extract_market_potential(
                         out[product] = max(0.0, v)
             if out:
                 return out
-    # Fallback historique.
+    # Fallback historique : structure explicitement présente dans le dump/erp_donnees.
     for period in reversed(ordered_periods(period_data)):
         rows = period_data[period].get("etudes_marche", {}).get("Etudes structurelles", {}).get("Prévision des ventes", {}).get("Tableau_1", [])
         for row in rows if isinstance(rows, list) else []:
-            if str(row.get("Colonne_0", "")).strip().lower() == "marché potentiel":
+            if isinstance(row, Mapping) and str(row.get("Colonne_0", "")).strip().lower() == "marché potentiel":
                 return {p: max(0.0, _num(row.get(p)) or 0.0) for p in PRODUCTS}
     return {}
 
-
 def _extract_api_monitoring(period: str, study_data: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> dict[str, Any] | None:
     payload = study_data.get(period, {}).get("monitoring")
-    if not isinstance(payload, dict):
+    if not isinstance(payload, Mapping):
         return None
+    payload = _unwrap_api_payload(payload)
     market_share = _num(payload.get("marketShares"))
     turnover = payload.get("monitoringTurnoverData") or {}
     sales_value = None
-    if isinstance(turnover, dict):
+    if isinstance(turnover, Mapping):
         arr = turnover.get("monthlySalesTurnover")
         if isinstance(arr, list) and arr:
             sales_value = _num(arr[-1])
@@ -335,20 +426,31 @@ def _extract_api_monitoring(period: str, study_data: Mapping[str, Mapping[str, M
     return {
         "market_share": (market_share / 100.0) if market_share is not None else None,
         "turnover": sales_value,
-        "stocks": stocks if isinstance(stocks, dict) else {},
+        "stocks": stocks if isinstance(stocks, Mapping) else {},
     }
 
+
+def _latest_available_period(study_data: Mapping[str, Any], anchor_period: str | None = None) -> str | None:
+    periods = ordered_periods(study_data.keys())
+    if not periods:
+        return None
+    if anchor_period in PERIOD_INDEX:
+        eligible = [p for p in periods if period_index(p) <= period_index(anchor_period)]
+        if eligible:
+            return eligible[-1]
+    return periods[-1]
 
 def extract_competitive_snapshot(
     period_data: Mapping[str, Mapping[str, Any]],
     own_company_number: int = 3,
     study_data: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
+    anchor_period: str | None = None,
 ) -> dict[str, Any]:
     study_data = study_data or {}
     periods = ordered_periods(set(period_data) | set(study_data))
     if not periods:
         return {"period": None, "rows": [], "own": None, "total_market": None, "share": None}
-    period = periods[-1]
+    period = anchor_period if anchor_period in periods else _latest_available_period({p: {} for p in periods}, anchor_period) or periods[-1]
     veille = period_data.get(period, {}).get("veille_concurrentielle", {})
     perf = veille.get("Performance commerciale", {}) if isinstance(veille, dict) else {}
     sales_rows = perf.get("Ventes", {}).get("Tableau_1", []) if isinstance(perf, dict) else []
@@ -385,6 +487,14 @@ def extract_competitive_snapshot(
         })
     own = next((r for r in rows if r["is_own"]), None)
     monitoring = _extract_api_monitoring(period, study_data)
+    if monitoring is None and anchor_period in PERIOD_INDEX:
+        eligible_api = [p for p in ordered_periods(study_data) if period_index(p) <= period_index(anchor_period)]
+        if eligible_api:
+            for pp in reversed(eligible_api):
+                monitoring = _extract_api_monitoring(pp, study_data)
+                if monitoring is not None:
+                    period = pp
+                    break
     if own is None and monitoring is not None:
         own_sales_history = extract_own_sales_history(period_data, study_data=study_data)
         own_sales = None
@@ -425,6 +535,7 @@ def forecast_series(
     n = len(values)
     horizon = len(future_month_indices)
     factors = dict(structural_factors or {i: 1.0 for i in range(12)})
+    seasonal_known = len([v for v in factors.values() if abs(float(v) - 1.0) > 1e-9]) >= 2
     if horizon == 0:
         return ForecastResult("", n, "aucun", (), (), tuple(float(factors.get(i, 1.0)) for i in range(12)))
     future_factors = np.asarray([float(factors.get(i % 12, 1.0)) for i in future_month_indices], dtype=float)
@@ -448,13 +559,21 @@ def forecast_series(
             return ForecastResult("", n, "Holt amorti + saisonnalité structurelle", tuple(pred), tuple(np.maximum(0.0, (base - 1.65 * sigma) * future_factors)), tuple(np.maximum(0.0, (base + 1.65 * sigma) * future_factors)), tuple(float(factors.get(i, 1.0)) for i in range(12)))
         except Exception:
             pass
-    base = _damped_linear_forecast(deseason, horizon)
+    if n == 1 and seasonal_known and horizon > 0:
+        # Avec un seul mois réel, on ne peut pas estimer une tendance : on
+        # conserve le niveau désaisonnalisé du mois d'ancrage et applique
+        # uniquement la saisonnalité structurelle future.
+        base = np.repeat(max(0.0, float(deseason[-1])), horizon)
+        fallback_model = "Niveau ancré × saisonnalité structurelle (1 observation)"
+    else:
+        base = _damped_linear_forecast(deseason, horizon)
+        fallback_model = "Tendance amortie + saisonnalité structurelle" if seasonal_known else "Tendance amortie sans saisonnalité (données structurelles absentes)"
     if n > 1:
         sigma = float(np.std(deseason - np.mean(deseason))) or 0.0
     else:
         sigma = max(1.0, float(values[-1]) * 0.25 if n else 1.0)
     pred = base * future_factors
-    return ForecastResult("", n, "Tendance amortie + saisonnalité structurelle", tuple(pred), tuple(np.maximum(0.0, (base - 1.96 * sigma) * future_factors)), tuple(np.maximum(0.0, (base + 1.96 * sigma) * future_factors)), tuple(float(factors.get(i, 1.0)) for i in range(12)))
+    return ForecastResult("", n, fallback_model, tuple(pred), tuple(np.maximum(0.0, (base - 1.96 * sigma) * future_factors)), tuple(np.maximum(0.0, (base + 1.96 * sigma) * future_factors)), tuple(float(factors.get(i, 1.0)) for i in range(12)))
 
 
 def build_12m_forecast(
