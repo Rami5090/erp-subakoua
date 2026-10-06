@@ -286,72 +286,193 @@ class SubakouaAPIClient:
             pass
         return None
 
-    def _search_global_study(self, page: Page, study_id: str, label: str) -> bool:
-        """Utilise la barre de recherche globale du portail Subakoua.
+    @staticmethod
+    def _norm_ui_text(value: str) -> str:
+        """Normalise un texte UI pour des comparaisons tolérantes."""
+        value = " ".join(str(value or "").split()).casefold()
+        return value
 
-        L'audit montre que la barre ``#search-query`` est présente dans
-        l'en-tête des pages d'études et qu'elle alimente dynamiquement
-        ``okw-main-header-filtered-studies-list``. Cette voie est plus fiable
-        que de dépendre des cartes d'une page catalogue particulière.
+    @classmethod
+    def _label_tokens(cls, label: str) -> list[str]:
+        """Retourne les mots significatifs d'un libellé d'étude."""
+        norm = cls._norm_ui_text(label)
+        # On enlève la ponctuation simple tout en conservant les accents.
+        norm = re.sub(r"[^\wÀ-ÿ]+", " ", norm, flags=re.UNICODE)
+        stop = {
+            "de", "du", "des", "d", "et", "la", "le", "les", "sur",
+            "pour", "en", "au", "aux", "a", "un", "une", "l"
+        }
+        return [tok for tok in norm.split() if len(tok) >= 3 and tok not in stop]
+
+    def _click_search_result_candidate(self, page: Page, label: str, study_id: str) -> bool:
+        """Cherche une étude dans le DOM visible puis clique sa cible exploitable.
+
+        Angular/PrimeNG peut rendre le résultat de la recherche hors du composant
+        ``okw-main-header-filtered-studies-list``. On cherche donc dans tout le
+        DOM visible, en scorant les candidats sur les mots du titre et l'ID.
         """
-        queries = [q for q in (label, study_id) if q]
-        for query in queries:
+        tokens = self._label_tokens(label)
+        label_norm = self._norm_ui_text(label)
+        id_norm = self._norm_ui_text(study_id)
+
+        candidates = page.locator(
+            'a, button, [role="link"], [role="button"], li, [tabindex="0"], '
+            '[routerlink], [ng-reflect-router-link]'
+        )
+        try:
+            count = min(candidates.count(), 500)
+        except Exception:
+            count = 0
+
+        scored: list[tuple[float, int]] = []
+        for i in range(count):
+            node = candidates.nth(i)
             try:
-                inp = page.locator('input#search-query').first
-                inp.wait_for(state='visible', timeout=5000)
-                inp.fill("")
-                inp.fill(query)
-                # Le composant Angular filtre dynamiquement. Une légère attente
-                # laisse le temps à la liste des résultats de se monter.
-                page.wait_for_timeout(900)
-
-                container = page.locator('okw-main-header-filtered-studies-list').first
-                if container.count() == 0:
+                if not node.is_visible():
                     continue
-
-                # Cherche d'abord un lien/bouton dont le texte correspond au résultat.
-                result_re = re.compile(re.escape(query), re.I)
-                clickables = container.locator(
-                    'a, button, [role="link"], [role="button"], li, [tabindex="0"]'
-                )
-                count = min(clickables.count(), 100)
-                for i in range(count):
-                    node = clickables.nth(i)
-                    try:
-                        if not node.is_visible():
-                            continue
-                        txt = " ".join(node.inner_text().split())
-                        if result_re.search(txt) or (label and re.search(re.escape(label), txt, re.I)):
-                            node.click(timeout=5000)
-                            page.wait_for_timeout(900)
-                            return True
-                    except Exception:
-                        continue
-
-                # Fallback : trouver le texte du résultat puis remonter dans le DOM.
-                text_nodes = container.get_by_text(query, exact=False)
-                for i in range(min(text_nodes.count(), 20)):
-                    node = text_nodes.nth(i)
-                    try:
-                        if not node.is_visible():
-                            continue
-                        ancestor = node
-                        for _ in range(8):
-                            try:
-                                if ancestor.evaluate(
-                                    "el => ['A','BUTTON'].includes(el.tagName) || el.getAttribute('role') === 'link' || el.getAttribute('role') === 'button'"
-                                ):
-                                    ancestor.click(timeout=5000)
-                                    page.wait_for_timeout(900)
-                                    return True
-                            except Exception:
-                                pass
-                            ancestor = ancestor.locator('xpath=..')
-                    except Exception:
-                        continue
+                txt = self._norm_ui_text(node.inner_text())
+                attrs = self._norm_ui_text(" ".join([
+                    str(node.get_attribute("href") or ""),
+                    str(node.get_attribute("routerlink") or ""),
+                    str(node.get_attribute("ng-reflect-router-link") or ""),
+                    str(node.get_attribute("data-study-id") or ""),
+                    str(node.get_attribute("data-studyid") or ""),
+                    str(node.get_attribute("data-id") or ""),
+                    str(node.get_attribute("value") or ""),
+                ]))
+                if id_norm and id_norm in attrs:
+                    scored.append((100.0, i))
+                    continue
+                if not txt:
+                    continue
+                if label_norm and label_norm in txt:
+                    scored.append((95.0, i))
+                    continue
+                if tokens:
+                    hits = sum(1 for tok in tokens if tok in txt)
+                    coverage = hits / len(tokens)
+                    # Bonus pour les titres relativement courts : évite de préférer
+                    # un gros conteneur générique contenant plusieurs cartes.
+                    specificity = max(0.0, 1.0 - max(0, len(txt.split()) - 20) / 80.0)
+                    score = coverage * 80.0 + specificity * 10.0
+                    if coverage >= 0.60:
+                        scored.append((score, i))
             except Exception:
                 continue
 
+        for _, idx in sorted(scored, reverse=True):
+            node = candidates.nth(idx)
+            try:
+                before = page.url
+                node.click(timeout=5000)
+                page.wait_for_timeout(1000)
+                if self._click_buy_visible(page):
+                    return True
+                if page.url != before:
+                    # L'ouverture peut nécessiter encore un court temps de montage.
+                    for _ in range(5):
+                        page.wait_for_timeout(400)
+                        if self._click_buy_visible(page):
+                            return True
+            except Exception:
+                continue
+        return False
+
+    def _search_global_study(self, page: Page, study_id: str, label: str) -> bool:
+        """Ouvre une étude via la recherche globale réelle du portail.
+
+        Le résultat de recherche est dynamique et peut être rendu hors du
+        composant ``okw-main-header-filtered-studies-list``. On déclenche donc
+        une vraie saisie clavier, attend le rendu Angular, puis cherche la cible
+        dans tout le DOM visible. Plusieurs variantes du titre servent de
+        fallback lorsque le libellé contient de la ponctuation ou une apostrophe.
+        """
+        queries: list[str] = []
+        for q in (label, " ".join(self._label_tokens(label)[:5]), study_id):
+            q = " ".join(str(q or "").split())
+            if q and q not in queries:
+                queries.append(q)
+
+        inp = page.locator("input#search-query").first
+        try:
+            inp.wait_for(state="visible", timeout=7000)
+        except Exception:
+            return False
+
+        for query in queries:
+            try:
+                inp.click()
+                inp.press("Control+A")
+                # `fill()` ne suffit pas sur certaines versions Angular : le
+                # composant du portail écoute également les événements clavier.
+                inp.press_sequentially(query, delay=25)
+                page.wait_for_timeout(1400)
+
+                # Le résultat peut apparaître dans le composant dédié ou dans un
+                # overlay global ; dans les deux cas, on tente une cible exacte.
+                if label:
+                    try:
+                        page.wait_for_function(
+                            "([q]) => document.body && document.body.innerText.toLocaleLowerCase().includes(q.toLocaleLowerCase())",
+                            arg=[label],
+                            timeout=3500,
+                        )
+                    except Exception:
+                        pass
+
+                # 1) Composant de recherche dédié.
+                container = page.locator("okw-main-header-filtered-studies-list:visible").first
+                try:
+                    if container.count() > 0:
+                        exactish = container.get_by_text(label, exact=False) if label else container.get_by_text(query, exact=False)
+                        count = min(exactish.count(), 30)
+                        for i in range(count):
+                            node = exactish.nth(i)
+                            if not node.is_visible():
+                                continue
+                            ancestor = node
+                            for _ in range(10):
+                                try:
+                                    tag = ancestor.evaluate(
+                                        "el => ({tag: el.tagName, role: el.getAttribute('role'), href: el.getAttribute('href'), router: el.getAttribute('routerlink')})"
+                                    )
+                                    if tag and (tag.get("tag") in ("A", "BUTTON") or tag.get("role") in ("link", "button") or tag.get("href") or tag.get("router")):
+                                        ancestor.click(timeout=5000)
+                                        page.wait_for_timeout(1000)
+                                        if self._click_buy_visible(page):
+                                            return True
+                                        break
+                                except Exception:
+                                    pass
+                                ancestor = ancestor.locator("xpath=..")
+                except Exception:
+                    pass
+
+                # 2) Toute cible visible de la page, y compris les overlays.
+                if self._click_search_result_candidate(page, label, study_id):
+                    return True
+
+                # 3) Certains composants gèrent encore la sélection au clavier.
+                try:
+                    inp.press("ArrowDown")
+                    page.wait_for_timeout(250)
+                    inp.press("Enter")
+                    page.wait_for_timeout(1200)
+                    if self._click_buy_visible(page):
+                        return True
+                except Exception:
+                    pass
+
+                # Efface avant la variante suivante.
+                try:
+                    inp.click()
+                    inp.press("Control+A")
+                    inp.press("Backspace")
+                    page.wait_for_timeout(250)
+                except Exception:
+                    pass
+            except Exception:
+                continue
         return False
 
     def _open_study(self, page: Page, study_id: str, label: str) -> None:
@@ -512,8 +633,17 @@ class SubakouaAPIClient:
             self._select_purchase_period(page, wanted_period)
             self._open_study(page, study_id, label)
 
-        dialog = page.get_by_role("dialog")
-        dialog.wait_for(state="visible", timeout=7000)
+        # Le portail peut conserver plusieurs composants p-dialog montés dans le DOM.
+        # `get_by_role("dialog")` peut alors cibler un composant non visible en
+        # premier rang. On prend explicitement le dernier dialogue visible.
+        visible_dialogs = page.locator('div[role="dialog"]:visible')
+        try:
+            visible_dialogs.first.wait_for(state="visible", timeout=7000)
+        except Exception as exc:
+            raise SubakouaAPIError(
+                f"La fenêtre de confirmation d'achat n'est pas apparue pour {study_id}. URL={page.url}"
+            ) from exc
+        dialog = visible_dialogs.last
 
         if expected_price is not None:
             body = dialog.inner_text()
@@ -527,17 +657,46 @@ class SubakouaAPIClient:
                     f"Prix affiché différent pour {study_id} : attendu {expected_price:.2f} €. Dialogue={body!r}"
                 )
 
-        confirm = dialog.get_by_role("button", name="Confirmer", exact=True)
-        confirm.wait_for(state="visible", timeout=5000)
-        confirm.click()
+        # Sélecteur CSS volontairement utilisé en premier : dans l'audit, le
+        # bouton est bien un <button type="button"> contenant un span
+        # `.p-button-label` avec le texte `Confirmer`.
+        confirm = dialog.locator('button').filter(has_text=re.compile(r"^\s*Confirmer\s*$", re.I)).last
+        try:
+            confirm.wait_for(state="visible", timeout=7000)
+        except Exception:
+            # Fallback PrimeNG plus permissif pour les variations d'accessibility tree.
+            confirm = dialog.locator('button:visible').filter(has_text=re.compile(r"Confirmer", re.I)).last
+            try:
+                confirm.wait_for(state="visible", timeout=3000)
+            except Exception as exc:
+                raise SubakouaAPIError(
+                    f"Bouton Confirmer introuvable dans la fenêtre d'achat de {study_id}. "
+                    f"Dialogue={dialog.inner_text()!r}"
+                ) from exc
 
         try:
-            dialog.wait_for(state="hidden", timeout=8000)
-        except PlaywrightTimeoutError:
-            page.wait_for_timeout(1500)
+            confirm.click(timeout=7000)
+        except Exception:
+            # Dernier recours : le bouton est visible mais une animation PrimeNG
+            # peut intercepter ponctuellement le clic.
+            confirm.click(timeout=3000, force=True)
 
-        # Vérification métier après le clic de confirmation.
-        live = next((x for x in self.catalog(wanted_period, [study_id]) if x.study_id == study_id), None)
+        try:
+            dialog.wait_for(state="hidden", timeout=10000)
+        except PlaywrightTimeoutError:
+            page.wait_for_timeout(1800)
+
+        # Vérification métier après le clic de confirmation. Le backend peut mettre
+        # quelques centaines de ms à refléter boughtByTeam=true : on réessaie.
+        live = None
+        for _ in range(5):
+            try:
+                live = next((x for x in self.catalog(wanted_period, [study_id]) if x.study_id == study_id), None)
+                if live is not None and live.bought_by_team:
+                    break
+            except Exception:
+                pass
+            page.wait_for_timeout(800)
         if live is None or not live.bought_by_team:
             raise SubakouaAPIError(
                 f"Le clic 'Confirmer' a été effectué mais l'achat de {study_id} n'est pas confirmé par le catalogue live."
