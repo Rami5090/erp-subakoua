@@ -136,3 +136,28 @@ def test_realistic_wrapped_dump_supports_seasonal_forecast():
     f, _ = build_12m_forecast(sales, struct, "Année 1 - Janvier")
     assert f.loc[f["periode"] == "Année 1 - Juillet", "Total unités"].iloc[0] != f.loc[f["periode"] == "Année 1 - Janvier", "Total unités"].iloc[0]
     assert sum(potential.values()) > 0
+
+
+def test_period_code_and_all_api_sales_payloads_are_recognized():
+    study_data = {
+        "Année 1 - Juin": {
+            "some_other_study": {
+                "studyId": "some_other_study",
+                "tableauVentes": [
+                    {"productId": "SHORTY_C", "sales": 100},
+                    {"productId": "MONO_C", "sales": 200},
+                    {"productId": "SHORTY_T", "sales": 50},
+                    {"productId": "MONO_T", "sales": 300},
+                    {"productId": "MONO_F", "sales": 400},
+                ],
+            }
+        }
+    }
+    hist = extract_own_sales_history({}, study_data=study_data)
+    assert hist["periode"].tolist() == ["Année 1 - Juin"]
+    assert float(hist.loc[0, "Integral 7"]) == 400.0
+
+
+def test_build_period_data_normalizes_subakoua_period_code():
+    data = build_period_data([{"periode": "0106", "module": "marketing", "contenu": {}}])
+    assert list(data) == ["Année 1 - Juin"]

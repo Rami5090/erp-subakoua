@@ -102,7 +102,12 @@ except Exception as exc:
     st.stop()
 
 period_data=build_period_data(legacy.to_dict("records"))
-study_data=build_study_data(studies.loc[studies["read_allowed"].fillna(False).astype(bool)].to_dict("records")) if not studies.empty else {}
+def _read_allowed_mask(df):
+    if df.empty or "read_allowed" not in df.columns:
+        return pd.Series(dtype=bool)
+    return df["read_allowed"].map(lambda v: v if isinstance(v, bool) else str(v).strip().lower() in {"1", "true", "yes", "y", "on"})
+
+study_data=build_study_data(studies.loc[_read_allowed_mask(studies)].to_dict("records")) if not studies.empty else {}
 periods=ordered_periods(set(period_data)|set(study_data))
 if not periods:
     st.error("Aucune période exploitable.")
@@ -110,6 +115,12 @@ if not periods:
 
 sales=extract_own_sales_history(period_data,study_data=study_data)
 latest_real=latest_observed_period(sales)
+scraped_periods=periods
+missing_sales_periods=[p for p in scraped_periods if p not in set(sales["periode"])] if not sales.empty else scraped_periods
+
+if missing_sales_periods:
+    st.warning("Périodes scrappées sans ventes reconnues : " + ", ".join(missing_sales_periods) + ". Le moteur de prévision ne les considérera comme réelles qu'une fois les ventes mensuelles accessibles.")
+
 if latest_real is None:
     st.error("Aucune période de ventes réellement observée n'est disponible.")
     st.stop()
