@@ -1,17 +1,19 @@
-"""Routes UI des études Subakoua dérivées de l'audit.
+"""Routes UI des études Subakoua issues de l'audit du portail.
 
-Les templates contenant ``{month}`` utilisent l'identifiant de mois UI Subakoua
-(13 = A1-Janvier, ..., 24 = A1-Décembre, 25 = A2-Janvier, ...).
+Les routes mensuelles utilisent l'identifiant UI ``/months/{month}`` du portail :
+13 = Année 1 - Janvier, ..., 18 = Année 1 - Juin, 19 = Année 1 - Juillet.
 
-Les routes marquées ``inferred`` sont des routes de famille déduites de l'audit
-(UI stable) et servent de fallback; elles sont volontairement distinctes des
-routes explicitement observées.
+La table est volontairement séparée du catalogue API : un identifiant d'étude
+peut avoir un nom d'API différent du nom de route UI. Aucune URL n'est inventée
+pour une étude dont l'audit ne fournit pas de cible UI exploitable.
 """
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 ROUTES_FILE = Path(__file__).resolve().parent / "study_ui_routes.json"
 try:
@@ -20,17 +22,31 @@ except Exception:
     _DATA = {"routes": {}}
 
 STUDY_UI_ROUTES: dict[str, dict[str, Any]] = _DATA.get("routes", {})
+BASE_URL = str(_DATA.get("base_url") or "https://subakoua.arkhe.com").rstrip("/")
 
 
-def routes_for(study_id: str, month_id: int, base_url: str = "https://subakoua.arkhe.com") -> list[dict[str, Any]]:
-    """Retourne les routes candidates d'une étude, déjà matérialisées."""
+def routes_for(study_id: str, month_id: int, base_url: str | None = None) -> list[dict[str, Any]]:
+    """Retourne les routes UI auditée pour une étude et un mois.
+
+    Une étude sans route UI observée retourne une liste vide plutôt qu'une URL
+    fabriquée. Cela force le moteur à utiliser son fallback DOM/API de manière
+    explicite.
+    """
     row = STUDY_UI_ROUTES.get(str(study_id))
-    if not row:
+    if not row or not row.get("ui_supported", True):
         return []
     template = str(row.get("url_template") or "").strip()
     if not template:
         return []
-    url = template.replace("{month}", str(int(month_id)))
+    month = int(month_id)
+    if month < 1:
+        return []
+    if "{month}" in template:
+        url = template.replace("{month}", str(month))
+    else:
+        url = template
     if url.startswith("/"):
-        url = base_url.rstrip("/") + url
-    return [{**row, "url": url}]
+        url = urljoin((base_url or BASE_URL) + "/", url.lstrip("/"))
+    if not re.match(r"^https://subakoua\.arkhe\.com/companies/partners/", url):
+        return []
+    return [{**row, "study_id": str(study_id), "month_id": month, "url": url}]

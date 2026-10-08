@@ -434,8 +434,26 @@ class SubakouaAPIClient:
                 )
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
                 page.wait_for_timeout(1200)
-                if self._click_buy_visible(page):
-                    return True
+                # Les composants Angular peuvent monter le bouton Acheter après le
+                # chargement initial. On attend brièvement sans repasser par le
+                # sélecteur de période.
+                deadline = time.time() + 8
+                while time.time() < deadline:
+                    if self._click_buy_visible(page):
+                        return True
+                    try:
+                        buttons = page.get_by_role("button", name=re.compile(r"acheter", re.I))
+                        for i in range(min(buttons.count(), 20)):
+                            b = buttons.nth(i)
+                            if b.is_visible():
+                                b.scroll_into_view_if_needed(timeout=1500)
+                                if b.is_visible():
+                                    b.click(timeout=3000)
+                                    page.wait_for_timeout(700)
+                                    return True
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(400)
             except Exception as exc:
                 self.logger.debug("Route UI directe non exploitable %s : %s", url, exc)
 
@@ -455,8 +473,26 @@ class SubakouaAPIClient:
                 self.logger.info("Achat UI | route catalogue détectée : %s", url)
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
                 page.wait_for_timeout(1200)
-                if self._click_buy_visible(page):
-                    return True
+                # Les composants Angular peuvent monter le bouton Acheter après le
+                # chargement initial. On attend brièvement sans repasser par le
+                # sélecteur de période.
+                deadline = time.time() + 8
+                while time.time() < deadline:
+                    if self._click_buy_visible(page):
+                        return True
+                    try:
+                        buttons = page.get_by_role("button", name=re.compile(r"acheter", re.I))
+                        for i in range(min(buttons.count(), 20)):
+                            b = buttons.nth(i)
+                            if b.is_visible():
+                                b.scroll_into_view_if_needed(timeout=1500)
+                                if b.is_visible():
+                                    b.click(timeout=3000)
+                                    page.wait_for_timeout(700)
+                                    return True
+                    except Exception:
+                        pass
+                    page.wait_for_timeout(400)
             except Exception as exc:
                 self.logger.debug("Route catalogue non exploitable %s : %s", url, exc)
         return False
