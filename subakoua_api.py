@@ -19,6 +19,7 @@ from urllib.parse import urlencode, urljoin
 from playwright.sync_api import BrowserContext, APIResponse, TimeoutError as PlaywrightTimeoutError
 
 import document_optimizer as optimizer
+from study_ui_routes import routes_for as study_ui_routes_for
 
 BASE_URL = "https://subakoua.arkhe.com"
 ENDPOINT_CATALOG_PATH = Path(__file__).resolve().parent / "study_api_catalog.json"
@@ -414,7 +415,31 @@ class SubakouaAPIClient:
         return out
 
     def _navigate_to_study_url_candidates(self, page: Page, study_id: str, period: str) -> bool:
-        """Essaie les URLs exposées par le catalogue live, sans dépendre des cartes UI."""
+        """Ouvre directement une route UI connue pour l'étude, puis clique Acheter.
+
+        Priorité à la table ``study_ui_routes.json`` issue de l'audit; le catalogue
+        live reste un fallback si une URL est exposée par l'API. La sélection de
+        période dans le sélecteur UI n'est volontairement plus utilisée ici.
+        """
+        month_id = self.month_id(self.period_label(period))
+        direct = study_ui_routes_for(study_id, month_id, self.base_url)
+        for cand in direct:
+            url = str(cand.get("url") or "").strip()
+            if not url:
+                continue
+            try:
+                self.logger.info(
+                    "Achat UI | route directe | étude=%s | month=%s | source=%s | url=%s",
+                    study_id, month_id, cand.get("source", ""), url,
+                )
+                page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
+                page.wait_for_timeout(1200)
+                if self._click_buy_visible(page):
+                    return True
+            except Exception as exc:
+                self.logger.debug("Route UI directe non exploitable %s : %s", url, exc)
+
+        # Fallback: certaines lignes du catalogue live peuvent contenir une URL/href.
         period_code = self.period_code(period)
         row = self._catalog_rows.get((period_code, study_id))
         if row is None:
@@ -429,12 +454,18 @@ class SubakouaAPIClient:
             try:
                 self.logger.info("Achat UI | route catalogue détectée : %s", url)
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
-                page.wait_for_timeout(1400)
+                page.wait_for_timeout(1200)
                 if self._click_buy_visible(page):
                     return True
             except Exception as exc:
                 self.logger.debug("Route catalogue non exploitable %s : %s", url, exc)
         return False
+
+    def resolve_study_ui_url(self, study_id: str, period: str) -> str | None:
+        """Retourne la première URL UI auditée/inférée pour une étude et une période."""
+        month_id = self.month_id(self.period_label(period))
+        rows = study_ui_routes_for(study_id, month_id, self.base_url)
+        return str(rows[0]["url"]) if rows else None
 
     def _click_search_result_dom(self, page: Page, label: str, study_id: str) -> bool:
         """Clique ou ouvre une cible de résultat trouvée par inspection DOM directe."""
@@ -691,9 +722,10 @@ class SubakouaAPIClient:
         except Exception as exc:
             raise SubakouaAPIError(f"Impossible d'ouvrir le dashboard avant achat {study_id}: {exc}") from exc
 
-        self.logger.info("Achat UI | sélection période : %s", wanted_period)
-        self._select_purchase_period(page, wanted_period)
-        self.logger.info("Achat UI | recherche de l'étude : %s", study_id)
+        self.logger.info(
+            "Achat UI | navigation directe par URL | étude=%s | month_id=%s",
+            study_id, self.month_id(wanted_period),
+        )
 
         try:
             self._open_study(page, study_id, label, wanted_period)

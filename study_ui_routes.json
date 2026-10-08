@@ -1,0 +1,354 @@
+{
+  "version": "2.9.0",
+  "base_url": "https://subakoua.arkhe.com",
+  "routes": {
+    "companyStock": {
+      "label": "Les stocks",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/stocks",
+      "source": "audit_label_alias",
+      "confidence": 0.95
+    },
+    "enafgeqlevss": {
+      "label": "Audit du service / administration-finance",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/humanResources/financialAdministrationServiceAudit/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enapgeqlevss": {
+      "label": "Audit du service / approvisionnement",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/humanResources/supplyServiceAudit/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enapgeqlquesmp": {
+      "label": "Qualité des entrées et sorties des matières",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/stocks/materialsInsAndOutsQualities/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enapgeqtcofr": {
+      "label": "Suivi des commandes fournisseurs",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/stocks/ordersMonitoring/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enapgeqtcuesmp": {
+      "label": "Coût des entrées et sorties des matières",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/stocks/materialsInsAndOutsCosts/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enprgeqlccqp": {
+      "label": "Composantes de la qualité des produits",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/marketing/qualityComponents/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enprgeqlevss": {
+      "label": "Audit du service / production",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/humanResources/productionServiceAudit/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enprgeqlquespf": {
+      "label": "Qualité des entrées et sorties des produits",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/stocks/productsInsAndOutsQualities/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enprgeqtatdb": {
+      "label": "Ateliers : disponibilités et besoins théoriques",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/production/workshopsAvailabilityAndNeeds/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enprgeqtcuespf": {
+      "label": "Coût des entrées et sorties des produits finis",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/stocks/productsInsAndOutsCosts/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enprgeqtmpdb": {
+      "label": "Matières : disponibilités et besoins théoriques",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/production/materialsAvailabilityAndNeeds/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "enprgeqtpp": {
+      "label": "Processus de production",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/production/productionProcess/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "ensaacvm": {
+      "label": "Ventes mensuelles",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/marketing/monthlySales/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "initialBalanceSheet": {
+      "label": "Bilan au 1er janvier année 0",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/synthesis/initialBalanceSheet/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "monitoring": {
+      "label": "Tableau de bord",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/dashboard/monitoring/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peassodb": {
+      "label": "Dommages aux biens",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/humanResources",
+      "source": "audit_label_alias",
+      "confidence": 0.95
+    },
+    "pebaemecta": {
+      "label": "Tableau d'amortissement",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/bankAndInsurances/bank/monthlyLoansAmortizationTables/{month}/MONTHLY",
+      "source": "audit_label_alias",
+      "confidence": 0.95
+    },
+    "peeedcahm": {
+      "label": "Achats et variations de stocks",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/accountsDetail/stocksVariation/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeedcahsx": {
+      "label": "Autres achats et charges externes",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/accountsDetail/otherPurchasesExternalExpenses/{month}/MONTHLY",
+      "source": "audit_explicit",
+      "confidence": 1.0
+    },
+    "peeedcdadpm": {
+      "label": "Dotations aux amortissements et dépréciations",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/accountsDetail/depreciationAmortization/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeedcitesm": {
+      "label": "Charges de personnel",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/accountsDetail/staffExpenses/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeedcpehc": {
+      "label": "Produits d'exploitation sur stocks et clients",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/accountsDetail/exploitationProductsTurnoverExcluded/{month}/MONTHLY",
+      "source": "audit_label_alias",
+      "confidence": 0.95
+    },
+    "peeedcpofi": {
+      "label": "Produits financiers",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/accountsDetail/financialIncome/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeedsbiak": {
+      "label": "Bilan version simplifiée",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/synthesis/simplifiedBalanceSheet/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeedsbidt": {
+      "label": "Bilan version détaillée",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/synthesis/detailedBalanceSheet/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeedscrdl": {
+      "label": "Compte de résultat détaillé",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/synthesis/detailedIncomeStatement/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeedscrsm": {
+      "label": "Compte de résultat simplifié",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/synthesis/simplifiedIncomeStatement/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeedsftt": {
+      "label": "Tableau de trésorerie méthode indirecte",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/synthesis/cashFlowStatement/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeefsisp": {
+      "label": "Impôts sur les sociétés",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/taxes/incomeTax/{month}/MONTHLY",
+      "source": "audit_explicit",
+      "confidence": 1.0
+    },
+    "peeefstvp": {
+      "label": "TVA",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/taxes",
+      "source": "audit_explicit",
+      "confidence": 1.0
+    },
+    "peeumreucjsacl": {
+      "label": "Satisfaction clients",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/marketStudies/marketCircumstantialStudies/customerSatisfaction/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "peeumreusreprv": {
+      "label": "Eléments de prévision des ventes",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/marketStudies/marketStructuralStudies/salesForecastElements/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "pefrpffh": {
+      "label": "Fiches produits",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/internalData/production/productSheets/{month}/MONTHLY",
+      "source": "audit_label_alias",
+      "confidence": 0.95
+    },
+    "productionCostDetailStudy": {
+      "label": "Calcul des coûts de production",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/accountsDetail/productionCostDetailStudy/{month}/MONTHLY",
+      "source": "audit_page_title",
+      "confidence": 0.98
+    },
+    "pevcvipm": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/commercialComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcvicpve": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/commercialComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcvicppv": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/commercialComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcvicpca": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/commercialComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcvicpdp": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/commercialComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcvicddi": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/marketingComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcvicppq": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/marketingComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcvicpps": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/marketingComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcvfrc": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/financialComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcvfsn": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/financialComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcecpuen": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/marketingEvolution",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcecpupf": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/marketingEvolution",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcecprpf": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/marketingEvolution",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcecdlpf": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/marketingEvolution",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcfcpfpuca": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/keyFactors",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcfcpfpurs": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/keyFactors",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcfcpfquca": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/keyFactors",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcfcpfqurs": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/keyFactors",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcfcimsaca": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/keyFactors",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "pevcfcimsars": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/keyFactors",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "salePricePaymentDelayResultKeyFactor": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/keyFactors",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "salePricePaymentDelayTurnoverKeyFactor": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/keyFactors",
+      "source": "inferred_family",
+      "confidence": 0.65
+    },
+    "salesToMarketAverageComparison": {
+      "label": "",
+      "url_template": "https://subakoua.arkhe.com/companies/partners/concurrency/commercialComparison",
+      "source": "inferred_family",
+      "confidence": 0.65
+    }
+  }
+}
