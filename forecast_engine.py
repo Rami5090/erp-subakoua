@@ -64,33 +64,8 @@ class MarketForecastResult:
     calibration_method: str
 
 
-def normalize_period_label(period: Any) -> str:
-    """Normalise un libellé ou un code Subakoua (ex. 0106) vers le libellé canonique."""
-    raw = str(period or "").strip()
-    if raw in PERIOD_INDEX:
-        return raw
-    import re
-    if re.fullmatch(r"\d{4}", raw):
-        try:
-            year = int(raw[:2])
-            month = int(raw[2:])
-            if year >= 1 and 1 <= month <= 12:
-                return f"Année {year} - {MONTH_NAMES[month - 1]}"
-        except Exception:
-            pass
-    # Quelques exports peuvent omettre l'espace autour du tiret.
-    compact = re.sub(r"\s+", " ", raw)
-    m = re.fullmatch(r"Année\s*(\d+)\s*-\s*(.+)", compact, flags=re.I)
-    if m:
-        month = m.group(2).strip().capitalize()
-        for candidate in MONTH_NAMES:
-            if candidate.lower() == month.lower():
-                return f"Année {int(m.group(1))} - {candidate}"
-    return raw
-
-
 def period_index(period: str) -> int:
-    return PERIOD_INDEX.get(normalize_period_label(period), 10_000)
+    return PERIOD_INDEX.get(period, 10_000)
 
 
 def period_label_from_index(idx: int) -> str:
@@ -105,8 +80,7 @@ def month_index_from_label(label: str) -> int | None:
 
 
 def ordered_periods(periods: Sequence[str]) -> list[str]:
-    canonical = {normalize_period_label(p) for p in periods}
-    return sorted({p for p in canonical if p in PERIOD_INDEX}, key=period_index)
+    return sorted({p for p in periods if p in PERIOD_INDEX}, key=period_index)
 
 
 def _json_load(value: Any) -> dict[str, Any]:
@@ -289,23 +263,23 @@ def _extract_seasonality_from_any(obj: Any) -> dict[int, dict[int, float]]:
     return out
 
 def build_period_data(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Construit le format historique ``periode -> module -> json`` avec période canonique."""
+    """Construit le format historique ``periode -> module -> json``."""
     out: dict[str, dict[str, Any]] = {}
     for row in rows:
-        period = normalize_period_label(row.get("periode", ""))
+        period = str(row.get("periode", ""))
         module = str(row.get("module", ""))
-        if period in PERIOD_INDEX and module:
+        if period and module:
             out.setdefault(period, {})[module] = _unwrap_legacy_module(row.get("contenu"))
     return out
 
 
 def build_study_data(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
-    """Construit ``periode -> study_id -> payload`` depuis erp_etudes avec période canonique."""
+    """Construit ``periode -> study_id -> payload`` depuis erp_etudes."""
     out: dict[str, dict[str, dict[str, Any]]] = {}
     for row in rows:
-        period = normalize_period_label(row.get("periode", ""))
+        period = str(row.get("periode", ""))
         study_id = str(row.get("study_id", ""))
-        if period in PERIOD_INDEX and study_id:
+        if period and study_id:
             payload = row.get("payload", row.get("contenu", {}))
             out.setdefault(period, {})[study_id] = _unwrap_api_payload(_json_load(payload))
     return out
@@ -339,50 +313,33 @@ def _num(value: Any) -> float | None:
 
 
 def _extract_sales_from_api_payload(payload: Mapping[str, Any]) -> dict[str, float]:
-    """Extrait les ventes de tous les formats audités de l'étude ensaacvm.
-
-    L'API a été observée avec ``sales.monthlySalesByProducts``,
-    ``listEnsaacvmProd`` et, selon les versions, ``tableauVentes`` /
-    ``listeTableauVentes``. On ne dépend donc plus d'une seule forme JSON.
-    """
     payload = _unwrap_api_payload(payload)
     out: dict[str, float] = {}
-
-    def add_row(row: Mapping[str, Any]) -> None:
-        if not isinstance(row, Mapping):
-            return
-        raw_name = row.get("productId") or row.get("name") or row.get("produit") or row.get("Produit")
-        name = PRODUCT_ID_TO_NAME.get(str(raw_name or "").strip(), str(raw_name or "").strip())
-        if name not in PRODUCTS:
-            return
-        for key in ("sales", "totalVentes", "total_ventes", "ventes", "value", "Valeur"):
-            if key in row:
-                v = _num(row.get(key))
+    sales = payload.get("sales")
+    if not isinstance(sales, list):
+        nested = _find_nested_by_key(payload, lambda x: isinstance(x.get("sales"), list) or isinstance(x.get("listEnsaacvmProd"), list))
+        if nested:
+            payload = nested
+            sales = payload.get("sales")
+    if isinstance(sales, list) and sales:
+        item = sales[-1] if isinstance(sales[-1], dict) else {}
+        for p in item.get("monthlySalesByProducts", []) if isinstance(item.get("monthlySalesByProducts"), list) else []:
+            if not isinstance(p, dict):
+                continue
+            name = PRODUCT_ID_TO_NAME.get(str(p.get("productId", "")), str(p.get("productId", "")))
+            if name in PRODUCTS:
+                v = _num(p.get("sales"))
                 if v is not None:
                     out[name] = max(0.0, v)
-                    return
-
-    def walk(obj: Any) -> None:
-        if isinstance(obj, Mapping):
-            # Priorité aux conteneurs explicitement liés aux ventes.
-            for key in ("monthlySalesByProducts", "listEnsaacvmProd", "tableauVentes", "listeTableauVentes"):
-                value = obj.get(key)
-                if isinstance(value, list):
-                    for row in value:
-                        if isinstance(row, Mapping):
-                            add_row(row)
-                            walk(row)
-            for key, value in obj.items():
-                if key not in {"monthlySalesByProducts", "listEnsaacvmProd", "tableauVentes", "listeTableauVentes"} and isinstance(value, (Mapping, list)):
-                    walk(value)
-        elif isinstance(obj, list):
-            for item in obj:
-                if isinstance(item, Mapping):
-                    add_row(item)
-                if isinstance(item, (Mapping, list)):
-                    walk(item)
-
-    walk(payload)
+    if not out and isinstance(payload.get("listEnsaacvmProd"), list):
+        for p in payload["listEnsaacvmProd"]:
+            if not isinstance(p, dict):
+                continue
+            name = PRODUCT_ID_TO_NAME.get(str(p.get("name", "")), str(p.get("name", "")))
+            if name in PRODUCTS:
+                v = _num(p.get("totalVentes", p.get("sales")))
+                if v is not None:
+                    out[name] = max(0.0, v)
     return out
 
 
@@ -467,30 +424,9 @@ def extract_own_sales_history(
     all_periods = ordered_periods(set(period_data) | set(study_data))
     for period in all_periods:
         values = {}
-
-        # 1) API : ensaacvm est prioritaire, puis on essaie tous les payloads
-        # lisibles de la période. Cela couvre les exports où l'étude de ventes
-        # porte un identifiant différent ou est enveloppée dans une autre étude.
-        payloads_for_period = study_data.get(period, {})
-        if isinstance(payloads_for_period, Mapping):
-            preferred = []
-            if isinstance(payloads_for_period.get("ensaacvm"), Mapping):
-                preferred.append(payloads_for_period["ensaacvm"])
-            preferred.extend(v for sid, v in payloads_for_period.items() if sid != "ensaacvm" and isinstance(v, Mapping))
-            for payload in preferred:
-                values = _extract_sales_from_api_payload(payload)
-                if values:
-                    break
-
-        if not values:
-            # Legacy/API hybride : un module stocké dans erp_donnees peut lui-même
-            # contenir les clés de l'API ensaacvm. On tente ce format avant la
-            # recherche textuelle historique.
-            for module in period_data.get(period, {}).values():
-                if isinstance(module, Mapping):
-                    values = _extract_sales_from_api_payload(module)
-                    if values:
-                        break
+        payload = study_data.get(period, {}).get("ensaacvm")
+        if isinstance(payload, dict):
+            values = _extract_sales_from_api_payload(payload)
 
         if not values:
             # Legacy : recherche explicite de la section "Ventes mensuelles"

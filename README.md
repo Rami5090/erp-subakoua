@@ -1,3 +1,5 @@
+v2.8.9 - Fix NameError diagnostic missing_sales_periods and stabilize anchor-period diagnostics.
+
 # ERP Subakoua — v2.8
 
 ## Stack
