@@ -26,6 +26,17 @@ from finance_engine import (
 
 from auth import setup as auth_setup, is_editor, require_editor, readonly_notice
 from db_utils import get_readonly_engine_if_configured
+from period_context import (
+    ReferenceDiagnostic,
+    ReferenceRow,
+    context_signature,
+    describe_row,
+    match_period,
+    pick_reference_row,
+    ref_int,
+    ref_number,
+    stale_keys,
+)
 
 load_dotenv()
 
@@ -52,9 +63,11 @@ SIM_STATE_PREFIXES = (
 )
 
 def reinitialiser_decisions_simulation():
-    for _key in list(st.session_state.keys()):
-        if _key.startswith(SIM_STATE_PREFIXES):
-            del st.session_state[_key]
+    for _key in stale_keys(list(st.session_state.keys()), SIM_STATE_PREFIXES):
+        del st.session_state[_key]
+
+# Traçabilité de la période de référence (recréée à chaque exécution du script).
+diag_ref = ReferenceDiagnostic()
 
 def fmt_eur(value):
     try:
@@ -386,8 +399,8 @@ def sauvegarder_scenario_seed(token_seed, tour_id, nom, parametres_dict):
         st.error(f"Erreur sauvegarde seed : {e}")
 
 # Fonctions d'aide globale sécurisées
-def get_rh_v(donnees_rh, k, def_v): return float(donnees_rh.get(k, def_v))
-def get_rh_e(donnees_rh, k, def_v): return int(donnees_rh.get(k, def_v))
+def get_rh_v(donnees_rh, k, def_v): return ref_number(donnees_rh, k, def_v)
+def get_rh_e(donnees_rh, k, def_v): return ref_int(donnees_rh, k, def_v)
 
 # Fonctions d'affichage pour l'État des Lieux Global
 def afficher_tableau_dynamique(donnees):
@@ -520,11 +533,11 @@ def calculer_score_rh_prod_dynamique(donnees_rh_defaut, ratio_opt):
     ms_dp = d_p * s_dp
     tot_p = ms_ep + ms_cp + ms_dp
 
-    q_s3 = st.session_state.get('ord_s3', 50)
-    q_i3 = st.session_state.get('ord_i3', 500)
-    q_s5 = st.session_state.get('ord_s5', 100)
-    q_i5 = st.session_state.get('ord_i5', 1500)
-    q_i7 = st.session_state.get('ord_i7', 2500)
+    q_s3 = st.session_state.get('ord_s3', st.session_state.get('_vol_ref', {}).get('s3', 50))
+    q_i3 = st.session_state.get('ord_i3', st.session_state.get('_vol_ref', {}).get('i3', 500))
+    q_s5 = st.session_state.get('ord_s5', st.session_state.get('_vol_ref', {}).get('s5', 100))
+    q_i5 = st.session_state.get('ord_i5', st.session_state.get('_vol_ref', {}).get('i5', 1500))
+    q_i7 = st.session_state.get('ord_i7', st.session_state.get('_vol_ref', {}).get('i7', 2500))
     couts_prod_sim = (q_s3 + q_i3 + q_s5 + q_i5 + q_i7) * 150.0
 
     ms_satisfaisante_prod = charger_norme_ms("Normes_MS_Prod", couts_prod_sim)
@@ -537,43 +550,169 @@ def calculer_score_rh_prod_dynamique(donnees_rh_defaut, ratio_opt):
     return (s_ms_p + s_disp_p) / 2.0
 
 
+def _contenu_en_dict(contenu):
+    """Décode un champ JSON MySQL (dict, str JSON, voire JSON doublement encodé)."""
+    for _ in range(2):
+        if isinstance(contenu, (bytes, bytearray)):
+            contenu = contenu.decode("utf-8", errors="replace")
+        if isinstance(contenu, str):
+            contenu = json.loads(contenu)
+        else:
+            break
+    return contenu if isinstance(contenu, dict) else {}
+
+
 def charger_contenu_erp_periode(periode, module):
     """Charge la dernière version du module pour UNE période précise.
 
-    Le filtre de période est volontairement obligatoire : le moteur financier
-    ne doit jamais lire « le dernier document inséré » d'une autre période.
+    Le filtre de période est obligatoire : le moteur financier ne doit jamais lire
+    « le dernier document inséré » d'une autre période. La comparaison tolère
+    toutefois les variantes de libellé (espaces, accents, tirets, casse) qui rendaient
+    M-1 invisible et ramenaient silencieusement trésorerie/dette/BFR à 0.
     """
     if engine is None:
         return {}
     try:
-        query = text("""
-            SELECT contenu
-            FROM erp_donnees
-            WHERE periode = :periode
-              AND type_donnee = 'etat_actuel'
-              AND module = :module
-            ORDER BY id DESC
-            LIMIT 1
-        """)
         with engine.connect() as conn:
-            row = conn.execute(query, {"periode": periode, "module": module}).mappings().first()
-        if not row:
-            return {}
-        contenu = row.get("contenu", {})
-        if isinstance(contenu, str):
-            return json.loads(contenu)
-        return contenu if isinstance(contenu, dict) else {}
-    except Exception:
+            candidats = conn.execute(
+                text("""
+                    SELECT id, periode
+                    FROM erp_donnees
+                    WHERE type_donnee = 'etat_actuel' AND module = :module
+                    ORDER BY id
+                """),
+                {"module": module},
+            ).all()
+            ident = match_period([(r[0], r[1]) for r in candidats], periode)
+            if ident is None:
+                return {}
+            row = conn.execute(
+                text("SELECT contenu FROM erp_donnees WHERE id = :id"), {"id": ident}
+            ).mappings().first()
+        return _contenu_en_dict(row.get("contenu")) if row else {}
+    except Exception as exc:
+        diag_ref.alert(f"Lecture `erp_donnees` ({module}, {periode}) impossible : {type(exc).__name__}.")
         return {}
 
 
+def charger_modules_erp_periode(periode):
+    """Tous les modules `etat_actuel` d'une période (dernière version de chacun)."""
+    if engine is None:
+        return {}
+    try:
+        with engine.connect() as conn:
+            candidats = conn.execute(
+                text("SELECT id, periode, module FROM erp_donnees WHERE type_donnee = 'etat_actuel' ORDER BY id")
+            ).all()
+            par_module = {}
+            for ident, per, module in candidats:
+                par_module.setdefault(module, []).append((ident, per))
+            out = {}
+            for module, cands in par_module.items():
+                ident = match_period(cands, periode)
+                if ident is None:
+                    continue
+                row = conn.execute(
+                    text("SELECT contenu FROM erp_donnees WHERE id = :id"), {"id": ident}
+                ).mappings().first()
+                if row:
+                    out[module] = _contenu_en_dict(row.get("contenu"))
+            return out
+    except Exception as exc:
+        diag_ref.alert(f"Lecture `erp_donnees` ({periode}) impossible : {type(exc).__name__}.")
+        return {}
+
+
+_TABLES_REFERENCE = {
+    "Historique_Equipe", "Parc_Machines_Mensuel", "Decisions_RH_Mensuel",
+    "Decisions_Marketing", "Ventes_Historique", "Finances_Mensuelles",
+}
+
+
+def charger_ligne_reference(table, tour_id):
+    """Ligne de `table` pour `tour_id`, sinon du dernier tour ANTÉRIEUR disponible.
+
+    Remplace les lectures `WHERE Tour_ID = M-1` qui retombaient silencieusement sur
+    des constantes dès qu'un mois n'avait pas été saisi.
+    """
+    if engine is None or table not in _TABLES_REFERENCE:
+        return ReferenceRow({}, int(tour_id), None)
+    try:
+        df = pd.read_sql(text(f"SELECT * FROM {table} WHERE Tour_ID <= :t"), engine, params={"t": int(tour_id)})
+    except Exception as exc:
+        diag_ref.alert(f"Lecture `{table}` impossible : {type(exc).__name__}.")
+        return ReferenceRow({}, int(tour_id), None)
+    return pick_reference_row(df, tour_id)
+
+
+VOLUMES_PAR_DEFAUT = {"s3": 50, "i3": 500, "s5": 100, "i5": 1500, "i7": 2500}
+_PRODUITS_VOLUMES = {"s3": "Shorty 3", "i3": "Integral 3", "s5": "Shorty 5", "i5": "Integral 5", "i7": "Integral 7"}
+
+
+def charger_volumes_reference(tour_precedent):
+    """Volumes vendus de M-1 : `Ventes_Historique`, puis `erp_donnees` (ventes mensuelles).
+
+    Retourne (volumes, source). `source` vaut None si seules les valeurs par défaut servent.
+    """
+    ref = charger_ligne_reference("Ventes_Historique", tour_precedent)
+    if ref.found:
+        vols = {k: ref_int(ref.data, f"Ventes_{k.upper()}", VOLUMES_PAR_DEFAUT[k]) for k in VOLUMES_PAR_DEFAUT}
+        return vols, ref
+    periode = period_for_tour(tour_precedent)
+    try:
+        from forecast_engine import extract_own_sales_history
+        modules = charger_modules_erp_periode(periode)
+        hist = extract_own_sales_history({periode: modules}) if modules else None
+        if hist is not None and not hist.empty:
+            row = hist.iloc[-1]
+            vols = {k: int(round(float(row.get(nom, VOLUMES_PAR_DEFAUT[k])))) for k, nom in _PRODUITS_VOLUMES.items()}
+            return vols, ReferenceRow({}, int(tour_precedent), int(tour_precedent))
+    except Exception as exc:
+        diag_ref.alert(f"Ventes M-1 non extraites de `erp_donnees` : {type(exc).__name__}.")
+    return dict(VOLUMES_PAR_DEFAUT), ref
+
+
+def _etat_financier_exploitable(state):
+    return any(
+        v is not None for v in (
+            state.solde_bancaire_final, state.resultat_net, state.bfr_reel, state.dette_bancaire,
+        )
+    )
+
+
+def _etat_financier_pour_periode(tour_ref, tour_cible):
+    """État financier extrait d'UNE période (BFR reconstitué via ΔBFR si besoin)."""
+    periode = period_for_tour(tour_ref)
+    period_data = {
+        "etat_actuel": {
+            "expert_comptable": charger_contenu_erp_periode(periode, "expert_comptable"),
+            "banque_assurance": charger_contenu_erp_periode(periode, "banque_assurance"),
+        }
+    }
+    state = extract_financial_state(periode, period_data, target_tour_id=tour_cible)
+    # Pour les périodes où Subakoua ne fournit qu'une variation du BFR via l'IFRS,
+    # on reconstitue le niveau de BFR à partir de la période précédente + ΔBFR.
+    if tour_ref > 1 and state.bfr_reel is None and state.variation_bfr_reelle is not None:
+        periode_prev = period_for_tour(tour_ref - 1)
+        data_prev = {
+            "etat_actuel": {
+                "expert_comptable": charger_contenu_erp_periode(periode_prev, "expert_comptable"),
+                "banque_assurance": charger_contenu_erp_periode(periode_prev, "banque_assurance"),
+            }
+        }
+        state = complete_bfr_from_previous_state(state, extract_financial_state(periode_prev, data_prev))
+    return state, periode
+
+
 def charger_etat_financier_m1(tour_id_precedent, tour_id_cible):
-    """Retourne l'état financier réel de M-1 et les éventuelles saisies manuelles.
+    """Retourne (état financier de la période de référence, saisies manuelles, libellé, tour utilisé).
 
     Priorités :
-      1. Banque / Expert-comptable extrait depuis erp_donnees pour la période M-1.
-      2. Finances_Mensuelles si des données réelles y ont été saisies.
-      3. Aucun fallback silencieux vers une constante comptable.
+      1. Banque / Expert-comptable extraits depuis erp_donnees pour la période M-1.
+      2. Si M-1 est absent ou vide : dernier tour ANTÉRIEUR exploitable (jamais le futur).
+         Le repli est signalé dans `diag_ref` : les mois intermédiaires ne sont alors pas projetés.
+      3. Finances_Mensuelles si des données réelles y ont été saisies.
+      4. Aucune constante comptable injectée silencieusement.
     """
     # Tour 1 : le vrai M-1 est l'ouverture d'Année 1. Le dump ne contient pas
     # une période "Année 0 - Décembre" complète, mais l'état de janvier contient
@@ -589,37 +728,34 @@ def charger_etat_financier_m1(tour_id_precedent, tour_id_cible):
             from dataclasses import replace as dc_replace
             state = dc_replace(state, bfr_reel=bfr_ouverture)
         manuel = charger_donnees_fin_bdd(1)
-        return state, manuel, "Ouverture Année 1"
+        return state, manuel, "Ouverture Année 1", 1
 
-    periode_m1 = period_for_tour(tour_id_precedent)
-    expert = charger_contenu_erp_periode(periode_m1, "expert_comptable")
-    banque = charger_contenu_erp_periode(periode_m1, "banque_assurance")
-    period_data = {
-        "etat_actuel": {
-            "expert_comptable": expert,
-            "banque_assurance": banque,
-        }
-    }
-    state = extract_financial_state(periode_m1, period_data, target_tour_id=tour_id_cible)
+    tour_ref = int(tour_id_precedent)
+    state, periode = _etat_financier_pour_periode(tour_ref, tour_id_cible)
+    tour_utilise = tour_ref
+    if not _etat_financier_exploitable(state):
+        for tour_test in range(tour_ref - 1, 0, -1):
+            state_test, periode_test = _etat_financier_pour_periode(tour_test, tour_id_cible)
+            if _etat_financier_exploitable(state_test):
+                state, periode, tour_utilise = state_test, periode_test, tour_test
+                break
 
-    # Pour mars/avril et toute période où Subakoua ne fournit qu'une variation
-    # du BFR via l'IFRS, on reconstitue le niveau de BFR de M-1 à partir du
-    # BFR de la période précédente + ΔBFR comptable.
-    if tour_id_precedent > 1 and state.variation_bfr_reelle is not None:
-        periode_m2 = period_for_tour(tour_id_precedent - 1)
-        expert_m2 = charger_contenu_erp_periode(periode_m2, "expert_comptable")
-        banque_m2 = charger_contenu_erp_periode(periode_m2, "banque_assurance")
-        period_data_m2 = {
-            "etat_actuel": {
-                "expert_comptable": expert_m2,
-                "banque_assurance": banque_m2,
-            }
-        }
-        state_m2 = extract_financial_state(periode_m2, period_data_m2)
-        state = complete_bfr_from_previous_state(state, state_m2)
+    if not _etat_financier_exploitable(state):
+        diag_ref.alert(
+            f"Aucun état financier (Banque / Expert-comptable) trouvé en base pour {period_for_tour(tour_ref)} "
+            "ni pour les périodes antérieures : trésorerie, dette et BFR d'ouverture sont inconnus."
+        )
+    elif tour_utilise != tour_ref:
+        ecart = tour_ref - tour_utilise
+        diag_ref.alert(
+            f"État financier de {period_for_tour(tour_ref)} absent en base : ouverture reprise de {periode} "
+            f"(−{ecart} mois). Les {ecart} mois intermédiaires ne sont pas projetés — saisir/extraire M-1 pour corriger."
+        )
+    else:
+        diag_ref.note(f"État financier d'ouverture : {periode}.")
 
-    manuel = charger_donnees_fin_bdd(tour_id_precedent)
-    return state, manuel, periode_m1
+    manuel = charger_donnees_fin_bdd(tour_utilise)
+    return state, manuel, periode, tour_utilise
 
 # ==========================================
 # 4. NAVIGATION & PILOTAGE TEMPOREL
@@ -837,22 +973,48 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 "**Mode Expert** : accédez en plus aux échéances, TVA, BFR, portefeuille, assurances et paramètres RH détaillés.",
             )
 
-    # Placeholder rempli après calcul pour garder les KPI stratégiques visibles en haut.
+    # Placeholders remplis après calcul : KPI stratégiques puis diagnostic de la période de référence.
     kpi_header = st.empty()
+    diag_box = st.empty()
 
-    if engine is not None:
-        try:
-            df_hist = pd.read_sql(f"SELECT * FROM Historique_Equipe WHERE Tour_ID = {tour_id_precedent}", engine)
-            df_machines = pd.read_sql(f"SELECT * FROM Parc_Machines_Mensuel WHERE Tour_ID = {tour_id_precedent}", engine)
-            donnees_rh = charger_donnees_rh_bdd(tour_id_precedent)
-            donnees_mkg = charger_donnees_mkg_bdd(tour_id_precedent)
-        except Exception:
-            df_hist, df_machines, donnees_rh, donnees_mkg = pd.DataFrame(), pd.DataFrame(), {}, {}
-    else:
-        df_hist, df_machines, donnees_rh, donnees_mkg = pd.DataFrame(), pd.DataFrame(), {}, {}
+    # ---------------------------------------------------------------
+    # Période de référence : M-1, sinon dernier tour ANTÉRIEUR disponible.
+    # ---------------------------------------------------------------
+    _libelle_tour = period_for_tour
+    ref_hist = charger_ligne_reference("Historique_Equipe", tour_id_precedent)
+    ref_machines = charger_ligne_reference("Parc_Machines_Mensuel", tour_id_precedent)
+    ref_rh = charger_ligne_reference("Decisions_RH_Mensuel", tour_id_precedent)
+    ref_mkg = charger_ligne_reference("Decisions_Marketing", tour_id_precedent)
+    volumes_ref, ref_ventes = charger_volumes_reference(tour_id_precedent)
+    for _table, _ref in (
+        ("Historique_Equipe", ref_hist), ("Parc_Machines_Mensuel", ref_machines),
+        ("Decisions_RH_Mensuel", ref_rh), ("Decisions_Marketing", ref_mkg),
+        ("Ventes_Historique", ref_ventes),
+    ):
+        describe_row(_table, _ref, diag_ref, _libelle_tour)
 
-    def get_h(col, def_v=0.0): return float(df_hist[col].iloc[0]) if not df_hist.empty and col in df_hist.columns else def_v
-    def get_m(col, def_v=0): return int(df_machines[col].iloc[0]) if not df_machines.empty and col in df_machines.columns else def_v
+    df_hist = pd.DataFrame([ref_hist.data]) if ref_hist.found else pd.DataFrame()
+    df_machines = pd.DataFrame([ref_machines.data]) if ref_machines.found else pd.DataFrame()
+    donnees_rh = ref_rh.data
+    donnees_mkg = ref_mkg.data
+
+    # Les décisions mémorisées dans st.session_state ne sont valables QUE pour le contexte
+    # (mois simulé + données de référence) qui les a produites. Sans cela, changer de mois
+    # conservait les réglages du mois précédent et ignorait les données M-1 enregistrées en base.
+    _sig_contexte = context_signature(
+        tour_id_actif,
+        ref_hist.tour_utilise, ref_machines.tour_utilise, ref_rh.tour_utilise,
+        ref_mkg.tour_utilise, ref_ventes.tour_utilise,
+        ref_hist.data, ref_machines.data, ref_rh.data, ref_mkg.data, volumes_ref,
+    )
+    if st.session_state.get("_sim_ctx_signature") != _sig_contexte:
+        reinitialiser_decisions_simulation()
+        st.session_state.pop("ui_scenario_selection", None)
+        st.session_state["_sim_ctx_signature"] = _sig_contexte
+    st.session_state["_vol_ref"] = dict(volumes_ref)
+
+    def get_h(col, def_v=0.0): return ref_number(ref_hist.data, col, def_v)
+    def get_m(col, def_v=0): return ref_int(ref_machines.data, col, def_v)
 
     score_rh_prod = calculer_score_rh_prod_dynamique(donnees_rh, ratio_optimum_rh)
 
@@ -919,32 +1081,32 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         with st.container(border=True):
             st.markdown("**💰 Prix catalogue**")
             c_m1, c_m2, c_m3, c_m4, c_m5 = st.columns(5)
-            prix_s3 = c_m1.number_input("Shorty 3 (€)", key="sim_pm_s3", value=float(donnees_mkg.get('Prix_S3', 115.0)))
-            prix_i3 = c_m2.number_input("Integral 3 (€)", key="sim_pm_i3", value=float(donnees_mkg.get('Prix_I3', 190.0)))
-            prix_s5 = c_m3.number_input("Shorty 5 (€)", key="sim_pm_s5", value=float(donnees_mkg.get('Prix_S5', 220.0)))
-            prix_i5 = c_m4.number_input("Integral 5 (€)", key="sim_pm_i5", value=float(donnees_mkg.get('Prix_I5', 280.0)))
-            prix_i7 = c_m5.number_input("Integral 7 (€)", key="sim_pm_i7", value=float(donnees_mkg.get('Prix_I7', 375.0)))
+            prix_s3 = c_m1.number_input("Shorty 3 (€)", key="sim_pm_s3", value=ref_number(donnees_mkg, 'Prix_S3', 115.0))
+            prix_i3 = c_m2.number_input("Integral 3 (€)", key="sim_pm_i3", value=ref_number(donnees_mkg, 'Prix_I3', 190.0))
+            prix_s5 = c_m3.number_input("Shorty 5 (€)", key="sim_pm_s5", value=ref_number(donnees_mkg, 'Prix_S5', 220.0))
+            prix_i5 = c_m4.number_input("Integral 5 (€)", key="sim_pm_i5", value=ref_number(donnees_mkg, 'Prix_I5', 280.0))
+            prix_i7 = c_m5.number_input("Integral 7 (€)", key="sim_pm_i7", value=ref_number(donnees_mkg, 'Prix_I7', 375.0))
 
         with st.container(border=True):
             st.markdown("**📣 Marketing**")
-            budget_pub_marque = sim_number("Budget Pub Marque HT (€)", "sim_pm_pub_marque", float(donnees_mkg.get('Budget_Marque', 60500.0)), step=500.0)
+            budget_pub_marque = sim_number("Budget Pub Marque HT (€)", "sim_pm_pub_marque", ref_number(donnees_mkg, 'Budget_Marque', 60500.0), step=500.0)
             c_pub1, c_pub2, c_pub3, c_pub4, c_pub5 = st.columns(5)
-            pub_s3 = c_pub1.number_input("PLV S3 (€)", key="sim_pub_s3", value=float(donnees_mkg.get('Pub_S3', 3100.0)), step=100.0)
-            pub_i3 = c_pub2.number_input("PLV I3 (€)", key="sim_pub_i3", value=float(donnees_mkg.get('Pub_I3', 4100.0)), step=100.0)
-            pub_s5 = c_pub3.number_input("PLV S5 (€)", key="sim_pub_s5", value=float(donnees_mkg.get('Pub_S5', 3200.0)), step=100.0)
-            pub_i5 = c_pub4.number_input("PLV I5 (€)", key="sim_pub_i5", value=float(donnees_mkg.get('Pub_I5', 4200.0)), step=100.0)
-            pub_i7 = c_pub5.number_input("PLV I7 (€)", key="sim_pub_i7", value=float(donnees_mkg.get('Pub_I7', 3500.0)), step=100.0)
+            pub_s3 = c_pub1.number_input("PLV S3 (€)", key="sim_pub_s3", value=ref_number(donnees_mkg, 'Pub_S3', 3100.0), step=100.0)
+            pub_i3 = c_pub2.number_input("PLV I3 (€)", key="sim_pub_i3", value=ref_number(donnees_mkg, 'Pub_I3', 4100.0), step=100.0)
+            pub_s5 = c_pub3.number_input("PLV S5 (€)", key="sim_pub_s5", value=ref_number(donnees_mkg, 'Pub_S5', 3200.0), step=100.0)
+            pub_i5 = c_pub4.number_input("PLV I5 (€)", key="sim_pub_i5", value=ref_number(donnees_mkg, 'Pub_I5', 4200.0), step=100.0)
+            pub_i7 = c_pub5.number_input("PLV I7 (€)", key="sim_pub_i7", value=ref_number(donnees_mkg, 'Pub_I7', 3500.0), step=100.0)
 
         budgets_p_dict = {'Shorty 3': pub_s3, 'Integral 3': pub_i3, 'Shorty 5': pub_s5, 'Integral 5': pub_i5, 'Integral 7': pub_i7}
 
         with st.container(border=True):
             st.markdown("**📦 Volumes vendus prévisionnels**")
             col_vs1, col_vs2, col_vs3, col_vs4, col_vs5 = st.columns(5)
-            sim_v_s3 = col_vs1.number_input("Shorty 3 (u)", key="sim_s3", value=st.session_state.setdefault("sim_s3", 50), min_value=0)
-            sim_v_i3 = col_vs2.number_input("Integral 3 (u)", key="sim_i3", value=st.session_state.setdefault("sim_i3", 500), min_value=0)
-            sim_v_s5 = col_vs3.number_input("Shorty 5 (u)", key="sim_s5", value=st.session_state.setdefault("sim_s5", 100), min_value=0)
-            sim_v_i5 = col_vs4.number_input("Integral 5 (u)", key="sim_i5", value=st.session_state.setdefault("sim_i5", 1500), min_value=0)
-            sim_v_i7 = col_vs5.number_input("Integral 7 (u)", key="sim_i7", value=st.session_state.setdefault("sim_i7", 2500), min_value=0)
+            sim_v_s3 = col_vs1.number_input("Shorty 3 (u)", key="sim_s3", value=st.session_state.setdefault("sim_s3", volumes_ref["s3"]), min_value=0)
+            sim_v_i3 = col_vs2.number_input("Integral 3 (u)", key="sim_i3", value=st.session_state.setdefault("sim_i3", volumes_ref["i3"]), min_value=0)
+            sim_v_s5 = col_vs3.number_input("Shorty 5 (u)", key="sim_s5", value=st.session_state.setdefault("sim_s5", volumes_ref["s5"]), min_value=0)
+            sim_v_i5 = col_vs4.number_input("Integral 5 (u)", key="sim_i5", value=st.session_state.setdefault("sim_i5", volumes_ref["i5"]), min_value=0)
+            sim_v_i7 = col_vs5.number_input("Integral 7 (u)", key="sim_i7", value=st.session_state.setdefault("sim_i7", volumes_ref["i7"]), min_value=0)
             ca_prev_sim = (sim_v_s3 * prix_s3) + (sim_v_i3 * prix_i3) + (sim_v_s5 * prix_s5) + (sim_v_i5 * prix_i5) + (sim_v_i7 * prix_i7)
             st.metric("CA prévisionnel issu du mix prix × volumes", fmt_eur(ca_prev_sim))
 
@@ -967,11 +1129,11 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         with st.container(border=True):
             st.markdown("**🏭 Quantités à produire**")
             c_q1, c_q2, c_q3, c_q4, c_q5 = st.columns(5)
-            ord_s3 = c_q1.number_input("Shorty 3", key="ord_s3", value=50, min_value=0, step=10)
-            ord_i3 = c_q2.number_input("Integral 3", key="ord_i3", value=500, min_value=0, step=10)
-            ord_s5 = c_q3.number_input("Shorty 5", key="ord_s5", value=100, min_value=0, step=10)
-            ord_i5 = c_q4.number_input("Integral 5", key="ord_i5", value=1500, min_value=0, step=10)
-            ord_i7 = c_q5.number_input("Integral 7", key="ord_i7", value=2500, min_value=0, step=10)
+            ord_s3 = c_q1.number_input("Shorty 3", key="ord_s3", value=volumes_ref["s3"], min_value=0, step=10)
+            ord_i3 = c_q2.number_input("Integral 3", key="ord_i3", value=volumes_ref["i3"], min_value=0, step=10)
+            ord_s5 = c_q3.number_input("Shorty 5", key="ord_s5", value=volumes_ref["s5"], min_value=0, step=10)
+            ord_i5 = c_q4.number_input("Integral 5", key="ord_i5", value=volumes_ref["i5"], min_value=0, step=10)
+            ord_i7 = c_q5.number_input("Integral 7", key="ord_i7", value=volumes_ref["i7"], min_value=0, step=10)
             ordres_prod_dict = {'Shorty 3': ord_s3, 'Integral 3': ord_i3, 'Shorty 5': ord_s5, 'Integral 5': ord_i5, 'Integral 7': ord_i7}
             st.metric("Volume total à produire", f"{sum(ordres_prod_dict.values()):,.0f} unités".replace(",", " "))
 
@@ -1123,7 +1285,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         # ================================================================
         # Le mois de référence est toujours le Tour_ID précédent.
         # La trésorerie de départ est LE SOLDE FINAL BANCAIRE RÉEL de M-1.
-        etat_fin_m1, finances_manuelles, periode_m1 = charger_etat_financier_m1(
+        etat_fin_m1, finances_manuelles, periode_m1, tour_etat_fin = charger_etat_financier_m1(
             tour_id_precedent,
             tour_id_actif,
         )
@@ -1145,6 +1307,9 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             bfr_precedent_m1 = float(etat_fin_m1.bfr_reel) if etat_fin_m1.bfr_reel is not None else None
         if treso_initiale_source is None:
             treso_initiale_source = manuel_decimal("Disponibilites_Banque")
+        treso_ouverture_connue = treso_initiale_source is not None
+        if not treso_ouverture_connue:
+            diag_ref.alert("Solde bancaire d'ouverture introuvable : la trésorerie projetée part de 0 € et n'est PAS fiable.")
 
         resultat_historique_source = etat_fin_m1.resultat_net
         dotations_prev_source = etat_fin_m1.dotations_amortissements
@@ -1491,15 +1656,30 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.markdown("**⚡ Tableau de bord de décision — résultat de la simulation courante**")
             k1, k2, k3, k4, k5, k6 = st.columns(6)
             k1.metric("CA prévisionnel", fmt_eur(ca_prev_sim))
-            k2.metric("Résultat net", fmt_eur(projection.resultat_net), delta=f"{float(projection.resultat_net) - float(resultat_historique or 0.0):+,.0f} € vs M-1".replace(",", " "))
+            k2.metric(
+                "Résultat net", fmt_eur(projection.resultat_net),
+                delta=(f"{float(projection.resultat_net) - float(resultat_historique):+,.0f} € vs M-1".replace(",", " ")
+                       if resultat_historique is not None else None),
+            )
             k3.metric("Trésorerie finale", fmt_eur(projection.tresorerie_finale))
             k4.metric("Dette finale", fmt_eur(projection.dette_bancaire_finale))
             k5.metric("BFR final", fmt_eur(bfr_projection_detail.bfr))
             k6.metric("Profitabilité", f"{taux_profitabilite:.1f} %")
-            if projection.tresorerie_finale < 0:
+            if not treso_ouverture_connue:
+                st.warning("⚠️ Pont M-1 incomplet : solde bancaire d'ouverture introuvable en base. Trésorerie, dette et variation de BFR affichées ne sont pas fiables.")
+            elif projection.tresorerie_finale < 0:
                 st.error(f"⚠️ Découvert projeté : {fmt_eur(projection.tresorerie_finale)}")
             else:
                 st.success("✅ Trésorerie projetée positive.")
+
+        with diag_box.container():
+            _titre_diag = "🧭 Période de référence utilisée" + (f" — ⚠️ {len(diag_ref.alerts)} alerte(s)" if diag_ref.alerts else " — ✅ cohérente")
+            with st.expander(_titre_diag, expanded=bool(diag_ref.alerts)):
+                st.caption(f"Mois simulé : {periode_db} (tour {tour_id_actif}) • référence demandée : tour {tour_id_precedent} ({period_for_tour(tour_id_precedent)}).")
+                for _a in diag_ref.alerts:
+                    st.warning(_a)
+                for _n in diag_ref.notes:
+                    st.caption("• " + _n)
 
         st.divider()
         st.markdown("##### 💶 Synthèse Financière & Situation Globale de l'Entreprise")
