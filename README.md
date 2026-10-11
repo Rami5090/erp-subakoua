@@ -1,33 +1,30 @@
-v2.8.9 - Fix NameError diagnostic missing_sales_periods and stabilize anchor-period diagnostics.
+# ERP Subakoua — v2.9.1
 
-# ERP Subakoua — v2.8
+## Correctifs de l’optimiseur stratégique
 
-## Stack
-- Streamlit
-- MySQL Aiven
-- SQLAlchemy + PyMySQL
-- Scraper API-first Subakoua
-- Prévision + backtest + optimiseur stratégique exploratoire
+- Le benchmark concurrentiel fusionne maintenant les payloads des études comparatives `pevc*` au lieu de s’arrêter à une première ligne correspondant seulement à l’entreprise propre.
+- Le nombre de concurrents est calculé à partir des entreprises distinctes exploitées, en excluant le numéro d’entreprise sélectionné. Le tableau s’appuie sur la dernière observation connue avant l’ancrage.
+- L’historique de calibration peut inclure les périodes disponibles uniquement dans `erp_etudes`.
+- Le chargement de capacité utilise `Tour_ID` (clé réelle de `Parc_Machines_Mensuel`) au lieu d’une colonne `id` inexistante. Les requêtes machines et temps d’atelier sont isolées : une erreur dans l’une ne force plus les deux familles en fallback.
+- Les noms `Cond` / `Conditionnement`, accents et identifiants produit API sont normalisés. Les paramètres réellement lus en base sont indiqués dans la source de capacité à l’écran.
+- La demande excédant la capacité est maintenant plafonnée au volume industriel réalisable au lieu d’éliminer tous les scénarios. Le résultat expose la PDM potentielle, la PDM réalisable, le taux de service, la pression sur les ateliers et la demande non servie. Le dépassement du budget reste une contrainte bloquante.
+- Le diagnostic du benchmark indique la période du snapshot, les lignes brutes et le nombre de concurrents réellement exploitables.
 
-## v2.8 — calibration historique & décision roulante
-- Le pilotage s'ancre automatiquement sur le dernier mois de ventes réellement observé.
-- Les périodes futures éventuellement présentes dans la base sont exclues de la calibration.
-- Backtest hors-échantillon un pas en avant des modèles de forecast.
-- Sélection du modèle par WAPE : niveau saisonnier, tendance amortie ou Holt amorti.
-- Forecast roulant : mois réel d'ancrage + 12 mois futurs.
-- La prochaine décision est explicitement calculée (ex. juin réel → juillet à décider).
-- L'optimiseur stratégique réutilise le même ancrage et le même forecast roulant.
+## Achat documentaire et routage URL
 
-## Interprétation
-Avec six mois d'historique, le système peut comparer les modèles hors-échantillon mais ne dispose pas encore d'un historique suffisant pour identifier proprement une saisonnalité annuelle statistique 12 mois. La saisonnalité structurelle fournie par Subakoua reste donc une information explicite du modèle. Les effets prix/publicité/qualité restent des sensibilités descriptives tant qu'ils ne sont pas validés statistiquement.
+La logique URL directe des études, configurée dans `study_ui_routes.json`, est conservée de la v2.9.0. Ce correctif ne modifie pas le parcours d’achat.
 
-## Secrets
-Ne jamais pousser `.env` ou les secrets Streamlit. Utiliser Streamlit Secrets en production.
+## Vérification
+
+Tests automatisés : **37/37 réussis**.
 
 ## Déploiement
+
 ```powershell
+cd "C:\Users\ramih\Documents\erp-subakoua-git"
 git add .
-git commit -m "Ajout calibration backtest et decision roulante v2.8"
+git commit -m "Fix concurrents et contraintes capacite optimiseur v2.9.1"
 git push
 ```
-# v2.8.3 — robust study purchase UI lookup
+
+Ne jamais inclure `.env` ni des identifiants de connexion dans Git.

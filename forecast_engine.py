@@ -710,50 +710,104 @@ def extract_competitive_snapshot(
     study_data: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
     anchor_period: str | None = None,
 ) -> dict[str, Any]:
+    """Extrait le snapshot concurrentiel en fusionnant les sources d'une période.
+
+    Correction importante : certaines périodes ne contiennent dans la source legacy
+    qu'une ligne propre, et certains payloads API comportent aussi une clé
+    ``Entreprise`` isolée. L'ancien code traitait cette première ligne comme un
+    snapshot complet et n'allait jamais chercher les études concurrentielles. On
+    priorise désormais les études ``pevc*``/sections explicitement concurrentielles
+    et on fusionne leurs entreprises au lieu de s'arrêter au premier payload.
+    """
     study_data = study_data or {}
     periods = ordered_periods(set(period_data) | set(study_data))
     if not periods:
-        return {"period": None, "rows": [], "own": None, "total_market": None, "share": None}
+        return {"period": None, "rows": [], "own": None, "total_market": None, "share": None,
+                "segment_share": None, "global_share": None, "share_scope": None}
     period = anchor_period if anchor_period in periods else (_latest_available_period({p: {} for p in periods}, anchor_period) or periods[-1])
 
     rows = _extract_legacy_competition(period_data, period, own_company_number)
-    # L'API peut aussi fournir la concurrence sous un payload d'étude. On cherche
-    # toute structure contenant des lignes avec un numéro d'entreprise.
-    if not rows:
+    has_competitor = any(_num(r.get("entreprise")) is not None and int(float(r["entreprise"])) != own_company_number for r in rows)
+
+    def merge_company_rows(*groups: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        merged: dict[int, dict[str, Any]] = {}
+        for group in groups:
+            for raw in group or []:
+                try:
+                    company = int(float(raw.get("entreprise")))
+                except Exception:
+                    continue
+                rec = merged.setdefault(company, {
+                    "entreprise": company, "ventes": None, "part_marche": None,
+                    "part_marche_valeur": None, "prix": None, "qualite": None,
+                    "chiffre_affaires": None, "publicite": None,
+                    "publicite_marque": None, "publicite_produit": None,
+                    "axe_1": None, "axe_2": None, "is_own": company == own_company_number,
+                })
+                for key, value in raw.items():
+                    if value is not None and value != "":
+                        # Les données concurrentielles spécialisées, ajoutées en dernier,
+                        # peuvent corriger les valeurs du module général.
+                        rec[key] = value
+        return sorted(merged.values(), key=lambda r: int(r["entreprise"]))
+
+    # Ne cherche les études API que si la source legacy ne contient pas les concurrents.
+    if not has_competitor:
         api_periods = [p for p in ordered_periods(study_data) if period_index(p) <= period_index(period)]
+        competition_section_names = [
+            "Performance commerciale", "Facteurs clés", "Décisions marketing",
+            "Évolution marketing", "Comparaison des parts de marché",
+            "Comparaison des publicités de marque",
+            "Comparaison des ventes des produits finis", "Comparaison des prix de vente",
+        ]
         for pp in reversed(api_periods):
-            for payload in (study_data.get(pp, {}) or {}).values():
-                if isinstance(payload, Mapping):
-                    api_rows = _competition_rows_from_any(payload, own_company_number)
-                    if api_rows:
-                        rows = api_rows
-                        period = pp
-                        break
-            if rows:
+            payloads = study_data.get(pp, {}) or {}
+            groups: list[list[dict[str, Any]]] = []
+            for study_id, payload in payloads.items():
+                if not isinstance(payload, Mapping):
+                    continue
+                sid = str(study_id).lower()
+                named_sections = _find_sections(payload, competition_section_names)
+                # Les identifiants pevc sont le préfixe des études comparatives du jeu.
+                # Pour les autres études, ne parse que les sections concurrentielles explicites.
+                if sid.startswith("pevc"):
+                    candidate_rows = _competition_rows_from_any(payload, own_company_number)
+                    if candidate_rows:
+                        groups.append(candidate_rows)
+                elif named_sections:
+                    for section in named_sections:
+                        candidate_rows = _competition_rows_from_any(section, own_company_number)
+                        if candidate_rows:
+                            groups.append(candidate_rows)
+            api_rows = merge_company_rows(*groups) if groups else []
+            api_has_competitors = any(int(r.get("entreprise", -1)) != own_company_number for r in api_rows)
+            if api_has_competitors:
+                rows = merge_company_rows(rows, api_rows)
+                period = pp
                 break
 
-    own = next((r for r in rows if r.get("is_own")), None)
+    own = next((r for r in rows if r.get("is_own") or _num(r.get("entreprise")) == own_company_number), None)
     total_market = None
     share = None
     if rows:
-        sales_vals = [float(r["ventes"]) for r in rows if r.get("ventes") is not None]
+        sales_vals = [float(r["ventes"]) for r in rows if _num(r.get("ventes")) is not None]
         if sales_vals:
             total_market = float(sum(sales_vals))
         if own:
             pct = _num(own.get("part_marche"))
             if pct is not None:
                 share = pct / 100.0 if pct > 1 else pct
-        if share is None and own and total_market and (own.get("ventes") or 0) > 0:
+        if share is None and own and total_market and (_num(own.get("ventes")) or 0) > 0:
             share = float(own["ventes"]) / total_market
 
-    # Tableau de bord API : source privilégiée pour la PDM de l'entreprise.
+    # Tableau de bord API : source privilégiée pour la PDM globale de l'entreprise.
     monitoring = _extract_api_monitoring(period, study_data)
     if monitoring is None and anchor_period in PERIOD_INDEX:
         eligible_api = [p for p in ordered_periods(study_data) if period_index(p) <= period_index(anchor_period)]
         for pp in reversed(eligible_api):
             monitoring = _extract_api_monitoring(pp, study_data)
             if monitoring is not None:
-                period = pp
+                # Ne remplace pas la période de benchmark concurrentiel par celle du monitoring.
                 break
     if own is None and monitoring is not None:
         own_sales_history = extract_own_sales_history(period_data, study_data=study_data)
@@ -764,41 +818,40 @@ def extract_competitive_snapshot(
         own = {"entreprise": own_company_number, "ventes": own_sales or 0.0,
                "part_marche": (monitoring.get("market_share") or 0.0) * 100,
                "part_marche_valeur": None, "prix": None, "qualite": None,
-               "chiffre_affaires": None, "publicite": None, "axe_1": None, "axe_2": None,
-               "is_own": True}
-        rows.append(own)
+               "chiffre_affaires": None, "publicite": None, "publicite_marque": None,
+               "publicite_produit": None, "axe_1": None, "axe_2": None, "is_own": True}
+        rows = merge_company_rows(rows, [own])
     if monitoring and monitoring.get("market_share") is not None:
         share = float(monitoring["market_share"])
-    if total_market is None and own and share and own.get("ventes", 0) > 0:
+    if total_market is None and own and share and _num(own.get("ventes")) and own["ventes"] > 0:
         total_market = float(own["ventes"]) / float(share)
+
     segment_share = None
     segment_total_market = total_market
-    if rows and own:
+    if own:
         pct_seg = _num(own.get("part_marche"))
-        if pct_seg is not None:
+        # Ne traite pas la part issue du monitoring global comme une PDM segmentielle
+        # si la ligne propre est synthétique et ne provient pas du benchmark.
+        is_synthetic_own = not any(_num(r.get("entreprise")) is not None and int(float(r["entreprise"])) == own_company_number for r in _extract_legacy_competition(period_data, period, own_company_number)) and not any(
+            str(sid).lower().startswith("pevc") for sid in (study_data.get(period, {}) or {})
+        )
+        if pct_seg is not None and not is_synthetic_own:
             segment_share = pct_seg / 100.0 if pct_seg > 1 else pct_seg
         if segment_total_market is None:
-            sales_vals = [float(r["ventes"]) for r in rows if r.get("ventes") is not None]
+            sales_vals = [float(r["ventes"]) for r in rows if _num(r.get("ventes")) is not None]
             if sales_vals:
                 segment_total_market = float(sum(sales_vals))
     global_share = float(monitoring["market_share"]) if monitoring and monitoring.get("market_share") is not None else None
     global_total_market = None
-    if monitoring is not None and global_share is not None and own and own.get("ventes") is not None and own["ventes"] > 0:
+    if monitoring is not None and global_share is not None and own and _num(own.get("ventes")) and own["ventes"] > 0:
         global_total_market = float(own["ventes"]) / global_share if global_share > 0 else None
     share_scope = "overall_monitoring" if global_share is not None else ("competitive_segment" if segment_share is not None else None)
     return {
-        "period": period,
-        "rows": rows,
-        "own": own,
-        # Compatibilité historique : share/total_market restent les valeurs
-        # du périmètre effectivement observé. Les champs global_* sont la
-        # seule source utilisée comme PDM globale par l'interface.
+        "period": period, "rows": rows, "own": own,
         "total_market": global_total_market if global_share is not None else segment_total_market,
         "share": global_share if global_share is not None else segment_share,
-        "share_scope": share_scope,
-        "global_share": global_share,
-        "global_total_market": global_total_market,
-        "segment_share": segment_share,
+        "share_scope": share_scope, "global_share": global_share,
+        "global_total_market": global_total_market, "segment_share": segment_share,
         "segment_total_market": segment_total_market,
         "segment_own": own if segment_share is not None else None,
     }

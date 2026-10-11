@@ -27,6 +27,7 @@ from optimizer_engine import (
     Calibration,
     CapacityProfile,
     build_competitive_history,
+    latest_competitor_frame,
     calibrate_descriptive_response,
     evaluate_scenario,
     generate_candidate_grid,
@@ -71,25 +72,61 @@ def load_data(engine):
 
 
 def load_capacity(engine) -> CapacityProfile:
-    machines={"Decoupe":10,"Assemblage":16,"Conditionnement":4}
-    times={p:dict(v) for p,v in DEFAULT_TIMES.items()}
-    source=[]
+    # Les valeurs de secours sont utilisées atelier par atelier, jamais en remplacement
+    # de toutes les données si une seule requête SQL échoue.
+    default_machines = {"Decoupe": 10, "Assemblage": 16, "Conditionnement": 4}
+    machines = dict(default_machines)
+    times = {p: dict(v) for p, v in DEFAULT_TIMES.items()}
+    sources = []
+    errors = []
     try:
         with engine.connect() as conn:
-            dfm=pd.read_sql(text("SELECT Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond FROM Parc_Machines_Mensuel ORDER BY id DESC LIMIT 1"),conn)
-            if not dfm.empty:
-                machines={"Decoupe":int(dfm.iloc[0]["Nb_Machines_Decoupe"]),"Assemblage":int(dfm.iloc[0]["Nb_Machines_Assemblage"]),"Conditionnement":int(dfm.iloc[0]["Nb_Machines_Cond"])}
-                source.append("machines BDD")
-            dft=pd.read_sql(text("SELECT produit, atelier, temps_normal FROM Parametres_TempsAteliers"),conn)
-            if not dft.empty:
-                times={p:{} for p in PRODUCTS}
-                for _,r in dft.iterrows():
-                    if r["produit"] in times:
-                        times[r["produit"]][str(r["atelier"])] = float(r["temps_normal"])
-                source.append("temps BDD")
-    except Exception:
-        pass
-    return CapacityProfile(machines=machines,times=times,source=" + ".join(source) if source else "fallback ERP")
+            # Parc_Machines_Mensuel possède Tour_ID comme clé, pas de colonne id.
+            dfm = pd.read_sql(text("SELECT Tour_ID, Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond FROM Parc_Machines_Mensuel ORDER BY Tour_ID DESC LIMIT 1"), conn)
+        if not dfm.empty:
+            row = dfm.iloc[0]
+            machines = {
+                "Decoupe": max(0, int(row["Nb_Machines_Decoupe"] or 0)),
+                "Assemblage": max(0, int(row["Nb_Machines_Assemblage"] or 0)),
+                "Conditionnement": max(0, int(row["Nb_Machines_Cond"] or 0)),
+            }
+            sources.append(f"Parc_Machines_Mensuel · Tour {int(row['Tour_ID'])}")
+        else:
+            errors.append("Parc_Machines_Mensuel vide")
+    except Exception as exc:
+        errors.append(f"machines: {type(exc).__name__}: {exc}")
+
+    try:
+        with engine.connect() as conn:
+            dft = pd.read_sql(text("SELECT produit, atelier, temps_normal FROM Parametres_TempsAteliers"), conn)
+        if not dft.empty:
+            product_aliases = {
+                "SHORTY_C": "Shorty 3", "MONO_C": "Integral 3",
+                "SHORTY_T": "Shorty 5", "MONO_T": "Integral 5", "MONO_F": "Integral 7",
+            }
+            atelier_aliases = {
+                "cond": "Conditionnement", "conditionnement": "Conditionnement",
+                "decoupe": "Decoupe", "découpe": "Decoupe", "assemblage": "Assemblage",
+            }
+            for _, row in dft.iterrows():
+                prod_raw = str(row.get("produit", "")).strip()
+                prod = product_aliases.get(prod_raw, prod_raw)
+                atelier_raw = str(row.get("atelier", "")).strip()
+                atelier = atelier_aliases.get(atelier_raw.lower(), atelier_aliases.get(atelier_raw, atelier_raw))
+                value = _num(row.get("temps_normal"))
+                if prod in times and atelier in {"Decoupe", "Assemblage", "Conditionnement"} and value is not None and value >= 0:
+                    times[prod][atelier] = float(value)
+            sources.append(f"Parametres_TempsAteliers · {len(dft)} lignes")
+        else:
+            errors.append("Parametres_TempsAteliers vide")
+    except Exception as exc:
+        errors.append(f"temps ateliers: {type(exc).__name__}: {exc}")
+
+    source = " + ".join(sources) if sources else "fallback ERP"
+    if errors:
+        source += " · secours partiel: " + "; ".join(errors)
+    return CapacityProfile(machines=machines, times=times, source=source)
+
 
 engine=get_engine()
 if engine is None:
@@ -125,8 +162,8 @@ selected_method=select_backtest_method(backtest_summary)
 forecast_df, _ = rolling_forecast_12m(sales, struct, anchor, method=selected_method, horizon=12)
 competitive=extract_competitive_snapshot(period_data,own_company,study_data=study_data,anchor_period=anchor)
 
-if forecast_df.empty or not competitive.get("rows"):
-    st.warning("Le moteur a besoin d'un forecast de ventes et d'un benchmark concurrentiel pour construire des scénarios.")
+if forecast_df.empty:
+    st.warning("Le moteur a besoin d'un forecast de ventes exploitable pour construire des scénarios.")
     st.stop()
 
 rows=competitive.get("rows") or []
@@ -144,26 +181,32 @@ if segment_units is not None and not sales.empty:
             segment_product=candidates[0]
 segment_product=segment_product or PRODUCTS[0]
 
-# Historique concurrentiel pour calibration descriptive.
+# Historique concurrentiel : inclut les périodes présentes uniquement dans erp_etudes.
 def snap_for_period(p):
-    return extract_competitive_snapshot(period_data,own_company,study_data=study_data,anchor_period=p)
+    return extract_competitive_snapshot(period_data, own_company, study_data=study_data, anchor_period=p)
 
-hist=build_competitive_history(period_data,own_company,snap_for_period)
-# Complète les colonnes publicité produit depuis les observations brutes du snapshot courant quand disponibles.
-# Si elles ne le sont pas, on conserve 0 et on affiche un avertissement méthodologique.
+history_periods = ordered_periods(set(period_data) | set(study_data))
+hist = build_competitive_history(period_data, own_company, snap_for_period, periods=history_periods)
 if "publicite_produit" not in hist.columns:
-    hist["publicite_produit"]=0.0
+    hist["publicite_produit"] = 0.0
+cal = calibrate_descriptive_response(hist)
 
-cal=calibrate_descriptive_response(hist)
-competitors=pd.DataFrame()
-if rows:
-    competitors=pd.DataFrame([{
-        "entreprise":r.get("entreprise"),
-        "prix":r.get("prix"),
-        "qualite":r.get("qualite"),
-        "publicite":r.get("publicite_marque", r.get("publicite")),
-        "publicite_produit":r.get("publicite_produit") or 0.0,
-    } for r in rows if not r.get("is_own") and r.get("prix") is not None and r.get("qualite") is not None and r.get("publicite") is not None])
+# La source d'ancrage peut ne contenir que la ligne propre (ex. tableau de bord).
+# On construit alors le benchmark à partir de la dernière observation de chaque
+# concurrent connue avant l'ancrage, plutôt que de faire len(rows)-1.
+competitors = latest_competitor_frame(hist, own_company, anchor)
+if competitors.empty and rows:
+    competitors = pd.DataFrame([{
+        "entreprise": r.get("entreprise"),
+        "prix": r.get("prix"),
+        "qualite": r.get("qualite"),
+        "publicite": r.get("publicite_marque", r.get("publicite")),
+        "publicite_produit": r.get("publicite_produit") or 0.0,
+    } for r in rows if not r.get("is_own")
+      and r.get("prix") is not None and r.get("qualite") is not None
+      and r.get("publicite_marque", r.get("publicite")) is not None])
+if competitors.empty:
+    competitors = pd.DataFrame(columns=["entreprise", "prix", "qualite", "publicite", "publicite_produit"])
 
 cap=load_capacity(engine)
 
@@ -173,8 +216,16 @@ actual_sales_row=sales_to_anchor.tail(1)
 actual_total=float(actual_sales_row[PRODUCTS].sum(axis=1).iloc[0]) if not actual_sales_row.empty else 0.0
 c1.metric("Ventes actuelles",f"{actual_total:,.0f} u")
 c2.metric("PDM segment observée",f"{segment_share*100:.2f} %" if segment_share is not None else "—")
-c3.metric("Concurrents",str(max(0,len(rows)-1)))
+competitor_count = int(competitors["entreprise"].nunique()) if not competitors.empty and "entreprise" in competitors.columns else 0
+c3.metric("Concurrents reconnus", str(competitor_count), help="Entreprises distinctes autres que l'équipe sélectionnée, à partir du dernier benchmark exploitable avant l'ancrage.")
 c4.metric("Calibration",f"{cal.n_obs} obs / {cal.n_periods} période(s)" if cal else "Non disponible")
+with st.expander("Diagnostic des concurrents et des sources", expanded=(competitor_count == 0)):
+    st.write(f"Période du snapshot sélectionné : **{competitive.get('period') or 'non déterminée'}**")
+    st.write(f"Lignes concurrentielles brutes du snapshot : **{len(rows)}**")
+    st.write(f"Concurrents exploitables (prix + qualité + publicité) : **{competitor_count}**")
+    st.write(f"Historique de calibration : **{len(hist)} observations**, **{hist['entreprise'].nunique() if not hist.empty else 0} entreprises**")
+    if competitor_count == 0:
+        st.warning("Aucune ligne concurrentielle complète n'a été reconstruite. Vérifie que les études de comparaison sont bien enregistrées dans erp_etudes pour l'ancrage ou un mois antérieur.")
 if not backtest_summary.empty:
     best_wape=float(backtest_summary.iloc[0]["WAPE"])*100.0
     st.info(f"Validation forecast : méthode retenue **{selected_method}** · WAPE hors-échantillon **{best_wape:.1f} %** sur {len(sales_to_anchor)} période(s) réelles. Décision préparée pour **{period_label_from_index(period_index(anchor)+1)}**.")
@@ -207,8 +258,18 @@ st.caption(f"Capacité : {cap.machines} machines ; 9 600 min/machine/mois. Sourc
 baseline_scenario={"price":price,"quality":quality,"brand_ads":brand,"product_ads":prodads}
 competitors.attrs["baseline_scenario"]=baseline_scenario
 base_eval=evaluate_scenario(forecast_df,segment_product,segment_share,segment_units,cal,competitors,baseline_scenario,budget,cap)
-if not base_eval["feasible"]:
-    st.warning("La configuration actuelle dépasse au moins une contrainte marketing/capacité sur l'horizon projeté.")
+if not base_eval["budget_feasible"]:
+    st.warning("La configuration actuelle dépasse le budget marketing mensuel.")
+if base_eval["max_demand_capacity_utilization"] > 1.0 + 1e-9:
+    ateliers = ", ".join(base_eval["capacity_bottlenecks"]) or "un atelier"
+    st.warning(
+        f"La demande prévue dépasse la capacité de {ateliers}. Le moteur plafonne désormais la production à la capacité, "
+        f"avec environ {base_eval['average_unserved_units_month']:,.0f} unités de demande non servies par mois en moyenne "
+        f"({base_eval['service_rate']*100:.1f} % de la demande du produit segment suivi servie). Ces scénarios restent comparables, "
+        "mais leur PDM réalisable est corrigée par cette limite."
+    )
+elif base_eval["max_demand_capacity_utilization"] > 0.90:
+    st.info(f"La demande utilise jusqu'à {base_eval['max_demand_capacity_utilization']*100:.1f} % de la capacité avant plafonnement.")
 
 quality_values=sorted(set([max(0,base_quality-10),max(0,base_quality-5),base_quality,min(100,base_quality+5),min(100,base_quality+10)]))
 candidates=generate_candidate_grid(baseline_scenario,budget,quality_values)
@@ -225,27 +286,31 @@ if st.button("🚀 Lancer l'optimisation", type="primary", width="stretch"):
     progress.progress(1.0)
     ranked=rank_scenarios(evaluated,15)
     if ranked.empty:
-        st.error("Aucun scénario réalisable sous les contraintes actuelles.")
+        if competitors.empty:
+            st.error("Aucun scénario n'a pu être évalué : benchmark concurrentiel incomplet. Les volumes de demande/capacité restent diagnostiquables, mais la PDM ne peut pas être estimée correctement.")
+        else:
+            st.error("Aucun scénario ne respecte le budget ou une capacité indispensable est nulle. Consulte le diagnostic ci-dessus et les paramètres de capacité.")
         st.stop()
     st.subheader("🏆 Scénarios les plus performants")
     st.dataframe(ranked, width="stretch", hide_index=True)
 
     best=ranked.iloc[0].to_dict()
-    st.success(f"Meilleur scénario exploratoire : PDM segmentielle estimée à {best['PDM segment prévue (%)']:.2f} %, soit {best['Δ PDM vs base (pts)']:+.2f} point(s) vs la base.")
+    st.success(f"Meilleur scénario exploratoire : PDM segmentielle réalisable estimée à {best['PDM segment réalisable (%)']:.2f} %, soit {best['Δ PDM réalisable vs base (pts)']:+.2f} point(s) vs la base. PDM potentielle avant contrainte : {best['PDM potentielle (%)']:.2f} %.")
     st.caption("Ce résultat est une analyse de sensibilité descriptive sur les entreprises observées ; il ne constitue pas une prévision causale certifiée.")
 
     # Projection des volumes du meilleur scénario sur l'horizon.
     best_scenario={"price":float(best["prix (€)"]),"quality":float(best["qualité cible"]),"brand_ads":float(best["publicité marque (€)"]),"product_ads":float(best["publicité produits (€)"])}
     best_eval=evaluate_scenario(forecast_df,segment_product,segment_share,segment_units,cal,competitors,best_scenario,budget,cap)
-    view=best_eval["forecast"][["periode",*PRODUCTS,"scenario_total"]].copy()
-    view.rename(columns={"scenario_total":"Total scénario"},inplace=True)
+    view_cols = [c for c in ["periode", *PRODUCTS, "scenario_total", "demand_total", "unserved_demand", "production_factor"] if c in best_eval["forecast"].columns]
+    view=best_eval["forecast"][view_cols].copy()
+    view.rename(columns={"scenario_total":"Unités servies", "demand_total":"Demande estimée", "unserved_demand":"Demande non servie", "production_factor":"Taux de service"},inplace=True)
     st.subheader("📈 Impact volume du scénario choisi")
     st.dataframe(view.round(1),width="stretch",hide_index=True)
 
-    if best_eval["max_capacity_utilization"] > 0.9:
-        st.warning(f"Le scénario utilise jusqu'à {best_eval['max_capacity_utilization']*100:.1f} % d'une capacité d'atelier : une analyse MRP/machines devra valider les achats et le lissage mensuel avant exécution.")
+    if best_eval["max_demand_capacity_utilization"] > 1.0 + 1e-9:
+        st.warning(f"Avant plafonnement, la demande solliciterait jusqu'à {best_eval['max_demand_capacity_utilization']*100:.1f} % de la capacité. La projection publiée ci-dessus montre les unités servies et non la demande théorique complète.")
     else:
-        st.info(f"Capacité maximale utilisée sur l'horizon : {best_eval['max_capacity_utilization']*100:.1f} %.")
+        st.info(f"Pression maximale de la demande sur l'horizon : {best_eval['max_demand_capacity_utilization']*100:.1f} % de la capacité.")
 else:
     st.info("Le moteur est prêt. Lance l'optimisation pour comparer plusieurs centaines de combinaisons de prix, publicité et qualité sous contrainte de budget et capacité.")
 

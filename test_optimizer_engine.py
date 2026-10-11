@@ -34,4 +34,4 @@ def test_rank_prefers_higher_share():
         {"scenario":{"price":100,"brand_ads":0,"product_ads":0,"quality":50},"predicted_share":0.15,"share_delta":0.02,"marketing_spend":0,"max_capacity_utilization":0.5,"feasible":True},
         {"scenario":{"price":110,"brand_ads":0,"product_ads":0,"quality":50},"predicted_share":0.12,"share_delta":0.01,"marketing_spend":0,"max_capacity_utilization":0.4,"feasible":True},
     ],2)
-    assert ranked.iloc[0]["PDM segment prévue (%)"] == 15
+    assert ranked.iloc[0]["PDM segment réalisable (%)"] == 15

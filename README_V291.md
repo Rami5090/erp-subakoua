@@ -1,16 +1,19 @@
 # ERP Subakoua — v2.9.1
 
-## Routage direct des études UI
+## Problèmes corrigés
 
-Cette version finalise le registre `study_ui_routes.json` à partir des liens observés dans l'audit du portail Subakoua.
+### 1. Concurrent affiché à zéro
+La source affichée par l’optimiseur pouvait ne contenir que la ligne de l’équipe (par exemple via le monitoring), ce qui empêchait le chargement des autres entreprises. L’extraction cherche désormais les études API comparatives `pevc*` et fusionne les lignes par numéro d’entreprise. Pour le calibrage et le décompte affiché, les entreprises distinctes sont reconstruites à partir de la dernière observation disponible au plus tard à l’ancrage, en excluant l’équipe choisie.
 
-- 91 `study_id` du catalogue local disposent maintenant d'une entrée de routage.
-- Les routes mensuelles utilisent `{month}` avec : 13=A1-Janvier, ..., 18=A1-Juin, 19=A1-Juillet, ..., 24=A1-Décembre, 25=A2-Janvier, etc.
-- Le moteur d'achat tente d'abord la route directe et ne sélectionne plus la période dans le sélecteur UI.
-- Les routes sont construites à partir des chemins `/companies/partners/...` observés dans l'audit.
-- `companyResults` est explicitement conservé comme `ui_supported=false` car aucun lien UI exploitable pour cette entrée n'a été observé dans l'audit fourni. Aucune URL fictive n'est générée pour ce cas.
-- Le fallback catalogue/API/DOM reste disponible pour les cas sans route UI exploitable.
+Un expander `Diagnostic des concurrents et des sources` indique maintenant la période sélectionnée, les lignes concurrentielles brutes, le nombre de concurrents exploitables et la couverture de l’historique.
 
-## Validation
+### 2. Capacité en fallback et aucun scénario réalisable
+Le code demandait `ORDER BY id` sur `Parc_Machines_Mensuel`, alors que la clé de cette table est `Tour_ID`. Cette exception entraînait un retour à la capacité de secours et empêchait aussi la lecture des temps d’atelier, car les deux requêtes étaient dans le même bloc d’erreur.
 
-`validate_study_routes.py` contrôle que les 91 identifiants du catalogue ont une entrée de registre et qu'aucune URL non-portail n'est introduite.
+Le chargement utilise `Tour_ID DESC` et isole les deux requêtes. Les valeurs d’atelier et les produits sont normalisés.
+
+L’optimiseur distingue maintenant la demande théorique de la production possible : il plafonne le volume servi selon le poste contraignant au lieu de supprimer systématiquement un scénario dont la demande dépasserait la capacité. L’écran indique la PDM potentielle et la PDM réalisable, le taux de service, la demande non servie et la pression de capacité. Le budget marketing reste une contrainte stricte.
+
+### 3. Portée des tests
+
+`pytest -q` : **37 tests réussis**.

@@ -140,18 +140,28 @@ def predict_relative_share(calibration: Calibration, scenario: Mapping[str, floa
     return float(ex[0] / ex.sum())
 
 
-def build_competitive_history(period_data: Mapping[str, Mapping[str, Any]], own_company: int, extract_snapshot_fn) -> pd.DataFrame:
-    """Construit l'historique des observations concurrentielles à partir des périodes disponibles."""
+def build_competitive_history(period_data: Mapping[str, Mapping[str, Any]], own_company: int, extract_snapshot_fn, periods: Sequence[str] | None = None) -> pd.DataFrame:
+    """Construit l'historique concurrentiel à partir des périodes legacy et/ou API.
+
+    ``periods`` permet d'inclure les mois présents uniquement dans erp_etudes ;
+    auparavant, l'historique se limitait aux clés de erp_donnees.
+    """
     rows: list[dict[str, Any]] = []
-    for period in sorted(period_data.keys()):
+    period_list = list(periods) if periods is not None else list(period_data.keys())
+    for period in sorted(set(period_list)):
+
         try:
             snap = extract_snapshot_fn(period)
         except Exception:
             continue
         for r in snap.get("rows", []) or []:
+            try:
+                company_id = int(float(r.get("entreprise")))
+            except Exception:
+                continue
             rows.append({
                 "periode": period,
-                "entreprise": int(r.get("entreprise")),
+                "entreprise": company_id,
                 "part_marche": _num(r.get("part_marche")),
                 "prix": _num(r.get("prix")),
                 "qualite": _num(r.get("qualite")),
@@ -164,6 +174,37 @@ def build_competitive_history(period_data: Mapping[str, Mapping[str, Any]], own_
     if df.empty:
         return df
     return df.dropna(subset=["entreprise", "part_marche", "prix", "qualite", "publicite"]).reset_index(drop=True)
+
+
+
+def latest_competitor_frame(history: pd.DataFrame, own_company: int, anchor_period: str, products_ads_default: float = 0.0) -> pd.DataFrame:
+    """Retourne une ligne récente exploitable par concurrent, sans fuite future."""
+    cols = ["entreprise", "prix", "qualite", "publicite", "publicite_produit"]
+    empty = pd.DataFrame(columns=cols)
+    if history is None or history.empty:
+        return empty
+    df = history.copy()
+    if "periode" in df.columns:
+        from forecast_engine import period_index
+        df = df.loc[df["periode"].map(period_index) <= period_index(anchor_period)].copy()
+        df["_period_index"] = df["periode"].map(period_index)
+    else:
+        df["_period_index"] = 0
+    if df.empty:
+        return empty
+    df["entreprise"] = pd.to_numeric(df["entreprise"], errors="coerce")
+    df = df.dropna(subset=["entreprise"])
+    df = df.loc[df["entreprise"].astype(int) != int(own_company)].copy()
+    for col in ["prix", "qualite", "publicite", "publicite_produit"]:
+        if col not in df.columns:
+            df[col] = np.nan
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["publicite_produit"] = df["publicite_produit"].fillna(products_ads_default)
+    df = df.dropna(subset=["prix", "qualite", "publicite"])
+    if df.empty:
+        return empty
+    df = df.sort_values(["_period_index"]).drop_duplicates("entreprise", keep="last")
+    return df[cols].reset_index(drop=True)
 
 
 def _safe_competitor_rows(rows: Sequence[Mapping[str, Any]], own_company: int) -> pd.DataFrame:
@@ -229,55 +270,120 @@ def evaluate_scenario(
     budget_monthly: float,
     capacity: CapacityProfile,
 ) -> dict[str, Any]:
-    """Évalue un scénario sur l'année d'ancrage / horizon disponible."""
+    """Évalue un scénario en limitant la production à la capacité disponible.
+
+    La prévision initiale représente la demande potentielle. Un scénario dont la
+    demande dépasse la capacité n'est pas éliminé automatiquement : les volumes
+    servis sont plafonnés à la capacité mensuelle, la demande non servie est
+    mesurée et la PDM réalisable est réduite à proportion du service rendu pour
+    le produit segment suivi. Seul un dépassement budgétaire (ou une capacité
+    nulle rendant la production impossible) rend le scénario irréalisable.
+    """
     spend = float(scenario["brand_ads"] + scenario["product_ads"])
     base_share = float(baseline_segment_share) if baseline_segment_share and baseline_segment_share > 0 else None
-    base_units = float(baseline_segment_units) if baseline_segment_units is not None else None
-    share_pred = None
+    potential_share = None
     if calibration and base_share is not None:
         base_sc = competitors.attrs.get("baseline_scenario") if hasattr(competitors, "attrs") else None
         if not isinstance(base_sc, Mapping):
             base_sc = {"price": scenario["price"], "quality": scenario["quality"], "brand_ads": scenario["brand_ads"], "product_ads": scenario["product_ads"]}
-        share_pred = predict_anchored_share(calibration, scenario, base_sc, base_share)
-    ratio = (share_pred / base_share) if (share_pred is not None and base_share) else 1.0
+        potential_share = predict_anchored_share(calibration, scenario, base_sc, base_share)
+    ratio = (potential_share / base_share) if (potential_share is not None and base_share) else 1.0
 
-    forecast = baseline_forecast.copy()
-    if segment_product in forecast.columns:
-        forecast[segment_product] = forecast[segment_product].astype(float) * ratio
-    total_cols = [p for p in PRODUCTS if p in forecast.columns]
-    forecast["scenario_total"] = forecast[total_cols].sum(axis=1)
-    # Capacité mensuelle : chaque atelier est borné par ses machines × 9 600 min.
-    max_load = 0.0
-    feasible = spend <= budget_monthly + 1e-9
-    capacity_rows=[]
-    for _, row in forecast.iterrows():
-        loads={a:0.0 for a in ["Decoupe","Assemblage","Conditionnement"]}
-        for product in PRODUCTS:
-            units=float(row.get(product,0.0) or 0.0)
-            for atelier, t in capacity.times.get(product, {}).items():
-                loads[atelier] += units * float(t)
-        month_max=0.0
+    demand = baseline_forecast.copy()
+    if segment_product in demand.columns:
+        demand[segment_product] = pd.to_numeric(demand[segment_product], errors="coerce").fillna(0.0).clip(lower=0.0) * ratio
+    product_cols = [p for p in PRODUCTS if p in demand.columns]
+    for product in product_cols:
+        demand[product] = pd.to_numeric(demand[product], errors="coerce").fillna(0.0).clip(lower=0.0)
+    demand["demand_total"] = demand[product_cols].sum(axis=1)
+    served = demand.copy()
+
+    machines = {str(k): max(0.0, float(v or 0)) for k, v in (capacity.machines or {}).items()}
+    atelier_names = ("Decoupe", "Assemblage", "Conditionnement")
+    demand_pressure_rows: list[float] = []
+    served_util_rows: list[float] = []
+    production_factors: list[float] = []
+    capacity_bottlenecks: set[str] = set()
+    capacity_impossible = False
+    unserved_by_month: list[float] = []
+    segment_demand_total = float(demand[segment_product].sum()) if segment_product in demand else 0.0
+    segment_served_total = 0.0
+
+    for idx, row in demand.iterrows():
+        loads = {a: 0.0 for a in atelier_names}
+        for product in product_cols:
+            units = max(0.0, float(row.get(product, 0.0) or 0.0))
+            times = capacity.times.get(product, {}) if capacity.times else {}
+            for atelier, t in times.items():
+                normalized = {"Cond": "Conditionnement", "conditionnement": "Conditionnement", "decoupe": "Decoupe", "assemblage": "Assemblage"}.get(str(atelier).strip(), str(atelier).strip())
+                if normalized in loads:
+                    loads[normalized] += units * max(0.0, float(t or 0.0))
+        factors = []
+        pressure = 0.0
         for atelier, load in loads.items():
-            cap=capacity.machines.get(atelier,0)*capacity.capacity_min
-            util=(load/cap) if cap>0 else float("inf")
-            month_max=max(month_max,util)
-        capacity_rows.append(month_max)
-        if month_max > 1.0 + 1e-9:
-            feasible=False
-        max_load=max(max_load, month_max)
+            cap_minutes = machines.get(atelier, 0.0) * float(capacity.capacity_min)
+            if load > 1e-9 and cap_minutes <= 0:
+                factors.append(0.0)
+                pressure = float("inf")
+                capacity_bottlenecks.add(atelier)
+                capacity_impossible = True
+            elif cap_minutes > 0:
+                util = load / cap_minutes
+                pressure = max(pressure, util)
+                factors.append(min(1.0, cap_minutes / load) if load > 0 else 1.0)
+                if util > 1.0 + 1e-9:
+                    capacity_bottlenecks.add(atelier)
+            else:
+                # Atelier inutilisé : il n'impose pas de contrainte.
+                factors.append(1.0)
+        factor = max(0.0, min([1.0, *factors]))
+        production_factors.append(factor)
+        demand_pressure_rows.append(pressure)
+        unserved = float(row[product_cols].sum()) * (1.0 - factor)
+        unserved_by_month.append(max(0.0, unserved))
+        for product in product_cols:
+            served.at[idx, product] = float(row.get(product, 0.0) or 0.0) * factor
+        served_total = float(sum(float(served.at[idx, product]) for product in product_cols))
+        served.at[idx, "scenario_total"] = served_total
+        served_util = 0.0
+        for atelier, load in loads.items():
+            cap_minutes = machines.get(atelier, 0.0) * float(capacity.capacity_min)
+            if cap_minutes > 0:
+                served_util = max(served_util, load * factor / cap_minutes)
+            elif load > 1e-9:
+                served_util = float("inf")
+        served_util_rows.append(served_util)
+        if segment_product in product_cols:
+            segment_served_total += float(served.at[idx, segment_product])
+
+    served["unserved_demand"] = unserved_by_month
+    served["production_factor"] = production_factors
+    avg_service = (segment_served_total / segment_demand_total) if segment_demand_total > 0 else 1.0
+    predicted_share = (potential_share * avg_service) if potential_share is not None else None
+    feasible = spend <= float(budget_monthly) + 1e-9 and not capacity_impossible
+    max_pressure = max(demand_pressure_rows, default=0.0)
+    max_served_util = max(served_util_rows, default=0.0)
     return {
-        "predicted_share": share_pred,
-        "share_delta": (share_pred - base_share) if share_pred is not None and base_share is not None else None,
+        "predicted_share": predicted_share,
+        "potential_share": potential_share,
+        "share_delta": (predicted_share - base_share) if predicted_share is not None and base_share is not None else None,
         "ratio_vs_baseline": ratio,
         "marketing_spend": spend,
-        "annual_marketing_spend": spend * len(forecast),
-        "forecast": forecast,
-        "max_capacity_utilization": max_load,
+        "annual_marketing_spend": spend * len(served),
+        "forecast": served,
+        "demand_forecast": demand,
+        "max_capacity_utilization": max_served_util,
+        "max_demand_capacity_utilization": max_pressure,
+        "capacity_utilization": served_util_rows,
+        "production_factors": production_factors,
+        "service_rate": avg_service,
+        "unserved_units_total_horizon": float(sum(unserved_by_month)),
+        "average_unserved_units_month": float(np.mean(unserved_by_month)) if unserved_by_month else 0.0,
+        "capacity_bottlenecks": sorted(capacity_bottlenecks),
+        "budget_feasible": spend <= float(budget_monthly) + 1e-9,
         "feasible": feasible,
-        "capacity_utilization": capacity_rows,
         "model_confidence": calibration.confidence if calibration else "non calibré",
     }
-
 
 def generate_candidate_grid(base: Mapping[str, float], budget_monthly: float, quality_values: Sequence[float] | None = None) -> list[dict[str, float]]:
     price0=float(base["price"]); brand0=float(base["brand_ads"]); prod0=float(base["product_ads"]); qual0=float(base["quality"])
@@ -308,13 +414,16 @@ def rank_scenarios(evaluated: Sequence[Mapping[str, Any]], top_n: int = 10) -> p
             "publicité marque (€)": s.get("brand_ads"),
             "publicité produits (€)": s.get("product_ads"),
             "qualité cible": s.get("quality"),
-            "PDM segment prévue (%)": (e.get("predicted_share") or 0)*100 if e.get("predicted_share") is not None else None,
-            "Δ PDM vs base (pts)": (e.get("share_delta") or 0)*100 if e.get("share_delta") is not None else None,
+            "PDM segment réalisable (%)": (e.get("predicted_share") or 0)*100 if e.get("predicted_share") is not None else None,
+            "PDM potentielle (%)": (e.get("potential_share") or 0)*100 if e.get("potential_share") is not None else None,
+            "Δ PDM réalisable vs base (pts)": (e.get("share_delta") or 0)*100 if e.get("share_delta") is not None else None,
             "dépense marketing mensuelle (€)": e.get("marketing_spend"),
-            "utilisation max capacité (%)": (e.get("max_capacity_utilization") or 0)*100,
+            "service de la demande (%)": (e.get("service_rate") or 0)*100,
+            "demande non servie moy. (u/mois)": e.get("average_unserved_units_month", 0.0),
+            "pression capacité sur demande (%)": (e.get("max_demand_capacity_utilization") or 0)*100,
         })
     df=pd.DataFrame(rows)
     if df.empty:
         return df
     # Priorité : part de marché, puis capacité, puis coût.
-    return df.sort_values(["PDM segment prévue (%)","utilisation max capacité (%)","dépense marketing mensuelle (€)"], ascending=[False,True,True]).head(top_n).reset_index(drop=True)
+    return df.sort_values(["PDM segment réalisable (%)","pression capacité sur demande (%)","dépense marketing mensuelle (€)"], ascending=[False,True,True]).head(top_n).reset_index(drop=True)
