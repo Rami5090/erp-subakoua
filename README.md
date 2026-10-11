@@ -1,4 +1,7 @@
-# ERP Subakoua — v2.9.1
+# ERP Subakoua — v2.9.2
+
+> Voir `README_V292.md` : correctifs PDM de l'optimiseur et interface Visiteur / Utilisateur (lecture seule vs accès complet).
+
 
 ## Correctifs de l’optimiseur stratégique
 

@@ -24,6 +24,9 @@ from finance_engine import (
     project_bank_debt,
 )
 
+from auth import setup as auth_setup, is_editor, require_editor, readonly_notice
+from db_utils import get_readonly_engine_if_configured
+
 load_dotenv()
 
 st.set_page_config(page_title="ERP Subakoua - Cockpit Stratégique", layout="wide", initial_sidebar_state="expanded")
@@ -137,6 +140,11 @@ def init_connection():
         return None, msg
 
 engine, db_error = init_connection()
+# Défense en profondeur : un visiteur lit via l'utilisateur MySQL en lecture seule s'il est configuré.
+if not is_editor():
+    _ro_engine = get_readonly_engine_if_configured()
+    if _ro_engine is not None:
+        engine = _ro_engine
 
 def init_db_simu():
     if engine is None: return
@@ -208,7 +216,8 @@ def init_db_simu():
     except Exception:
         pass
 
-init_db_simu()
+if is_editor():
+    init_db_simu()  # création des tables : réservée aux utilisateurs
 
 # ==========================================
 # 2. CHARGEMENT BDD & FONCTIONS GLOBALES
@@ -357,6 +366,9 @@ def charger_scenario_seed(token_seed, tour_id):
 
 def sauvegarder_scenario_seed(token_seed, tour_id, nom, parametres_dict):
     if engine is None: return
+    if not is_editor():
+        st.error("Sauvegarde refusée : mode visiteur (lecture seule).")
+        return
     try:
         clean_params = {k: v for k, v in parametres_dict.items() if isinstance(v, (int, float, str, bool))}
         json_data = json.dumps(clean_params, ensure_ascii=False)
@@ -639,19 +651,16 @@ if engine is not None:
 else:
     st.sidebar.error("🔴 Base Cloud indisponible", icon="⚠️")
 
-module_principal = st.sidebar.radio(
-    "Espace de travail",
-    [
-        "📊 État des lieux",
-        "📥 Données réelles",
-        "🧠 Centre de décision",
-    ],
-    captions=[
-        "Voir les données du mois",
-        "Alimenter l'historique",
-        "Piloter les leviers et simuler",
-    ],
-)
+auth_setup()  # badge de rôle + connexion utilisateur dans la barre latérale
+
+if is_editor():
+    _workspaces = ["📊 État des lieux", "📥 Données réelles", "🧠 Centre de décision"]
+    _captions = ["Voir les données du mois", "Alimenter l'historique", "Piloter les leviers et simuler"]
+else:
+    _workspaces = ["📊 État des lieux", "🧠 Centre de décision"]
+    _captions = ["Voir les données du mois", "Simuler (sans enregistrement)"]
+
+module_principal = st.sidebar.radio("Espace de travail", _workspaces, captions=_captions)
 
 if module_principal == "📊 État des lieux":
     module_principal = "📊 État des lieux global"
@@ -706,6 +715,7 @@ if module_principal == "📊 État des lieux global":
 # MODULE 2 : SAISIE DES DONNÉES RÉELLES
 # ==========================================
 elif module_principal == "📥 Saisie des Données Réelles":
+    require_editor("la saisie des données réelles")
     st.title("📥 Saisie & Alimentation des Données Réelles")
     mois_saisie = st.selectbox("Sélectionnez le mois à renseigner :", list(mois_mapping.keys()))
     tour_saisie = tour_mapping_id[mois_saisie]
@@ -855,6 +865,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     # -------------------------------------------------------------------
     with st.container(border=True):
         st.markdown("**💾 Scénarios de décision**")
+        if not is_editor():
+            readonly_notice("Mode visiteur : vous pouvez charger un scénario et simuler, mais pas en enregistrer.")
         sc1, sc2, sc3, sc4 = st.columns([2.15, 0.85, 1.35, 0.85])
         scenarios_existants = lister_scenarios(tour_id_actif)
         options_scenarios = ["— Aucun scénario —"] + [
@@ -886,7 +898,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 placeholder="Nom du scénario…",
             )
         with sc4:
-            if st.button("💾 Sauver", width="stretch", disabled=engine is None):
+            if st.button("💾 Sauver", width="stretch", disabled=(engine is None or not is_editor()),
+                         help=None if is_editor() else "Réservé aux utilisateurs connectés."):
                 nom = str(st.session_state.get("ui_nom_scenario", "Scénario de travail")).strip() or "Scénario de travail"
                 token_seed = hashlib.sha1(f"{tour_id_actif}:{nom}".encode("utf-8")).hexdigest()[:16]
                 parametres_sim = {

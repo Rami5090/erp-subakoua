@@ -1,9 +1,16 @@
+import os
+import pytest
+
+DUMP_PATH = "/mnt/data/subakoua_full_database_dump.json"
+requires_dump = pytest.mark.skipif(not os.path.exists(DUMP_PATH), reason="dump Subakoua local absent")
+
 import json
 from forecast_engine import build_period_data, extract_competitive_snapshot
 
 
+@requires_dump
 def test_competitor_brand_and_product_ads_are_distinct():
-    raw=json.load(open('/mnt/data/subakoua_full_database_dump.json',encoding='utf-8'))
+    raw=json.load(open(DUMP_PATH,encoding='utf-8'))
     rows=[]
     p='Année 1 - Janvier'
     rows=[{"periode":p,"module":m,"contenu":json.dumps(v,ensure_ascii=False),"type_donnee":"etat_actuel"}

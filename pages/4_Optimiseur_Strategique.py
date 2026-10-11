@@ -28,6 +28,9 @@ from optimizer_engine import (
     CapacityProfile,
     build_competitive_history,
     latest_competitor_frame,
+    detect_segment_product,
+    resolve_own_levers,
+    resolve_reference_share,
     calibrate_descriptive_response,
     evaluate_scenario,
     generate_candidate_grid,
@@ -35,6 +38,11 @@ from optimizer_engine import (
 )
 
 st.set_page_config(page_title="Optimiseur stratégique", layout="wide")
+
+from auth import setup as auth_setup, is_editor
+from db_utils import get_read_engine
+
+auth_setup()  # rôle visiteur/utilisateur ; cette page est en lecture seule pour tous
 st.title("🎯 Optimiseur stratégique — maximiser la part de marché")
 st.caption("Analyse de sensibilité empirique : le moteur calibre sur les périodes réellement observées jusqu'à l'ancrage, effectue un backtest hors-échantillon du forecast, puis teste des scénarios sur le benchmark segmentiel lorsque la PDM globale est indisponible.")
 
@@ -48,17 +56,9 @@ def secret(section: str, key: str, default: str = "") -> str:
     return os.getenv(key, default)
 
 
-@st.cache_resource
 def get_engine():
-    host = secret("mysql", "host", "")
-    user = secret("mysql", "user", secret("mysql", "username", ""))
-    password = secret("mysql", "password", "")
-    database = secret("mysql", "database", "")
-    port = secret("mysql", "port", "")
-    if not all([host, user, password, database, port]):
-        return None
-    url = URL.create("mysql+pymysql", username=user, password=password, host=host, port=int(port), database=database)
-    return create_engine(url, pool_pre_ping=True, pool_recycle=3600, connect_args={"ssl": {}})
+    """Moteur lecture seule ([mysql_readonly]) si configuré, sinon moteur standard."""
+    return get_read_engine()
 
 
 def load_data(engine):
@@ -159,7 +159,10 @@ struct=extract_structural_seasonality(period_data,study_data=study_data)
 sales_to_anchor=sales.loc[sales["index"] <= period_index(anchor)].copy()
 backtest_details, backtest_summary=backtest_forecast_methods(sales_to_anchor, struct)
 selected_method=select_backtest_method(backtest_summary)
-forecast_df, _ = rolling_forecast_12m(sales, struct, anchor, method=selected_method, horizon=12)
+forecast_full, _ = rolling_forecast_12m(sales, struct, anchor, method=selected_method, horizon=12)
+# v2.9.2 : rolling_forecast_12m renvoie aussi la ligne réelle de l'ancrage. Les scénarios, la capacité
+# et la dépense annuelle ne doivent porter que sur les 12 mois à venir.
+forecast_df = forecast_full.loc[forecast_full["statut"] == "Prévision"].reset_index(drop=True) if (not forecast_full.empty and "statut" in forecast_full.columns) else forecast_full
 competitive=extract_competitive_snapshot(period_data,own_company,study_data=study_data,anchor_period=anchor)
 
 if forecast_df.empty:
@@ -168,19 +171,6 @@ if forecast_df.empty:
 
 rows=competitive.get("rows") or []
 own=competitive.get("own") or {}
-segment_share=competitive.get("segment_share")
-segment_units=_num(own.get("ventes")) if own else None
-# Le segment observé est celui dont les ventes propres sont cohérentes avec un produit de la série actuelle.
-segment_product=None
-if segment_units is not None and not sales.empty:
-    rr=sales.loc[sales["periode"]==competitive.get("period")]
-    if not rr.empty:
-        rr=rr.iloc[-1]
-        candidates=[p for p in PRODUCTS if abs(float(rr[p])-segment_units)<1e-9]
-        if candidates:
-            segment_product=candidates[0]
-segment_product=segment_product or PRODUCTS[0]
-
 # Historique concurrentiel : inclut les périodes présentes uniquement dans erp_etudes.
 def snap_for_period(p):
     return extract_competitive_snapshot(period_data, own_company, study_data=study_data, anchor_period=p)
@@ -210,12 +200,21 @@ if competitors.empty:
 
 cap=load_capacity(engine)
 
-st.subheader("📚 État du modèle")
-c1,c2,c3,c4=st.columns(4)
+# v2.9.2 : PDM de référence résolue avec repli traçable (benchmark → historique → PDM globale).
 actual_sales_row=sales_to_anchor.tail(1)
 actual_total=float(actual_sales_row[PRODUCTS].sum(axis=1).iloc[0]) if not actual_sales_row.empty else 0.0
+ref=resolve_reference_share(competitive, hist, own_company, anchor, fallback_units=actual_total)
+segment_share=ref["share"]
+segment_units=ref["units"]
+# Produit du segment : identifié seulement s'il correspond sans ambiguïté, sinon toute la gamme est ajustée.
+segment_product=detect_segment_product(actual_sales_row.iloc[-1] if not actual_sales_row.empty else None, segment_units)
+levers=resolve_own_levers(own, hist, own_company, anchor)
+
+st.subheader("📚 État du modèle")
+c1,c2,c3,c4=st.columns(4)
 c1.metric("Ventes actuelles",f"{actual_total:,.0f} u")
-c2.metric("PDM segment observée",f"{segment_share*100:.2f} %" if segment_share is not None else "—")
+_pdm_label = "PDM de référence" if ref["level"] in ("historique", "globale") else "PDM segment observée"
+c2.metric(_pdm_label, f"{segment_share*100:.2f} %" if segment_share is not None else "—", help=f"Source : {ref['source']}")
 competitor_count = int(competitors["entreprise"].nunique()) if not competitors.empty and "entreprise" in competitors.columns else 0
 c3.metric("Concurrents reconnus", str(competitor_count), help="Entreprises distinctes autres que l'équipe sélectionnée, à partir du dernier benchmark exploitable avant l'ancrage.")
 c4.metric("Calibration",f"{cal.n_obs} obs / {cal.n_periods} période(s)" if cal else "Non disponible")
@@ -224,11 +223,17 @@ with st.expander("Diagnostic des concurrents et des sources", expanded=(competit
     st.write(f"Lignes concurrentielles brutes du snapshot : **{len(rows)}**")
     st.write(f"Concurrents exploitables (prix + qualité + publicité) : **{competitor_count}**")
     st.write(f"Historique de calibration : **{len(hist)} observations**, **{hist['entreprise'].nunique() if not hist.empty else 0} entreprises**")
+    st.write(f"PDM de référence : **{(segment_share*100):.2f} %**" if segment_share is not None else "PDM de référence : **indisponible**")
+    st.write(f"Source de la PDM : **{ref['source']}**")
+    st.write(f"Produit du segment suivi : **{segment_product or 'toute la gamme (non identifiable)'}**")
+    st.write("Origine des leviers de départ : " + ", ".join(f"{k} ← {v}" for k, v in levers["sources"].items()))
     if competitor_count == 0:
         st.warning("Aucune ligne concurrentielle complète n'a été reconstruite. Vérifie que les études de comparaison sont bien enregistrées dans erp_etudes pour l'ancrage ou un mois antérieur.")
 if not backtest_summary.empty:
-    best_wape=float(backtest_summary.iloc[0]["WAPE"])*100.0
-    st.info(f"Validation forecast : méthode retenue **{selected_method}** · WAPE hors-échantillon **{best_wape:.1f} %** sur {len(sales_to_anchor)} période(s) réelles. Décision préparée pour **{period_label_from_index(period_index(anchor)+1)}**.")
+    _sel = backtest_summary.loc[backtest_summary["method"] == selected_method]
+    best_wape=float((_sel.iloc[0] if not _sel.empty else backtest_summary.iloc[0])["WAPE"])*100.0
+    n_backtest = int(backtest_details["target_index"].nunique()) if (backtest_details is not None and not backtest_details.empty and "target_index" in backtest_details.columns) else 0
+    st.info(f"Validation forecast : méthode retenue **{selected_method}** · WAPE hors-échantillon **{best_wape:.1f} %** sur {n_backtest} mois testé(s) (sur {len(sales_to_anchor)} mois réels). Décision préparée pour **{period_label_from_index(period_index(anchor)+1)}**.")
 else:
     st.info(f"Validation forecast : historique trop court pour comparer les modèles. Décision préparée pour **{period_label_from_index(period_index(anchor)+1)}**.")
 if cal:
@@ -236,15 +241,21 @@ if cal:
 else:
     st.warning("Pas assez d'observations pour une calibration descriptive. Les scénarios ne seront pas calculés.")
     st.stop()
-if segment_share is None or segment_units is None:
-    st.warning("Aucune PDM segmentielle exploitable pour l'ancrage : le moteur ne peut pas quantifier une part de marché de référence.")
+if segment_share is None:
+    st.warning("Aucune PDM exploitable pour l'ancrage (ni segmentielle, ni dernière observation propre, ni PDM globale) : le moteur ne peut pas quantifier une part de marché de référence. Synchronise l'étude comparative des parts de marché (pevc…) pour l'ancrage ou un mois antérieur.")
     st.stop()
+if ref.get("warning"):
+    st.warning(ref["warning"])
+if segment_product is None:
+    st.info("Le produit du segment n'est pas identifiable de façon univoque : l'effet de part de marché est appliqué à l'ensemble de la gamme.")
 
 st.subheader("🎛️ Leviers")
-base_price=float(own.get("prix") or 115.0)
-base_quality=float(own.get("qualite") or 57.2)
-base_brand=float(own.get("publicite_marque", own.get("publicite")) or 55000.0)
-base_prod=float(own.get("publicite_produit") or 3000.0)
+base_price=float(levers["prix"])
+base_quality=min(100.0,max(0.0,float(levers["qualite"])))
+base_brand=float(levers["publicite_marque"])
+base_prod=float(levers["publicite_produit"])
+if levers["uses_defaults"]:
+    st.warning("Valeurs par défaut utilisées pour : " + ", ".join(levers["uses_defaults"]) + ". Vérifie-les avant de lancer l'optimisation.")
 b1,b2,b3,b4=st.columns(4)
 price=b1.number_input("Prix du segment (€)",min_value=1.0,value=base_price,step=1.0)
 quality=b2.slider("Qualité cible",0.0,100.0,base_quality,0.5)
@@ -253,7 +264,7 @@ prodads=b4.number_input("Publicité produits mensuelle (€)",min_value=0.0,valu
 budget=st.number_input("Budget marketing mensuel maximum (€)",min_value=0.0,value=max(100000.0,base_brand+base_prod),step=1000.0)
 
 st.subheader("🏭 Contrainte industrielle")
-st.caption(f"Capacité : {cap.machines} machines ; 9 600 min/machine/mois. Source : {cap.source}.")
+st.caption(f"Capacité : {cap.machines} machines ; {cap.capacity_min:,.0f} min/machine/mois. Source : {cap.source}.")
 
 baseline_scenario={"price":price,"quality":quality,"brand_ads":brand,"product_ads":prodads}
 competitors.attrs["baseline_scenario"]=baseline_scenario

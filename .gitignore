@@ -7,3 +7,6 @@ scraper_output/
 playwright-report/
 test-results/
 *.log
+.streamlit/secrets.toml
+secrets.toml
+.pytest_cache/

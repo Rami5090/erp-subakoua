@@ -28,6 +28,11 @@ from forecast_engine import (
 from strategic_engine import current_competitive_metrics, strategic_alerts
 
 st.set_page_config(page_title="Pilotage stratégique 12 mois", layout="wide")
+
+from auth import setup as auth_setup, is_editor
+from db_utils import get_read_engine
+
+auth_setup()  # rôle visiteur/utilisateur ; cette page est en lecture seule pour tous
 st.title("🧭 Pilotage stratégique — prévision 12 mois")
 st.caption("Holt-Winters/ETS + saisonnalité structurelle + position concurrentielle. Source prioritaire : payloads API validés stockés dans erp_etudes ; fallback sur erp_donnees historique.")
 
@@ -41,17 +46,9 @@ def secret(section: str, key: str, default: str = "") -> str:
     return os.getenv(key, default)
 
 
-@st.cache_resource
 def get_engine():
-    host = secret("mysql", "host", "")
-    user = secret("mysql", "user", secret("mysql", "username", ""))
-    password = secret("mysql", "password", "")
-    database = secret("mysql", "database", "")
-    port = secret("mysql", "port", "")
-    if not all([host, user, password, database, port]):
-        return None
-    url = URL.create("mysql+pymysql", username=user, password=password, host=host, port=int(port), database=database)
-    return create_engine(url, pool_pre_ping=True, pool_recycle=3600, connect_args={"ssl": {}})
+    """Moteur lecture seule ([mysql_readonly]) si configuré, sinon moteur standard."""
+    return get_read_engine()
 
 
 engine = get_engine()

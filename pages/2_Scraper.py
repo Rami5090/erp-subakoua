@@ -17,6 +17,12 @@ import subakoua_api
 
 st.set_page_config(page_title="Scraper Subakoua", page_icon="🕷️", layout="wide")
 
+from auth import setup as auth_setup, require_editor
+
+auth_setup()
+# Cette page achète des études (dépenses réelles) et écrit dans Aiven : accès réservé aux utilisateurs.
+require_editor("le scraper et l'achat documentaire")
+
 
 def secret_value(section: str | None, key: str, default: str = "") -> str:
     try:

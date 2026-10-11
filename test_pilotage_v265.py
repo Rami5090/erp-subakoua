@@ -1,3 +1,9 @@
+import os
+import pytest
+
+DUMP_PATH = "/mnt/data/subakoua_full_database_dump.json"
+requires_dump = pytest.mark.skipif(not os.path.exists(DUMP_PATH), reason="dump Subakoua local absent")
+
 import json
 import sys
 from pathlib import Path
@@ -13,8 +19,9 @@ def test_legacy_sales_does_not_use_stock_shape():
     assert vals["Shorty 3"] == 27 and vals["Integral 7"] == 2640
 
 
+@requires_dump
 def test_structural_and_market_potential_from_dump():
-    root=json.loads(Path('/mnt/data/subakoua_full_database_dump.json').read_text(encoding='utf-8'))
+    root=json.loads(Path(DUMP_PATH).read_text(encoding='utf-8'))
     jan=root['Année 1 - Janvier']
     pd={'Année 1 - Janvier':jan}
     s=extract_structural_seasonality(pd)
@@ -23,8 +30,9 @@ def test_structural_and_market_potential_from_dump():
     assert p['Integral 3']==45000 and p['Integral 7']==12600
 
 
+@requires_dump
 def test_dump_sales_and_forecast_are_nonflat():
-    root=json.loads(Path('/mnt/data/subakoua_full_database_dump.json').read_text(encoding='utf-8'))
+    root=json.loads(Path(DUMP_PATH).read_text(encoding='utf-8'))
     periods={k:v for k,v in root.items() if k.startswith('Année 1 - Janvier')}
     s=extract_own_sales_history(periods)
     struct=extract_structural_seasonality(periods)

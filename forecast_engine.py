@@ -786,7 +786,27 @@ def extract_competitive_snapshot(
                 period = pp
                 break
 
+    def _has_other_company(group: Sequence[Mapping[str, Any]]) -> bool:
+        for r in group or []:
+            try:
+                if int(float(r.get("entreprise"))) != own_company_number:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    # v2.9.2 : si ni la période d'ancrage ni les études API antérieures ne contiennent
+    # de concurrents, on remonte aussi dans l'historique legacy (erp_donnees).
+    if not _has_other_company(rows):
+        for pp in reversed([p for p in periods if period_index(p) < period_index(period)]):
+            legacy_rows = _extract_legacy_competition(period_data, pp, own_company_number)
+            if _has_other_company(legacy_rows):
+                rows = merge_company_rows(rows, legacy_rows)
+                period = pp
+                break
+
     own = next((r for r in rows if r.get("is_own") or _num(r.get("entreprise")) == own_company_number), None)
+    own_synthetic = False
     total_market = None
     share = None
     if rows:
@@ -821,26 +841,36 @@ def extract_competitive_snapshot(
                "chiffre_affaires": None, "publicite": None, "publicite_marque": None,
                "publicite_produit": None, "axe_1": None, "axe_2": None, "is_own": True}
         rows = merge_company_rows(rows, [own])
+        own_synthetic = True
     if monitoring and monitoring.get("market_share") is not None:
         share = float(monitoring["market_share"])
     if total_market is None and own and share and _num(own.get("ventes")) and own["ventes"] > 0:
         total_market = float(own["ventes"]) / float(share)
 
     segment_share = None
+    segment_share_source = None
     segment_total_market = total_market
-    if own:
+    if segment_total_market is None:
+        sales_vals = [float(r["ventes"]) for r in rows if _num(r.get("ventes")) is not None]
+        if sales_vals:
+            segment_total_market = float(sum(sales_vals))
+    if own and not own_synthetic:
+        # La ligne propre provient réellement du benchmark concurrentiel (et non du seul
+        # tableau de bord global) : on peut en tirer une PDM segmentielle.
         pct_seg = _num(own.get("part_marche"))
-        # Ne traite pas la part issue du monitoring global comme une PDM segmentielle
-        # si la ligne propre est synthétique et ne provient pas du benchmark.
-        is_synthetic_own = not any(_num(r.get("entreprise")) is not None and int(float(r["entreprise"])) == own_company_number for r in _extract_legacy_competition(period_data, period, own_company_number)) and not any(
-            str(sid).lower().startswith("pevc") for sid in (study_data.get(period, {}) or {})
-        )
-        if pct_seg is not None and not is_synthetic_own:
+        if pct_seg is not None:
             segment_share = pct_seg / 100.0 if pct_seg > 1 else pct_seg
-        if segment_total_market is None:
-            sales_vals = [float(r["ventes"]) for r in rows if _num(r.get("ventes")) is not None]
-            if sales_vals:
-                segment_total_market = float(sum(sales_vals))
+            segment_share_source = "part_marche"
+        else:
+            # v2.9.2 : certaines études ne publient pas la colonne de PDM. On la reconstruit
+            # à partir des ventes de toutes les entreprises du benchmark.
+            own_units = _num(own.get("ventes"))
+            sales_rows = [float(r["ventes"]) for r in rows if _num(r.get("ventes")) is not None]
+            seg_total = float(sum(sales_rows)) if sales_rows else 0.0
+            if own_units and own_units > 0 and len(sales_rows) >= 2 and seg_total > 0:
+                segment_share = min(1.0, own_units / seg_total)
+                segment_share_source = "ventes/total benchmark"
+                segment_total_market = seg_total
     global_share = float(monitoring["market_share"]) if monitoring and monitoring.get("market_share") is not None else None
     global_total_market = None
     if monitoring is not None and global_share is not None and own and _num(own.get("ventes")) and own["ventes"] > 0:
@@ -854,6 +884,8 @@ def extract_competitive_snapshot(
         "global_total_market": global_total_market, "segment_share": segment_share,
         "segment_total_market": segment_total_market,
         "segment_own": own if segment_share is not None else None,
+        "segment_share_source": segment_share_source,
+        "own_is_synthetic": own_synthetic,
     }
 
 def _damped_linear_forecast(values: np.ndarray, horizon: int) -> np.ndarray:

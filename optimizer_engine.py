@@ -154,15 +154,23 @@ def build_competitive_history(period_data: Mapping[str, Mapping[str, Any]], own_
             snap = extract_snapshot_fn(period)
         except Exception:
             continue
-        for r in snap.get("rows", []) or []:
+        snap_rows = snap.get("rows", []) or []
+        # v2.9.2 : si l'étude ne publie pas la colonne de PDM, on la reconstruit à partir des ventes
+        # du benchmark ; sinon toutes les lignes étaient écartées et la calibration devenait impossible.
+        sales_total = sum(v for v in (_num(x.get("ventes")) for x in snap_rows) if v and v > 0)
+        n_sales = sum(1 for x in snap_rows if (_num(x.get("ventes")) or 0) > 0)
+        for r in snap_rows:
             try:
                 company_id = int(float(r.get("entreprise")))
             except Exception:
                 continue
+            share_pct = _num(r.get("part_marche"))
+            if share_pct is None and n_sales >= 2 and sales_total > 0 and (_num(r.get("ventes")) or 0) > 0:
+                share_pct = float(_num(r.get("ventes"))) / sales_total * 100.0
             rows.append({
                 "periode": period,
                 "entreprise": company_id,
-                "part_marche": _num(r.get("part_marche")),
+                "part_marche": share_pct,
                 "prix": _num(r.get("prix")),
                 "qualite": _num(r.get("qualite")),
                 "publicite": _num(r.get("publicite")),
@@ -290,11 +298,14 @@ def evaluate_scenario(
     ratio = (potential_share / base_share) if (potential_share is not None and base_share) else 1.0
 
     demand = baseline_forecast.copy()
-    if segment_product in demand.columns:
-        demand[segment_product] = pd.to_numeric(demand[segment_product], errors="coerce").fillna(0.0).clip(lower=0.0) * ratio
     product_cols = [p for p in PRODUCTS if p in demand.columns]
     for product in product_cols:
         demand[product] = pd.to_numeric(demand[product], errors="coerce").fillna(0.0).clip(lower=0.0)
+    # v2.9.2 : si le produit du segment n'est pas identifiable (segment_product vide ou inconnu),
+    # l'effet PDM est appliqué à l'ensemble de la gamme au lieu d'un produit arbitraire.
+    scaled_products = [segment_product] if segment_product in product_cols else list(product_cols)
+    for product in scaled_products:
+        demand[product] = demand[product] * ratio
     demand["demand_total"] = demand[product_cols].sum(axis=1)
     served = demand.copy()
 
@@ -306,7 +317,7 @@ def evaluate_scenario(
     capacity_bottlenecks: set[str] = set()
     capacity_impossible = False
     unserved_by_month: list[float] = []
-    segment_demand_total = float(demand[segment_product].sum()) if segment_product in demand else 0.0
+    segment_demand_total = float(demand[scaled_products].sum().sum()) if scaled_products else 0.0
     segment_served_total = 0.0
 
     for idx, row in demand.iterrows():
@@ -353,8 +364,7 @@ def evaluate_scenario(
             elif load > 1e-9:
                 served_util = float("inf")
         served_util_rows.append(served_util)
-        if segment_product in product_cols:
-            segment_served_total += float(served.at[idx, segment_product])
+        segment_served_total += float(sum(float(served.at[idx, product]) for product in scaled_products))
 
     served["unserved_demand"] = unserved_by_month
     served["production_factor"] = production_factors
@@ -426,4 +436,130 @@ def rank_scenarios(evaluated: Sequence[Mapping[str, Any]], top_n: int = 10) -> p
     if df.empty:
         return df
     # Priorité : part de marché, puis capacité, puis coût.
-    return df.sort_values(["PDM segment réalisable (%)","pression capacité sur demande (%)","dépense marketing mensuelle (€)"], ascending=[False,True,True]).head(top_n).reset_index(drop=True)
+    df = df.sort_values(["PDM segment réalisable (%)","pression capacité sur demande (%)","dépense marketing mensuelle (€)"], ascending=[False,True,True]).head(top_n).reset_index(drop=True)
+    # v2.9.2 : le rang correspond à la position après tri (et non à l'index d'évaluation).
+    df["rang"] = range(1, len(df) + 1)
+    return df
+
+
+
+def detect_segment_product(sales_row: Mapping[str, Any] | None, segment_units: float | None, tolerance: float = 0.5) -> str | None:
+    """Identifie le produit dont les ventes correspondent aux ventes du segment observé.
+
+    Retourne ``None`` si aucun produit ne correspond de façon univoque (ex. ventes = total gamme) ;
+    ``evaluate_scenario`` applique alors l'effet PDM à toute la gamme. L'ancien code retombait
+    silencieusement sur « Shorty 3 », ce qui déformait la demande et la capacité.
+    """
+    if sales_row is None or segment_units is None:
+        return None
+    matches = []
+    for product in PRODUCTS:
+        v = _num(sales_row.get(product)) if hasattr(sales_row, "get") else None
+        if v is not None and abs(v - float(segment_units)) <= tolerance and v > 0:
+            matches.append(product)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _share_fraction(value: Any) -> float | None:
+    v = _num(value)
+    if v is None or v <= 0:
+        return None
+    return v / 100.0 if v > 1 else v
+
+
+def resolve_reference_share(
+    competitive: Mapping[str, Any] | None,
+    history: pd.DataFrame | None,
+    own_company: int,
+    anchor_period: str,
+    fallback_units: float | None = None,
+) -> dict[str, Any]:
+    """Détermine la PDM de référence de l'ancrage, avec traçabilité de la source.
+
+    Ordre de priorité :
+    1. PDM segmentielle du snapshot d'ancrage (colonne de PDM, ou ventes/total du benchmark) ;
+    2. dernière PDM propre observée dans le benchmark au plus tard à l'ancrage ;
+    3. PDM globale du tableau de bord, utilisée comme référence approchée (signalée).
+
+    Retourne ``share`` (fraction 0-1 ou None), ``units``, ``source``, ``level`` et ``warning``.
+    """
+    from forecast_engine import period_index
+
+    competitive = competitive or {}
+    own = competitive.get("own") or {}
+    units = _num(own.get("ventes"))
+    if units is not None and units <= 0:
+        units = None
+    if units is None:
+        units = fallback_units if fallback_units and fallback_units > 0 else None
+
+    seg = _share_fraction(competitive.get("segment_share"))
+    if seg is not None:
+        src = competitive.get("segment_share_source") or "part_marche"
+        label = "PDM du benchmark" if src == "part_marche" else "PDM reconstruite (ventes / total du benchmark)"
+        return {"share": seg, "units": units, "level": "segment",
+                "source": f"{label} · {competitive.get('period') or anchor_period}", "warning": None}
+
+    if history is not None and not history.empty and {"entreprise", "periode", "part_marche"}.issubset(history.columns):
+        h = history.copy()
+        h["entreprise"] = pd.to_numeric(h["entreprise"], errors="coerce")
+        h = h.loc[h["entreprise"] == int(own_company)].copy()
+        h["_idx"] = h["periode"].map(period_index)
+        h = h.loc[h["_idx"] <= period_index(anchor_period)].sort_values("_idx")
+        for _, r in h.iloc[::-1].iterrows():
+            frac = _share_fraction(r.get("part_marche"))
+            if frac is not None:
+                u = _num(r.get("ventes"))
+                return {"share": frac, "units": units or (u if u and u > 0 else None), "level": "historique",
+                        "source": f"dernière PDM propre observée · {r['periode']}",
+                        "warning": f"La PDM segmentielle de {anchor_period} est absente : le moteur utilise la dernière observation propre disponible ({r['periode']})."}
+
+    glob = _share_fraction(competitive.get("global_share"))
+    if glob is not None:
+        return {"share": glob, "units": units, "level": "globale",
+                "source": "PDM globale du tableau de bord (référence approchée)",
+                "warning": "Aucune PDM segmentielle exploitable : la PDM globale du tableau de bord sert de référence. "
+                           "Les variations relatives restent valides, mais le niveau absolu est approximatif."}
+
+    return {"share": None, "units": units, "level": None, "source": "aucune",
+            "warning": "Aucune PDM exploitable (ni segmentielle, ni historique, ni globale)."}
+
+
+def resolve_own_levers(own: Mapping[str, Any] | None, history: pd.DataFrame | None, own_company: int, anchor_period: str) -> dict[str, Any]:
+    """Valeurs de départ des leviers (prix, qualité, publicités) avec leur provenance.
+
+    Complète la ligne propre du snapshot par la dernière observation complète de l'historique,
+    puis seulement en dernier recours par des valeurs par défaut explicitement signalées.
+    """
+    from forecast_engine import period_index
+
+    defaults = {"prix": 115.0, "qualite": 57.2, "publicite_marque": 55000.0, "publicite_produit": 3000.0}
+    out: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    own = own or {}
+    last = {}
+    if history is not None and not history.empty and "entreprise" in history.columns and "periode" in history.columns:
+        h = history.copy()
+        h["entreprise"] = pd.to_numeric(h["entreprise"], errors="coerce")
+        h = h.loc[h["entreprise"] == int(own_company)].copy()
+        h["_idx"] = h["periode"].map(period_index)
+        h = h.loc[h["_idx"] <= period_index(anchor_period)].sort_values("_idx")
+        if not h.empty:
+            last = h.iloc[-1].to_dict()
+    mapping = {
+        "prix": (own.get("prix"), last.get("prix")),
+        "qualite": (own.get("qualite"), last.get("qualite")),
+        "publicite_marque": (own.get("publicite_marque", own.get("publicite")), last.get("publicite")),
+        "publicite_produit": (own.get("publicite_produit"), last.get("publicite_produit")),
+    }
+    for key, (primary, secondary) in mapping.items():
+        p, q = _num(primary), _num(secondary)
+        if p is not None and (p > 0 or key.startswith("publicite")):
+            out[key], sources[key] = p, "snapshot d'ancrage"
+        elif q is not None and (q > 0 or key.startswith("publicite")):
+            out[key], sources[key] = q, f"historique ({last.get('periode')})"
+        else:
+            out[key], sources[key] = defaults[key], "valeur par défaut (à vérifier)"
+    out["sources"] = sources
+    out["uses_defaults"] = [k for k, v in sources.items() if v.startswith("valeur par défaut")]
+    return out
