@@ -1151,16 +1151,35 @@ elif module_principal == "📥 Saisie des Données Réelles":
     mois_saisie = st.selectbox("Sélectionnez le mois à renseigner :", list(mois_mapping.keys()))
     tour_saisie = tour_mapping_id[mois_saisie]
 
-    df_h, df_m, d_rh, d_mkg, d_ventes, dfin = pd.DataFrame(), pd.DataFrame(), {}, {}, {}, {}
+    df_h, df_m, d_rh, d_mkg, df_ventes, dfin = pd.DataFrame(), pd.DataFrame(), {}, {}, pd.DataFrame(), {}
+    _erreurs_chargement: list[str] = []
     if engine is not None:
-        try:
-            df_h = pd.read_sql(f"SELECT * FROM Historique_Equipe WHERE Tour_ID = {tour_saisie}", engine)
-            df_m = pd.read_sql(f"SELECT * FROM Parc_Machines_Mensuel WHERE Tour_ID = {tour_saisie}", engine)
-            d_rh = charger_donnees_rh_bdd(tour_saisie)
-            d_mkg = charger_donnees_mkg_bdd(tour_saisie)
-            d_ventes = pd.read_sql(f"SELECT * FROM Ventes_Historique WHERE Tour_ID = {tour_saisie}", engine)
-            dfin = pd.read_sql(f"SELECT * FROM Finances_Mensuelles WHERE Tour_ID = {tour_saisie}", engine)
-        except Exception: pass
+        def _charger(label, fn, defaut):
+            """Charge une source isolément : un échec n'annule pas les autres onglets."""
+            try:
+                return fn()
+            except Exception as exc:
+                _erreurs_chargement.append(f"{label} : {type(exc).__name__}")
+                return defaut
+
+        df_h = _charger("Historique_Equipe", lambda: pd.read_sql(
+            text("SELECT * FROM Historique_Equipe WHERE Tour_ID = :t"), engine, params={"t": int(tour_saisie)}), pd.DataFrame())
+        df_m = _charger("Parc_Machines_Mensuel", lambda: pd.read_sql(
+            text("SELECT * FROM Parc_Machines_Mensuel WHERE Tour_ID = :t"), engine, params={"t": int(tour_saisie)}), pd.DataFrame())
+        d_rh = _charger("Decisions_RH_Mensuel", lambda: charger_donnees_rh_bdd(tour_saisie), {})
+        d_mkg = _charger("Decisions_Marketing", lambda: charger_donnees_mkg_bdd(tour_saisie), {})
+        df_ventes = _charger("Ventes_Historique", lambda: pd.read_sql(
+            text("SELECT * FROM Ventes_Historique WHERE Tour_ID = :t"), engine, params={"t": int(tour_saisie)}), pd.DataFrame())
+        dfin = _charger("Finances_Mensuelles", lambda: pd.read_sql(
+            text("SELECT * FROM Finances_Mensuelles WHERE Tour_ID = :t"), engine, params={"t": int(tour_saisie)}), pd.DataFrame())
+    else:
+        _erreurs_chargement.append("Base de données non connectée")
+
+    if _erreurs_chargement:
+        st.warning(
+            "Lecture partielle des données du mois : " + " • ".join(_erreurs_chargement)
+            + ". Les onglets concernés afficheront les valeurs par défaut ; les autres restent utilisables."
+        )
 
     def get_h(col, def_v): return float(df_h[col].iloc[0]) if not df_h.empty and col in df_h.columns else def_v
     def get_m(col, def_v=0): return int(df_m[col].iloc[0]) if not df_m.empty and col in df_m.columns else def_v
