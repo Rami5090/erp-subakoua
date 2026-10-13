@@ -166,3 +166,19 @@ def describe_row(table: str, ref: ReferenceRow, diag: ReferenceDiagnostic, label
         )
     else:
         diag.note(f"`{table}` : tour {ref.tour_utilise} ({label_tour(ref.tour_utilise)}).")
+
+
+def merge_reference(ref: ReferenceRow, parsed: Mapping[str, Any] | None, tour_demande: int) -> tuple[ReferenceRow, bool]:
+    """Complète une ligne de référence SQL par des valeurs issues du scraper.
+
+    - une ligne SQL EXACTE pour le tour demandé (saisie manuelle) reste prioritaire ;
+    - sinon (absente ou repli sur un tour plus ancien), les valeurs scrapées du tour demandé
+      remplacent celles du repli, champ par champ.
+    Retourne (ligne, scraper_utilise).
+    """
+    if not parsed:
+        return ref, False
+    if ref.found and not ref.is_fallback:
+        return ref, False
+    data = {**ref.data, **dict(parsed)}
+    return ReferenceRow(data, int(tour_demande), int(tour_demande)), True

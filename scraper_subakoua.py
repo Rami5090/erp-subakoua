@@ -45,6 +45,7 @@ from playwright.sync_api import (
     sync_playwright,
 )
 import pymysql
+from decisions_parser import decisions_utiles
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +60,7 @@ load_dotenv()
 URL_CONNEXION = os.getenv("SUBAKOUA_LOGIN_URL", "https://login.arkhe.com/")
 URL_DASHBOARD = os.getenv("SUBAKOUA_DASHBOARD_URL", "https://subakoua.arkhe.com/companies")
 DOMAINE_BASE = f"{urlparse(URL_DASHBOARD).scheme}://{urlparse(URL_DASHBOARD).netloc}"
-EXTRACTOR_VERSION = "2.3.0"
+EXTRACTOR_VERSION = "2.4.1"
 
 MODULES_A_VISITER = [
     ("Marketing", "marketing"),
@@ -74,6 +75,17 @@ MODULES_A_VISITER = [
     ("Veille", "veille_concurrentielle"),
     ("Fournisseurs", "fournisseurs"),
 ]
+
+# Modules « Décisions » de l'accueil Subakoua (tuiles DÉCISIONS Marketing / Production / …).
+# clé de module -> libellés possibles de la tuile (comparés sans accent ni casse).
+DECISION_MODULES = {
+    "marketing": ["marketing"],
+    "production": ["production"],
+    "approvisionnement": ["approvisionnement"],
+    "rh": ["ressources humaines", "ressources"],
+    "finance": ["administration / finance", "administration/finance", "administration", "finance"],
+}
+MARQUEUR_DECISIONS = "__champs__"
 
 MOIS_DISPONIBLES = [
     "Année 1 - Janvier", "Année 1 - Février", "Année 1 - Mars",
@@ -343,6 +355,191 @@ JS_EXTRACTEUR_UNIVERSEL = r"""
     if (Object.keys(balances).length) data['Soldes bancaires'] = [balances];
 
     return data;
+}
+"""
+
+
+JS_CHAMPS_DECISIONS = r"""
+() => {
+    const clean = v => String(v ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const num = raw => {
+        let s = clean(raw);
+        if (!s) return null;
+        const neg = /^\s*\(.*\)\s*$/.test(s) || /^\s*-/.test(s);
+        s = s.replace(/[^0-9,\.\-+]/g, '');
+        if (!s || !/[0-9]/.test(s)) return null;
+        const c = s.lastIndexOf(','), d = s.lastIndexOf('.');
+        if (c >= 0 && d >= 0) s = c > d ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+        else if (c >= 0) s = s.replace(',', '.');
+        let n = Number(s);
+        if (!Number.isFinite(n)) return null;
+        return neg && n > 0 ? -n : n;
+    };
+    const sectionOf = el => {
+        const bloc = el.closest('okw-base-block');
+        const t = bloc && bloc.querySelector('.subSectionTitle-subtitle, .headerMainCard-title');
+        return t ? clean(t.innerText) : '';
+    };
+    const rowOf = el => {
+        const row = el.closest('.formBlock, .formProductBlock');
+        const t = row && row.querySelector('.formBlock-title, .formProductBlock-title');
+        return { row, title: t ? clean(t.innerText) : '' };
+    };
+    const labelOf = el => {
+        const aria = el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+        if (clean(aria)) return clean(aria);
+        if (el.id) {
+            const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+            if (l) return clean(l.innerText);
+        }
+        const wrap = el.closest('label');
+        if (wrap) return clean(wrap.innerText);
+        const near = el.closest('.field, .form-group, .p-field, ui-labeled-data, ui-input-number, .grid-x');
+        const lab = near && near.querySelector('label, .uiLabel-text, .label, .ui-label');
+        return lab ? clean(lab.innerText) : '';
+    };
+
+    const champs = [];
+    const done = new Set();
+    document.querySelectorAll('input, textarea, select').forEach(el => {
+        const type = (el.getAttribute('type') || el.tagName).toLowerCase();
+        if (['hidden', 'search', 'button', 'submit'].includes(type)) return;
+        if (done.has(el)) return;
+        done.add(el);
+        const { row, title } = rowOf(el);
+        let index = 0;
+        if (row) index = Array.from(row.querySelectorAll('input, textarea, select')).indexOf(el);
+        let value;
+        if (type === 'checkbox' || type === 'radio') value = el.checked;
+        else {
+            const raw = el.getAttribute('aria-valuenow') ?? el.value ?? '';
+            const n = num(raw);
+            value = n === null ? clean(raw) : n;
+        }
+        champs.push({
+            section: sectionOf(el), ligne: title, index, label: labelOf(el),
+            name: el.getAttribute('name') || '', control: el.getAttribute('formcontrolname') || '',
+            id: el.id || '', type, value, disabled: !!(el.disabled || el.readOnly),
+        });
+    });
+
+    // Valeurs affichées en lecture seule (décisions clôturées) : pas d'<input> dans la cellule.
+    document.querySelectorAll('ui-labeled-data, .p-select-label, .p-select .p-select-label').forEach(el => {
+        if (el.querySelector('input, textarea, select')) return;
+        if (el.closest('ui-labeled-data') && el.matches('.p-select-label') && el.closest('ui-labeled-data') !== el) return;
+        const txt = clean(el.innerText);
+        if (!txt) return;
+        const { row, title } = rowOf(el);
+        let index = 0;
+        if (row) index = Array.from(row.querySelectorAll('ui-labeled-data, .p-select-label')).indexOf(el);
+        const n = num(txt);
+        champs.push({
+            section: sectionOf(el), ligne: title, index, label: labelOf(el), name: '', control: '',
+            id: '', type: 'texte', value: n === null ? txt : n, disabled: true,
+        });
+    });
+
+    // Lignes de formulaire : toutes les valeurs numériques visibles, dans l'ordre.
+    const lignes = [];
+    document.querySelectorAll('.formBlock, .formProductBlock').forEach(row => {
+        const t = row.querySelector('.formBlock-title, .formProductBlock-title');
+        if (!t) return;
+        const titre = clean(t.innerText);
+        const valeurs = [];
+        const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+            if (t.contains(node)) continue;
+            const x = clean(node.nodeValue);
+            if (!x) continue;
+            const n = num(x);
+            valeurs.push(n === null ? x : n);
+        }
+        row.querySelectorAll('input').forEach(i => {
+            const n = num(i.getAttribute('aria-valuenow') ?? i.value ?? '');
+            if (n !== null) valeurs.push(n);
+        });
+        lignes.push({ section: sectionOf(row), ligne: titre, valeurs });
+    });
+
+    const per = document.querySelector('okw-select-period');
+    return {
+        __champs__: champs,
+        __lignes__: lignes,
+        __page__: {
+            url: location.href,
+            titre: clean((document.querySelector('h1, h2, .headerMainCard-title') || {}).innerText || ''),
+            periode_affichee: per ? clean(per.innerText) : '',
+        },
+    };
+}
+"""
+
+JS_EXTRACTEUR_DECISIONS = "() => { const base = (" + JS_EXTRACTEUR_UNIVERSEL + ")(); const extra = (" + JS_CHAMPS_DECISIONS + ")(); return Object.assign(base, extra); }"
+
+JS_CLIQUER_TUILE_DECISION = r"""
+(labels) => {
+    const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const wanted = labels.map(norm);
+    const hits = [];
+    document.querySelectorAll('a, button, [role=button], [routerlink], div, section, article, li').forEach(el => {
+        const t = norm(el.innerText);
+        if (!t.startsWith('decisions')) return;
+        const rest = t.slice('decisions'.length).trim();
+        if (wanted.some(w => rest === w || rest.startsWith(w + ' ') || rest.startsWith(w + '/'))) {
+            hits.push({ el, len: t.length });
+        }
+    });
+    if (!hits.length) return false;
+    hits.sort((a, b) => a.len - b.len);
+    const target = hits[0].el;
+    (target.closest('a, button, [role=button], [routerlink]') || target).click();
+    return true;
+}
+"""
+
+JS_FORMULAIRE_PRESENT = r"""
+() => {
+    const nodes = document.querySelectorAll(
+        '.formBlock, .formProductBlock, input:not(#search-query):not([type=hidden]):not([type=search]):not(.p-hidden-accessible), textarea, select'
+    );
+    return Array.from(nodes).filter(el => !el.closest('okw-select-period, p-select, .p-select, header, nav')).length;
+}
+"""
+
+JS_INVENTAIRE_TUILES = r"""
+() => {
+    const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const out = [];
+    document.querySelectorAll('body *').forEach(el => {
+        const t = norm(el.innerText);
+        if (!t.startsWith('decisions') || t.length > 80) return;
+        const r = el.getBoundingClientRect();
+        out.push({
+            tag: el.tagName.toLowerCase(), classes: String(el.className || '').slice(0, 120),
+            texte: t, href: el.getAttribute('href') || '', role: el.getAttribute('role') || '',
+            routerlink: el.getAttribute('routerlink') || '', target: el.getAttribute('target') || '',
+            cursor: getComputedStyle(el).cursor, pointer_events: getComputedStyle(el).pointerEvents,
+            rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+            html: el.outerHTML.slice(0, 500),
+        });
+    });
+    return out.slice(0, 40);
+}
+"""
+
+JS_PERIODE_COURANTE = r"""
+() => {
+    const re = /Ann[ée]e\s+(\d+)\s*-\s*([A-Za-zÀ-ÿ]+)/;
+    const zones = [document.querySelector('header'), document.querySelector('nav'), document.body];
+    for (const z of zones) {
+        if (!z) continue;
+        const m = re.exec(z.innerText || '');
+        if (m) return 'Année ' + m[1] + ' - ' + m[2];
+    }
+    return '';
 }
 """
 
@@ -932,6 +1129,177 @@ def selectionner_mois(page: Page, periode_cible: str, config: ScraperConfig) -> 
     page.wait_for_timeout(900)
 
 
+SELECTEUR_PERIODE = "okw-select-period span[role='combobox']"
+
+
+def _norm_texte(value: str) -> str:
+    import unicodedata
+    text = unicodedata.normalize("NFD", str(value or ""))
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def detecter_periode_courante(page: Page, logger: logging.Logger) -> str | None:
+    """Période en cours dans le jeu (bandeau en haut à gauche, ex. « Année 1 - Septembre »)."""
+    try:
+        brut = page.evaluate(JS_PERIODE_COURANTE)
+    except Exception:
+        return None
+    cible = _norm_texte(brut)
+    for mois in MOIS_DISPONIBLES:
+        if _norm_texte(mois) == cible:
+            logger.info("Période courante du jeu détectée : %s", mois)
+            return mois
+    return None
+
+
+def formulaire_decisions_present(page: Page) -> int:
+    try:
+        return int(page.evaluate(JS_FORMULAIRE_PRESENT))
+    except Exception:
+        return 0
+
+
+def attendre_formulaire(page: Page, timeout_ms: int = 8000) -> bool:
+    """Attend qu'un formulaire de décisions soit rendu (Angular charge souvent en différé)."""
+    pas = 400
+    ecoule = 0
+    while ecoule <= timeout_ms:
+        if formulaire_decisions_present(page) > 0:
+            return True
+        page.wait_for_timeout(pas)
+        ecoule += pas
+    return False
+
+
+def _clic_playwright_tuile(page: Page, labels: list[str]) -> None:
+    """Vrai clic souris (événements pointeur réels) sur la tuile « DÉCISIONS <label> »."""
+    for label in labels:
+        motif = re.compile(rf"^\s*d[ée]cisions\s*{re.escape(label)}", re.IGNORECASE)
+        cible = page.locator("a, button, [role=button], li, article, section, div").filter(has_text=motif).last
+        if cible.count() == 0:
+            continue
+        cible.scroll_into_view_if_needed(timeout=3000)
+        cible.click(timeout=5000)
+        return
+    raise RuntimeError("tuile introuvable (clic Playwright)")
+
+
+def ouvrir_decision(
+    page: Page,
+    cle: str,
+    config: ScraperConfig,
+    logger: logging.Logger,
+    journal: list | None = None,
+    dossier_sonde: Path | None = None,
+) -> Page:
+    """Ouvre la page de décisions et VÉRIFIE qu'un formulaire est rendu.
+
+    Retourne la page de travail : la page d'origine, ou un NOUVEL ONGLET si la tuile en ouvre un.
+    Plusieurs stratégies sont essayées ; aucune n'est considérée réussie sans formulaire visible,
+    ce qui évite d'enregistrer l'accueil comme s'il s'agissait d'une décision.
+    """
+    labels = DECISION_MODULES.get(cle, [cle])
+    url_depart = page.url
+    contexte = page.context
+    strategies = [
+        ("clic_js_tuile", lambda: page.evaluate(JS_CLIQUER_TUILE_DECISION, labels)),
+        ("clic_souris_tuile", lambda: _clic_playwright_tuile(page, labels)),
+        ("clic_texte_module", lambda: ouvrir_module(page, labels[0].capitalize(), config, logger)),
+    ]
+    for nom, action in strategies:
+        pages_avant = len(contexte.pages)
+        entree = {"module": cle, "strategie": nom, "url_avant": page.url}
+        try:
+            retour = action()
+            entree["retour"] = None if retour is None else str(retour)
+        except Exception as exc:
+            entree["erreur"] = f"{type(exc).__name__}: {exc}"[:300]
+            logger.warning("Décisions %s | %s en échec : %s", cle, nom, exc)
+            if journal is not None:
+                journal.append(entree)
+            continue
+
+        page.wait_for_timeout(600)
+        travail = page
+        if len(contexte.pages) > pages_avant:
+            travail = contexte.pages[-1]
+            entree["nouvel_onglet"] = True
+            try:
+                travail.wait_for_load_state("domcontentloaded", timeout=config.timeout_ms)
+            except Exception:
+                pass
+        else:
+            wait_page_stable(page, config.timeout_ms)
+        ok = attendre_formulaire(travail, 8000)
+        entree.update({"url_apres": travail.url, "champs_detectes": formulaire_decisions_present(travail), "ok": ok})
+        if dossier_sonde is not None:
+            try:
+                base = dossier_sonde / f"{cle}_{nom}"
+                travail.screenshot(path=str(base) + ".png", full_page=True)
+                Path(str(base) + ".html").write_text(travail.content(), encoding="utf-8")
+            except Exception as exc:
+                entree["erreur_capture"] = str(exc)[:200]
+        if journal is not None:
+            journal.append(entree)
+        if ok:
+            logger.info("Décisions %s ouvertes via %s | url=%s | nouvel_onglet=%s", cle, nom, travail.url, travail is not page)
+            return travail
+
+        logger.warning("Décisions %s | %s : aucun formulaire (url=%s)", cle, nom, travail.url)
+        if travail is not page:
+            try:
+                travail.close()
+            except Exception:
+                pass
+        elif page.url != url_depart:
+            try:
+                page.goto(url_depart, wait_until="domcontentloaded", timeout=config.timeout_ms)
+                wait_page_stable(page, config.timeout_ms)
+            except Exception:
+                pass
+    maybe_save_debug(page, config, f"decisions_{cle}_introuvable", logger)
+    raise RuntimeError(
+        f"Page de décisions « {cle} » introuvable : aucune stratégie n'a abouti à un formulaire "
+        "(voir scraper_output/*.png|html ou lancer --probe-decisions)."
+    )
+
+
+def preparer_mois(page: Page, mois: str, config: ScraperConfig, tolerant: bool, periode_courante: str | None) -> str | None:
+    """Sélectionne le mois. Retourne un message d'erreur si le mois n'est pas lisible.
+
+    En mode tolérant (pages de décisions), l'absence de sélecteur de période n'est pas bloquante :
+    la page affiche alors la période courante du jeu, que l'on accepte uniquement pour ce mois.
+    """
+    if tolerant and page.locator(SELECTEUR_PERIODE).count() == 0:
+        if periode_courante and mois == periode_courante:
+            return None
+        return (
+            "sélecteur de période absent : seule la période courante du jeu "
+            f"({periode_courante or 'non détectée'}) est lisible sur cette page"
+        )
+    selectionner_mois(page, mois, config)
+    return None
+
+
+def extraire_validee(page: Page, extracteur_js: str, tolerant: bool) -> Any:
+    """Extrait la page ; en mode décisions, une page sans formulaire est une ERREUR (jamais stockée)."""
+    if tolerant and not attendre_formulaire(page, 8000):
+        raise RuntimeError(
+            "page de décisions vide : aucun formulaire après sélection de la période "
+            f"(url={page.url}) — la sélection du mois a peut-être quitté la page de décisions"
+        )
+    data = page.evaluate(extracteur_js)
+    if tolerant and not decisions_utiles(data):
+        raise RuntimeError(f"extraction de décisions sans valeur exploitable (url={page.url})")
+    return data
+
+
+def contient_marqueur_decisions(value: Any) -> bool:
+    """Extraction de décisions v2.4+ ET réellement renseignée (pas une page vide)."""
+    return value is not None and decisions_utiles(value)
+
+
 def verifier_specimen(page: Page) -> bool:
     try:
         if page.get_by_text("Vous n'avez pas encore acheté ce document", exact=False).is_visible():
@@ -999,6 +1367,9 @@ def aspirer_page_courante(
     liste_mois: list[str],
     config: ScraperConfig,
     logger: logging.Logger,
+    extracteur_js: str = JS_EXTRACTEUR_UNIVERSEL,
+    tolerant: bool = False,
+    periode_courante: str | None = None,
 ) -> dict[str, Any]:
     donnees_par_mois = {mois: {} for mois in liste_mois}
     documents = extract_document_links(page)
@@ -1015,10 +1386,12 @@ def aspirer_page_courante(
 
                 for mois in liste_mois:
                     def extract_month():
-                        selectionner_mois(page, mois, config)
+                        erreur = preparer_mois(page, mois, config, tolerant, periode_courante)
+                        if erreur:
+                            return {"__scraper_error__": erreur}
                         if verifier_specimen(page):
                             return "SPECIMEN"
-                        return page.evaluate(JS_EXTRACTEUR_UNIVERSEL)
+                        return extraire_validee(page, extracteur_js, tolerant)
 
                     data = retry_call(extract_month, config.retries, logger, f"Extraction {doc['title']} / {mois}")
                     unique_title = doc["title"]
@@ -1042,10 +1415,12 @@ def aspirer_page_courante(
         for mois in liste_mois:
             logger.info("Période | %s", mois)
             def extract_month_simple():
-                selectionner_mois(page, mois, config)
+                erreur = preparer_mois(page, mois, config, tolerant, periode_courante)
+                if erreur:
+                    return {"__scraper_error__": erreur}
                 if verifier_specimen(page):
                     return "SPECIMEN"
-                return page.evaluate(JS_EXTRACTEUR_UNIVERSEL)
+                return extraire_validee(page, extracteur_js, tolerant)
             try:
                 donnees_par_mois[mois] = retry_call(
                     extract_month_simple, config.retries, logger, f"Extraction {mois}"
@@ -1063,11 +1438,14 @@ def aspirer_structure_intelligente(
     liste_mois: list[str],
     config: ScraperConfig,
     logger: logging.Logger,
+    extracteur_js: str = JS_EXTRACTEUR_UNIVERSEL,
+    tolerant: bool = False,
+    periode_courante: str | None = None,
 ) -> dict[str, Any]:
     page.wait_for_timeout(700)
     onglets = extract_tabs(page)
     if not onglets:
-        return aspirer_page_courante(page, liste_mois, config, logger)
+        return aspirer_page_courante(page, liste_mois, config, logger, extracteur_js, tolerant, periode_courante)
 
     logger.info("Onglets détectés : %s", ", ".join(onglets))
     donnees_par_mois = {mois: {} for mois in liste_mois}
@@ -1079,7 +1457,7 @@ def aspirer_structure_intelligente(
             wait_page_stable(page, config.timeout_ms)
             page.get_by_text(onglet, exact=True).first.click(timeout=5000)
             wait_page_stable(page, config.timeout_ms)
-            resultat = aspirer_page_courante(page, liste_mois, config, logger)
+            resultat = aspirer_page_courante(page, liste_mois, config, logger, extracteur_js, tolerant, periode_courante)
             for mois in liste_mois:
                 donnees_par_mois[mois][onglet] = resultat.get(mois, {})
         except Exception as exc:
@@ -1127,6 +1505,8 @@ def parse_modules(args: argparse.Namespace) -> list[tuple[str, str]]:
     if args.modules == "all" or not args.modules:
         return list(MODULES_A_VISITER)
     requested = {x.strip().lower() for x in args.modules.split(",") if x.strip()}
+    if "decisions" in requested or "décisions" in requested:
+        requested |= set(DECISION_MODULES)
     result = []
     for display, key in MODULES_A_VISITER:
         if display.lower() in requested or key.lower() in requested:
@@ -1175,6 +1555,7 @@ def lancer_robot_global(
             try:
                 login(page, context, config, logger)
                 revenir_au_dashboard(page, config)
+                periode_courante_jeu = detecter_periode_courante(page, logger)
 
                 for mot_cle, cle_dict in modules:
                     logger.info("===== MODULE %s (%s) =====", mot_cle, cle_dict)
@@ -1190,7 +1571,8 @@ def lancer_robot_global(
                         if config.incremental:
                             for mois in liste_mois:
                                 existing = existing_module_data(connection, mois, cle_dict)
-                                if existing is None or contains_specimen(existing) or contains_scraper_error(existing):
+                                ancien_format = cle_dict in DECISION_MODULES and not contient_marqueur_decisions(existing)
+                                if existing is None or contains_specimen(existing) or contains_scraper_error(existing) or ancien_format:
                                     a_traiter.append(mois)
                                 else:
                                     result_mod["skipped_periods"].append(mois)
@@ -1201,10 +1583,32 @@ def lancer_robot_global(
                         else:
                             a_traiter = liste_mois
 
-                        ouvrir_module(page, mot_cle, config, logger)
-                        donnees_multi_mois = aspirer_structure_intelligente(page, a_traiter, config, logger)
+                        est_decision = cle_dict in DECISION_MODULES
+                        page_travail = page
+                        if est_decision:
+                            page_travail = ouvrir_decision(page, cle_dict, config, logger)
+                        else:
+                            ouvrir_module(page, mot_cle, config, logger)
+                        donnees_multi_mois = aspirer_structure_intelligente(
+                            page_travail, a_traiter, config, logger,
+                            extracteur_js=JS_EXTRACTEUR_DECISIONS if est_decision else JS_EXTRACTEUR_UNIVERSEL,
+                            tolerant=est_decision,
+                            periode_courante=periode_courante_jeu,
+                        )
+                        if page_travail is not page:
+                            try:
+                                page_travail.close()
+                            except Exception:
+                                pass
                         synchroniser_module(connection, cle_dict, donnees_multi_mois, logger, has_unique_key)
-                        result_mod["scraped_periods"] = list(a_traiter)
+                        if est_decision:
+                            ok_periodes = [m for m in a_traiter if payload_is_usable(donnees_multi_mois.get(m))]
+                            result_mod["scraped_periods"] = ok_periodes
+                            for m in a_traiter:
+                                if m not in ok_periodes:
+                                    result_mod["errors"].append(f"{m} : aucune décision exploitable extraite")
+                        else:
+                            result_mod["scraped_periods"] = list(a_traiter)
                         revenir_au_dashboard(page, config)
                     except Exception as exc:
                         result_mod["errors"].append(str(exc))
@@ -1248,6 +1652,63 @@ def lancer_robot_global(
 # CLI
 # ---------------------------------------------------------------------------
 
+def sonder_decisions(config: ScraperConfig, logger: logging.Logger) -> Path:
+    """Mode sonde : n'écrit RIEN en base. Produit un dossier de diagnostic (captures, HTML, JSON).
+
+    Pour chaque tuile de décisions : inventaire des éléments cliquables, essai de chaque stratégie
+    d'ouverture (URL avant/après, nouvel onglet, nombre de champs), puis extraction brute si un
+    formulaire est atteint. Le dossier sert à calibrer le scraper et le parseur sur le vrai site.
+    """
+    dossier = config.output_dir / f"probe_{timestamp()}"
+    dossier.mkdir(parents=True, exist_ok=True)
+    rapport: dict[str, Any] = {"extractor_version": EXTRACTOR_VERSION, "modules": {}}
+    with sync_playwright() as p:
+        browser = launch_browser(p, config, logger)
+        context = create_context(browser, config, logger)
+        page = context.new_page()
+        page.set_default_timeout(config.timeout_ms)
+        page.set_default_navigation_timeout(config.timeout_ms)
+        try:
+            login(page, context, config, logger)
+            revenir_au_dashboard(page, config)
+            rapport["url_accueil"] = page.url
+            rapport["periode_courante"] = detecter_periode_courante(page, logger)
+            rapport["periode_affichee_selecteur"] = (
+                page.locator(SELECTEUR_PERIODE).first.inner_text() if page.locator(SELECTEUR_PERIODE).count() else None
+            )
+            page.screenshot(path=str(dossier / "00_accueil.png"), full_page=True)
+            (dossier / "00_accueil.html").write_text(page.content(), encoding="utf-8")
+            rapport["tuiles"] = page.evaluate(JS_INVENTAIRE_TUILES)
+
+            for cle in DECISION_MODULES:
+                entree: dict[str, Any] = {"tentatives": []}
+                rapport["modules"][cle] = entree
+                try:
+                    travail = ouvrir_decision(page, cle, config, logger, journal=entree["tentatives"], dossier_sonde=dossier)
+                    entree["ouvert"] = True
+                    entree["extraction"] = travail.evaluate(JS_EXTRACTEUR_DECISIONS)
+                    entree["extraction_utile"] = decisions_utiles(entree["extraction"])
+                    entree["selecteur_periode_present"] = travail.locator(SELECTEUR_PERIODE).count() > 0
+                    travail.screenshot(path=str(dossier / f"{cle}_formulaire.png"), full_page=True)
+                    (dossier / f"{cle}_formulaire.html").write_text(travail.content(), encoding="utf-8")
+                    if travail is not page:
+                        travail.close()
+                except Exception as exc:
+                    entree["ouvert"] = False
+                    entree["erreur"] = str(exc)[:400]
+                try:
+                    revenir_au_dashboard(page, config)
+                except Exception:
+                    pass
+        finally:
+            context.close()
+            browser.close()
+    chemin = dossier / "probe_report.json"
+    chemin.write_text(json.dumps(rapport, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Sonde terminée | rapport=%s", chemin)
+    return dossier
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Scraper robuste Subakoua ERP")
     parser.add_argument("--user", help="Identifiant Subakoua (évite de le stocker dans le fichier .env)")
@@ -1257,6 +1718,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true", help="Ignore le mode incrémental et rescrape les périodes sélectionnées")
     parser.add_argument("--headless", dest="headless", action="store_true", help="Navigateur sans interface")
     parser.add_argument("--show-browser", dest="headless", action="store_false", help="Affiche le navigateur")
+    parser.add_argument("--probe-decisions", action="store_true", help="Diagnostic des pages de décisions (aucune écriture en base) : captures, HTML et JSON dans scraper_output/probe_*")
     parser.set_defaults(headless=None)
     return parser
 
@@ -1285,6 +1747,14 @@ def main() -> int:
     config = load_config(args)
     logger = build_logger(config.output_dir)
     config = complete_credentials(config, args, logger)
+
+    if args.probe_decisions:
+        if not config.username or not config.password:
+            logger.error("Identifiants Subakoua absents.")
+            return 2
+        dossier = sonder_decisions(config, logger)
+        logger.info("Envoie le dossier %s pour calibrage.", dossier)
+        return 0
 
     periods = parse_periods(args)
     modules = parse_modules(args)

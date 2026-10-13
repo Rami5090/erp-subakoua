@@ -6,6 +6,9 @@ sur le dump JSON ou appelées depuis l'interface Streamlit.
 
 from __future__ import annotations
 
+import re
+import unicodedata
+
 from dataclasses import dataclass, asdict, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
@@ -257,22 +260,70 @@ def target_schedule_code(tour_id: int) -> int:
     return month * 100 + year
 
 
+def _norm_key(value: Any) -> str:
+    """Clé normalisée : sans accent, minuscule, espaces/tirets/underscores écrasés."""
+    text = unicodedata.normalize("NFKD", str(value))
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return re.sub(r"[\s_\-]+", " ", text).strip().casefold()
+
+
+def _walk_path(node: Any, path: Sequence[str], accept) -> Any:
+    """Résolution tolérante d'un chemin dans un JSON scrapé.
+
+    Tolère : casse/accents/espaces différents, niveaux EN TROP dans les données, et UN niveau
+    manquant (le scraper n'ajoute le niveau « onglet » que si la page a un menu d'onglets).
+    Garde-fous : le saut d'un niveau manquant n'est autorisé que pour un niveau situé avant
+    l'avant-dernier élément du chemin, afin de ne jamais lire le « Tableau_1 » d'un autre document.
+    """
+    wanted = [_norm_key(p) for p in path]
+    last_skippable = len(wanted) - 3
+
+    def dfs(current: Any, idx: int, skips: int) -> Any:
+        if idx == len(wanted):
+            return current if accept(current) else None
+        if not isinstance(current, Mapping):
+            return None
+        for key, child in current.items():
+            if _norm_key(key) == wanted[idx]:
+                found = dfs(child, idx + 1, skips)
+                if found is not None:
+                    return found
+        for child in current.values():
+            if isinstance(child, Mapping):
+                found = dfs(child, idx, skips)
+                if found is not None:
+                    return found
+        if skips < 1 and idx <= last_skippable:
+            return dfs(current, idx + 1, skips + 1)
+        return None
+
+    return dfs(node, 0, 0)
+
+
 def _rows_at(data: Mapping[str, Any], path: Sequence[str]) -> list[Mapping[str, Any]]:
     node: Any = data
     for key in path:
         if not isinstance(node, Mapping):
-            return []
+            node = None
+            break
         node = node.get(key)
-    return node if isinstance(node, list) else []
+    if isinstance(node, list) and node:
+        return node
+    found = _walk_path(data, path, lambda n: isinstance(n, list) and bool(n))
+    return found if isinstance(found, list) else []
 
 
 def _mapping_at(data: Mapping[str, Any], path: Sequence[str]) -> Mapping[str, Any]:
     node: Any = data
     for key in path:
         if not isinstance(node, Mapping):
-            return {}
+            node = None
+            break
         node = node.get(key)
-    return node if isinstance(node, Mapping) else {}
+    if isinstance(node, Mapping) and node:
+        return node
+    found = _walk_path(data, path, lambda n: isinstance(n, Mapping) and bool(n))
+    return found if isinstance(found, Mapping) else {}
 
 
 def _first_row_value(rows: Iterable[Mapping[str, Any]], key: str, default: Any = None) -> Any:
@@ -282,12 +333,51 @@ def _first_row_value(rows: Iterable[Mapping[str, Any]], key: str, default: Any =
     return default
 
 
+def _find_balance_mapping(node: Any, depth: int = 0) -> Optional[Mapping[str, Any]]:
+    """Dernier recours : premier dict portant « Solde initial » ou « Solde final », où qu'il soit."""
+    if depth > 12:
+        return None
+    if isinstance(node, Mapping):
+        keys = {_norm_key(k) for k in node.keys()}
+        if keys & {"solde initial", "solde final"}:
+            return node
+        children = node.values()
+    elif isinstance(node, list):
+        children = node
+    else:
+        return None
+    for child in children:
+        found = _find_balance_mapping(child, depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _balance_value(row: Mapping[str, Any], label: str) -> Optional[Decimal]:
+    for key, value in row.items():
+        if _norm_key(key) == label:
+            return to_decimal(value)
+    return None
+
+
 def extract_bank_balances(period_data: Mapping[str, Any]) -> tuple[Optional[Decimal], Optional[Decimal]]:
+    """Soldes bancaires initial / final depuis Banque et assurance → Extrait bancaire.
+
+    Chemin nominal d'abord, puis résolution tolérante (onglet absent, accents, casse),
+    puis recherche de n'importe quel bloc contenant « Solde initial » / « Solde final »
+    dans le module Banque.
+    """
     rows = _rows_at(period_data, ("etat_actuel", "banque_assurance", "Banque", "Extrait bancaire", "Soldes bancaires"))
-    if not rows:
+    row: Optional[Mapping[str, Any]] = rows[0] if rows else None
+    if row is None or (_balance_value(row, "solde initial") is None and _balance_value(row, "solde final") is None):
+        banque = _mapping_at(period_data, ("etat_actuel", "banque_assurance"))
+        extrait = _walk_path(banque, ("Extrait bancaire",), lambda n: isinstance(n, (Mapping, list))) if banque else None
+        row = _find_balance_mapping(extrait) if extrait is not None else None
+        if row is None and banque:
+            row = _find_balance_mapping(banque)
+    if row is None:
         return None, None
-    row = rows[0]
-    return to_decimal(row.get("Solde initial")), to_decimal(row.get("Solde final"))
+    return _balance_value(row, "solde initial"), _balance_value(row, "solde final")
 
 
 def extract_savings_balance(period_data: Mapping[str, Any]) -> Optional[Decimal]:

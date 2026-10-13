@@ -59,3 +59,17 @@ def test_describe_row_flags_fallback_and_missing():
     describe_row("T", pick_reference_row(df, 5), d, lambda t: f"tour{t}")
     describe_row("T", pick_reference_row(df, 1), d, lambda t: f"tour{t}")
     assert len(d.alerts) == 2 and len(d.notes) == 1
+
+
+def test_merge_reference_priority():
+    from period_context import merge_reference
+    df = pd.DataFrame({"Tour_ID": [5], "Prix_S3": [100.0], "Budget_Marque": [1.0]})
+    exact = pick_reference_row(df, 5)
+    assert merge_reference(exact, {"Prix_S3": 999.0}, 5)[0].data["Prix_S3"] == 100.0   # SQL exact gagne
+    fb = pick_reference_row(df, 8)
+    merged, used = merge_reference(fb, {"Prix_S3": 115.0}, 8)
+    assert used and merged.tour_utilise == 8 and not merged.is_fallback
+    assert merged.data["Prix_S3"] == 115.0 and merged.data["Budget_Marque"] == 1.0   # champ non scrapé conservé
+    none, used = merge_reference(pick_reference_row(df, 1), {"Prix_S3": 115.0}, 8)
+    assert used and none.data == {"Prix_S3": 115.0}
+    assert merge_reference(fb, {}, 8) == (fb, False)

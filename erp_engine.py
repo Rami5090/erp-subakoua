@@ -15,6 +15,7 @@ from finance_engine import (
     complete_bfr_from_previous_state,
     opening_bfr_from_current_state,
     extract_financial_state,
+    extract_bank_balances,
     extract_client_receivable_schedule,
     infer_client_payment_mix,
     project_operating_cash_schedule,
@@ -26,12 +27,14 @@ from finance_engine import (
 
 from auth import setup as auth_setup, is_editor, require_editor, readonly_notice
 from db_utils import get_readonly_engine_if_configured
+from decisions_parser import parse_decisions
 from period_context import (
     ReferenceDiagnostic,
     ReferenceRow,
     context_signature,
     describe_row,
     match_period,
+    merge_reference,
     pick_reference_row,
     ref_int,
     ref_number,
@@ -645,6 +648,15 @@ def charger_ligne_reference(table, tour_id):
     return pick_reference_row(df, tour_id)
 
 
+def charger_decisions_erp(periode):
+    """Décisions de la période scrapées depuis l'accueil Subakoua (marketing / rh / production)."""
+    modules = {m: charger_contenu_erp_periode(periode, m) for m in ("marketing", "rh", "production")}
+    modules = {m: c for m, c in modules.items() if c}
+    if not modules:
+        return {"marketing": {}, "rh": {}, "production": {}, "report": []}
+    return parse_decisions(modules)
+
+
 VOLUMES_PAR_DEFAUT = {"s3": 50, "i3": 500, "s5": 100, "i5": 1500, "i7": 2500}
 _PRODUITS_VOLUMES = {"s3": "Shorty 3", "i3": "Integral 3", "s5": "Shorty 5", "i5": "Integral 5", "i7": "Integral 7"}
 
@@ -670,6 +682,41 @@ def charger_volumes_reference(tour_precedent):
     except Exception as exc:
         diag_ref.alert(f"Ventes M-1 non extraites de `erp_donnees` : {type(exc).__name__}.")
     return dict(VOLUMES_PAR_DEFAUT), ref
+
+
+def inventaire_erp_donnees():
+    """{module: [périodes disponibles]} : ce que la base contient réellement."""
+    if engine is None:
+        return {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT module, periode FROM erp_donnees WHERE type_donnee = 'etat_actuel'")
+            ).all()
+    except Exception:
+        return {}
+    out = {}
+    for module, periode in rows:
+        out.setdefault(str(module), set()).add(str(periode))
+    try:
+        from forecast_engine import period_index
+        key = lambda p: period_index(p.strip())
+    except Exception:
+        key = str
+    return {m: sorted(ps, key=key) for m, ps in sorted(out.items())}
+
+
+def charger_solde_initial_mois(tour_id):
+    """Solde bancaire INITIAL du mois `tour_id` (Banque et assurance → Extrait bancaire).
+
+    Quand le mois simulé est déjà clos dans Subakoua, son extrait donne directement
+    la trésorerie d'ouverture, même si l'état de M-1 est absent de la base.
+    """
+    banque = charger_contenu_erp_periode(period_for_tour(tour_id), "banque_assurance")
+    if not banque:
+        return None
+    initial, _final = extract_bank_balances({"etat_actuel": {"banque_assurance": banque}})
+    return initial
 
 
 def _etat_financier_exploitable(state):
@@ -986,6 +1033,19 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     ref_rh = charger_ligne_reference("Decisions_RH_Mensuel", tour_id_precedent)
     ref_mkg = charger_ligne_reference("Decisions_Marketing", tour_id_precedent)
     volumes_ref, ref_ventes = charger_volumes_reference(tour_id_precedent)
+
+    # Décisions scrapées (accueil Subakoua) : comblent les mois non saisis dans les tables SQL.
+    decisions_erp = charger_decisions_erp(period_for_tour(tour_id_precedent))
+    ref_mkg, _mkg_scrape = merge_reference(ref_mkg, decisions_erp["marketing"], tour_id_precedent)
+    ref_rh, _rh_scrape = merge_reference(ref_rh, decisions_erp["rh"], tour_id_precedent)
+    ordres_ref = {k: int(decisions_erp["production"].get(k, volumes_ref[k])) for k in volumes_ref}
+    for _ligne in decisions_erp["report"]:
+        (diag_ref.alert if ("calibrer" in _ligne or "VIDE" in _ligne) else diag_ref.note)(_ligne)
+    if _mkg_scrape:
+        diag_ref.note("Marketing M-1 : valeurs issues des décisions scrapées (accueil Subakoua), complétées par la ligne SQL antérieure.")
+    if _rh_scrape:
+        diag_ref.note("RH M-1 : valeurs issues des décisions scrapées (accueil Subakoua), complétées par la ligne SQL antérieure.")
+
     for _table, _ref in (
         ("Historique_Equipe", ref_hist), ("Parc_Machines_Mensuel", ref_machines),
         ("Decisions_RH_Mensuel", ref_rh), ("Decisions_Marketing", ref_mkg),
@@ -1005,13 +1065,13 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         tour_id_actif,
         ref_hist.tour_utilise, ref_machines.tour_utilise, ref_rh.tour_utilise,
         ref_mkg.tour_utilise, ref_ventes.tour_utilise,
-        ref_hist.data, ref_machines.data, ref_rh.data, ref_mkg.data, volumes_ref,
+        ref_hist.data, ref_machines.data, ref_rh.data, ref_mkg.data, volumes_ref, ordres_ref,
     )
     if st.session_state.get("_sim_ctx_signature") != _sig_contexte:
         reinitialiser_decisions_simulation()
         st.session_state.pop("ui_scenario_selection", None)
         st.session_state["_sim_ctx_signature"] = _sig_contexte
-    st.session_state["_vol_ref"] = dict(volumes_ref)
+    st.session_state["_vol_ref"] = dict(ordres_ref)
 
     def get_h(col, def_v=0.0): return ref_number(ref_hist.data, col, def_v)
     def get_m(col, def_v=0): return ref_int(ref_machines.data, col, def_v)
@@ -1129,11 +1189,11 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         with st.container(border=True):
             st.markdown("**🏭 Quantités à produire**")
             c_q1, c_q2, c_q3, c_q4, c_q5 = st.columns(5)
-            ord_s3 = c_q1.number_input("Shorty 3", key="ord_s3", value=volumes_ref["s3"], min_value=0, step=10)
-            ord_i3 = c_q2.number_input("Integral 3", key="ord_i3", value=volumes_ref["i3"], min_value=0, step=10)
-            ord_s5 = c_q3.number_input("Shorty 5", key="ord_s5", value=volumes_ref["s5"], min_value=0, step=10)
-            ord_i5 = c_q4.number_input("Integral 5", key="ord_i5", value=volumes_ref["i5"], min_value=0, step=10)
-            ord_i7 = c_q5.number_input("Integral 7", key="ord_i7", value=volumes_ref["i7"], min_value=0, step=10)
+            ord_s3 = c_q1.number_input("Shorty 3", key="ord_s3", value=ordres_ref["s3"], min_value=0, step=10)
+            ord_i3 = c_q2.number_input("Integral 3", key="ord_i3", value=ordres_ref["i3"], min_value=0, step=10)
+            ord_s5 = c_q3.number_input("Shorty 5", key="ord_s5", value=ordres_ref["s5"], min_value=0, step=10)
+            ord_i5 = c_q4.number_input("Integral 5", key="ord_i5", value=ordres_ref["i5"], min_value=0, step=10)
+            ord_i7 = c_q5.number_input("Integral 7", key="ord_i7", value=ordres_ref["i7"], min_value=0, step=10)
             ordres_prod_dict = {'Shorty 3': ord_s3, 'Integral 3': ord_i3, 'Shorty 5': ord_s5, 'Integral 5': ord_i5, 'Integral 7': ord_i7}
             st.metric("Volume total à produire", f"{sum(ordres_prod_dict.values()):,.0f} unités".replace(",", " "))
 
@@ -1305,11 +1365,19 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             treso_initiale_source = etat_fin_m1.solde_bancaire_final
             solde_epargne_source = etat_fin_m1.solde_epargne
             bfr_precedent_m1 = float(etat_fin_m1.bfr_reel) if etat_fin_m1.bfr_reel is not None else None
+        treso_source_label = "Extrait bancaire M-1 (solde final)" if treso_initiale_source is not None else None
         if treso_initiale_source is None:
             treso_initiale_source = manuel_decimal("Disponibilites_Banque")
-        treso_ouverture_connue = treso_initiale_source is not None
-        if not treso_ouverture_connue:
-            diag_ref.alert("Solde bancaire d'ouverture introuvable : la trésorerie projetée part de 0 € et n'est PAS fiable.")
+            if treso_initiale_source is not None:
+                treso_source_label = "Finances_Mensuelles (saisie manuelle)"
+        if treso_initiale_source is None and tour_id_actif > 1:
+            _solde_initial_mois = charger_solde_initial_mois(tour_id_actif)
+            if _solde_initial_mois is not None:
+                treso_initiale_source = _solde_initial_mois
+                treso_source_label = f"Extrait bancaire de {periode_db} (solde initial)"
+                diag_ref.note(f"Trésorerie d'ouverture lue dans l'extrait bancaire de {periode_db} (solde initial).")
+        if treso_source_label:
+            diag_ref.note(f"Trésorerie d'ouverture : {treso_source_label}.")
 
         resultat_historique_source = etat_fin_m1.resultat_net
         dotations_prev_source = etat_fin_m1.dotations_amortissements
@@ -1342,6 +1410,17 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         solde_epargne_defaut = solde_epargne_source if solde_epargne_source is not None else 0.0
         with st.expander("🏦 Trésorerie, épargne & placements", expanded=True):
             c_t1, c_t2, c_t3 = st.columns(3)
+            _treso_defaut = float(treso_initiale_source) if treso_initiale_source is not None else 0.0
+            treso_saisie = st.number_input(
+                "Trésorerie bancaire d'ouverture (€)" + ("" if treso_initiale_source is not None else " — à saisir : introuvable en base"),
+                key="sim_treso_ouverture", value=_treso_defaut, step=1000.0,
+                help="Pré-remplie depuis Banque et assurance → Extrait bancaire. Modifiable si la base est incomplète.",
+            )
+            if treso_initiale_source is None and treso_saisie != 0.0:
+                treso_initiale_source = treso_saisie
+                diag_ref.note("Trésorerie d'ouverture : saisie manuelle dans le simulateur.")
+            elif treso_initiale_source is not None:
+                treso_initiale_source = treso_saisie
             solde_epargne_initial = c_t1.number_input(
                 f"Épargne initiale (M-1 : {periode_m1})",
                 key="sim_solde_ep",
@@ -1350,6 +1429,10 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             )
             placement_ep = c_t2.number_input("Placement vers épargne (€)", key="sim_plac_ep", value=0.0, step=1000.0)
             retrait_ep = c_t3.number_input("Retrait depuis épargne (€)", key="sim_retr_ep", value=0.0, step=1000.0)
+
+        treso_ouverture_connue = treso_initiale_source is not None
+        if not treso_ouverture_connue:
+            diag_ref.alert("Solde bancaire d'ouverture introuvable (ni extrait M-1, ni extrait du mois simulé) : saisis-le ci-dessus, sinon la trésorerie part de 0 € et n'est PAS fiable.")
 
         with st.expander("📊 Portefeuille de titres", expanded=(mode_pilotage == "🔧 Expert")):
             st.caption("Saisissez uniquement les quantités achetées/vendues. Les prix unitaires restent ceux du moteur.")
@@ -1568,7 +1651,11 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
         with st.expander("🏦 Financement bancaire", expanded=True):
             cdebt1, cdebt2, cdebt3 = st.columns(3)
-            cdebt1.metric("Dette bancaire M-1", f"{float(dette_bancaire):,.2f} €")
+            dette_bancaire = cdebt1.number_input(
+                "Dette bancaire d'ouverture (€)", key="sim_dette_ouverture",
+                value=float(dette_bancaire), step=1000.0, min_value=0.0,
+                help="Reprise de l'état financier M-1 (bilan). Modifiable si la base est incomplète.",
+            )
             cdebt2.metric("Capital remboursé", f"{-remboursement_capital:,.2f} €")
             cdebt3.metric("Intérêts du mois", f"{-interets_emprunt:,.2f} €")
             nouvel_emprunt = sim_number("Nouvel emprunt encaissé (€)", "sim_nouvel_emprunt", 0.0, step=1000.0)
@@ -1680,6 +1767,14 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     st.warning(_a)
                 for _n in diag_ref.notes:
                     st.caption("• " + _n)
+                if diag_ref.alerts:
+                    st.markdown("**Contenu réel de `erp_donnees` (modules × périodes)**")
+                    _inv = inventaire_erp_donnees()
+                    if not _inv:
+                        st.caption("Aucune donnée `etat_actuel` lisible (base vide ou inaccessible).")
+                    for _mod, _pers in _inv.items():
+                        _courts = ", ".join(p.replace("Année ", "A").replace(" - ", " ") for p in _pers)
+                        st.caption(f"`{_mod}` : {len(_pers)} période(s) — {_courts}")
 
         st.divider()
         st.markdown("##### 💶 Synthèse Financière & Situation Globale de l'Entreprise")
