@@ -2,29 +2,29 @@
 
 Le moteur traite l'achat documentaire comme un problème de couverture sous
 contrainte budgétaire. Il ne dépend d'aucun LLM : les profils sont construits
-à partir du catalogue audité + des endpoints API connus, puis les besoins de
-pilotage sont couverts par ordre de valeur marginale / euro.
+à partir du catalogue unifié (study_catalog.json), fusionnant endpoints API,
+routes UI et classification analytique.
 """
 from __future__ import annotations
 
-import csv
-import json
-import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import document_strategy
+import study_catalog
+from constants import (
+    MONTH_NAMES,
+    MONTH_BY_NAME,
+    period_to_seq,
+    period_label_to_code,
+    period_code_to_label,
+    period_month_id,
+    next_period,
+    try_next_period,
+)
 
-BASE_DIR = Path(__file__).resolve().parent
-CATALOG_PATH = BASE_DIR / "subakoua_study_catalog.csv"
-ENDPOINT_CATALOG_PATH = BASE_DIR / "study_api_catalog.json"
-
-MONTH_NAMES = [
-    "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
-    "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre",
-]
-MONTH_BY_NAME = {x.lower(): i + 1 for i, x in enumerate(MONTH_NAMES)}
+# For backwards compatibility - some tests may reference these
+# but they're now imported from constants
 
 
 @dataclass(frozen=True)
@@ -262,142 +262,9 @@ OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
-def _normalise_label(value: str) -> str:
-    return re.sub(r"\s+", " ", str(value or "").strip().lower())
-
-
-def _heuristic_tags(label: str, response_keys: Sequence[str]) -> tuple[str, ...]:
-    text = _normalise_label(label) + " " + " ".join(response_keys).lower()
-    mapping = [
-        ("prix", "price"), ("vente", "sales"), ("marché", "market_share"),
-        ("concurr", "competitor"), ("qualité", "quality"), ("production", "production"),
-        ("matière", "material"), ("stock", "stock"), ("atelier", "capacity"),
-        ("capacité", "capacity"), ("coût", "cost"), ("marge", "margin"),
-        ("trésorerie", "cash"), ("bank", "cash"), ("vat", "vat"), ("tva", "vat"),
-        ("impôt", "tax"), ("corporationtax", "tax"), ("emprunt", "debt"),
-        ("loan", "debt"), ("personnel", "payroll"), ("ressources", "hr"),
-        ("staff", "hr"), ("publicité", "advertising"), ("prévision", "forecast"),
-        ("forecast", "forecast"), ("saisonn", "seasonality"), ("payment", "payment"),
-        ("paiement", "payment"), ("créance", "working_capital"), ("bfr", "bfr"),
-        ("fournisseur", "supplier"), ("satisfaction", "satisfaction"),
-        ("risque", "risk"), ("investissement", "investment"), ("machine", "investment"),
-    ]
-    tags: list[str] = []
-    for needle, tag in mapping:
-        if needle in text and tag not in tags:
-            tags.append(tag)
-    return tuple(tags or ["reference"])
-
-
-def _domain_from_label(label: str) -> str:
-    l = _normalise_label(label)
-    if any(x in l for x in ("marché", "vente", "prix", "publicité", "concurrent", "distribution")):
-        return "marketing"
-    if any(x in l for x in ("production", "matière", "atelier", "stock", "qualité")):
-        return "production"
-    if any(x in l for x in ("bilan", "résultat", "tva", "impôt", "trésorerie", "créance", "charge", "financier", "emprunt", "comptable")):
-        return "finance"
-    if any(x in l for x in ("ressource", "personnel", "service / administration", "service / production", "service / approvisionnement")):
-        return "rh"
-    return "autre"
-
-
 def load_profiles() -> dict[str, StudyProfile]:
-    endpoint_data = json.loads(ENDPOINT_CATALOG_PATH.read_text(encoding="utf-8")) if ENDPOINT_CATALOG_PATH.exists() else {"known_endpoints": {}}
-    known_endpoints = endpoint_data.get("known_endpoints") or {}
-    profiles: dict[str, StudyProfile] = {}
-    with CATALOG_PATH.open(encoding="utf-8-sig", newline="") as f:
-        for row in csv.DictReader(f):
-            sid = str(row["study_id"])
-            label = str(row["label"])
-            price = float(row.get("price") or 0)
-            endpoint_known = sid in known_endpoints
-            response_keys = tuple(known_endpoints.get(sid, {}).get("response_keys", []))
-            base_tags = _heuristic_tags(label, response_keys)
-            base = StudyProfile(
-                study_id=sid,
-                label=label,
-                price=price,
-                domain=_domain_from_label(label),
-                tags=base_tags,
-                decision_levers=tuple(),
-                horizons=("court", "moyen", "long"),
-                importance=max(20.0, 80.0 - price / 75.0),
-                recurring="monthly" if any(x in _normalise_label(label) for x in ("évolution", "mensuel", "stock", "résultat", "tva", "vente")) else "structural",
-                strategic_only=price >= 5000,
-                endpoint_known=endpoint_known,
-                response_keys=response_keys,
-            )
-            strategy = document_strategy.matrix_by_study_id().get(sid, {})
-            merged = dict(strategy)
-            merged.update(OVERRIDES.get(sid, {}))
-            profiles[sid] = StudyProfile(
-                study_id=sid,
-                label=label,
-                price=price,
-                domain=str(merged.get("domain", base.domain)),
-                tags=tuple(merged.get("tags", base.tags)),
-                decision_levers=tuple(merged.get("decision_levers", base.decision_levers)),
-                horizons=tuple(merged.get("horizons", base.horizons)),
-                importance=float(merged.get("importance", base.importance)),
-                recurring=str(merged.get("recurring", base.recurring)),
-                strategic_only=bool(merged.get("strategic_only", base.strategic_only)),
-                endpoint_known=endpoint_known,
-                response_keys=response_keys,
-            )
-    return profiles
-
-
-def period_to_seq(period: str) -> int:
-    """Séquence humaine Année 1-Janvier = 1."""
-    m = re.fullmatch(r"Année\s+(\d+)\s*-\s*(.+)", str(period).strip(), re.I)
-    if not m:
-        raise ValueError(f"Période invalide: {period!r}")
-    month = MONTH_BY_NAME.get(m.group(2).strip().lower())
-    if not month:
-        raise ValueError(f"Mois inconnu: {period!r}")
-    return (int(m.group(1)) - 1) * 12 + month
-
-
-def period_label_to_code(period: str) -> str:
-    """Convertit Année 1 - Janvier -> 0101 ; Année 2 - Janvier -> 0201."""
-    seq = period_to_seq(period)
-    year = (seq - 1) // 12 + 1
-    month = (seq - 1) % 12 + 1
-    return f"{year:02d}{month:02d}"
-
-
-def period_code_to_label(code: str) -> str:
-    code = str(code).strip()
-    if not re.fullmatch(r"\d{4}", code):
-        raise ValueError(f"Code période invalide: {code!r}")
-    year = int(code[:2])
-    month = int(code[2:])
-    if year < 1 or month not in range(1, 13):
-        raise ValueError(f"Code période invalide: {code!r}")
-    return f"Année {year} - {MONTH_NAMES[month - 1]}"
-
-
-def period_month_id(period: str) -> int:
-    """IDs `/months/{month}` observés sur le portail : A1-Janvier = 13."""
-    return 12 + period_to_seq(period)
-
-
-def next_period(period: str, offset: int = 1) -> str:
-    seq = period_to_seq(period) + offset
-    if seq < 1:
-        raise ValueError("La période résultante est antérieure à Année 1 - Janvier")
-    year = (seq - 1) // 12 + 1
-    month = (seq - 1) % 12 + 1
-    return f"Année {year} - {MONTH_NAMES[month - 1]}"
-
-
-def try_next_period(period: str, offset: int = 1) -> str | None:
-    """Version non bloquante de next_period pour les analyses historiques."""
-    try:
-        return next_period(period, offset)
-    except ValueError:
-        return None
+    """Charge les profils depuis le catalogue unifié (study_catalog.json)."""
+    return study_catalog.load_profiles()
 
 
 def _profile_evidence(profile: StudyProfile) -> tuple[str, ...]:

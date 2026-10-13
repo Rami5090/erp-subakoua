@@ -1,9 +1,4 @@
-import csv
-from pathlib import Path
-
 import document_optimizer as d
-
-BASE = Path(__file__).resolve().parent
 
 
 def test_load_profiles_and_endpoint_catalog():
@@ -21,12 +16,12 @@ def test_period_mapping_matches_audit_observation():
 
 def test_plan_does_not_consider_historical_bought_as_live_truth():
     profiles = d.load_profiles()
-    rows = list(csv.DictReader((BASE / "subakoua_study_catalog.csv").open(encoding="utf-8-sig")))
-    # Force two documents to be unavailable live and one to be available live.
-    for row in rows:
-        row["boughtByTeam"] = "False"
-    rows_by_id = {r["study_id"]: r for r in rows}
-    rows_by_id["potentialMarketStudy"]["boughtByTeam"] = "True"
+    # Create test rows inline instead of reading CSV
+    rows = [
+        {"study_id": "potentialMarketStudy", "price": 100, "boughtByTeam": "True"},
+        {"study_id": "companyStock", "price": 0, "boughtByTeam": "False"},
+        {"study_id": "bankStatements", "price": 0, "boughtByTeam": "False"},
+    ]
     plan = d.build_purchase_plan(
         profiles,
         rows,

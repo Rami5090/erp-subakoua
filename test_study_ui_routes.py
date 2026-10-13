@@ -1,4 +1,4 @@
-from study_ui_routes import routes_for
+from study_catalog import get_ui_routes_for as routes_for
 
 
 def test_june_month_id_route_is_18():

@@ -5,7 +5,7 @@ sur le segment concurrentiel observé, tout en respectant un budget marketing et
 une capacité industrielle simplifiée.
 
 Important : avec peu de périodes historiques, le modèle est DESCRIPTIF et non
-causal. Il utilise une régression ridge réguliarisée sur les parts de marché
+causal. Il utilise une régression ridge régularisée sur les parts de marché
 observées par entreprise et période, puis une normalisation softmax pour produire
 un score de choix relatif. Les scénarios doivent être interprétés comme une
 analyse de sensibilité, pas comme une élasticité causale.
@@ -18,22 +18,12 @@ import math
 import numpy as np
 import pandas as pd
 
-PRODUCTS = ["Shorty 3", "Integral 3", "Shorty 5", "Integral 5", "Integral 7"]
-DEFAULT_TIMES = {
-    "Shorty 3": {"Decoupe": 2.0, "Assemblage": 4.0, "Conditionnement": 1.0},
-    "Integral 3": {"Decoupe": 3.0, "Assemblage": 6.0, "Conditionnement": 1.0},
-    "Shorty 5": {"Decoupe": 2.5, "Assemblage": 5.0, "Conditionnement": 1.0},
-    "Integral 5": {"Decoupe": 3.5, "Assemblage": 7.0, "Conditionnement": 1.0},
-    "Integral 7": {"Decoupe": 4.0, "Assemblage": 8.0, "Conditionnement": 1.5},
-}
-DEFAULT_NOMENCLATURE = {
-    "Shorty 3": {"Néoprène 3": 1.1, "Renforts": 12.0, "Manchons": 2.0, "Fermetures": 1.0},
-    "Integral 3": {"Néoprène 3": 1.6, "Renforts": 18.0, "Manchons": 4.0, "Fermetures": 1.0},
-    "Shorty 5": {"Néoprène 5": 1.1, "Renforts": 12.0, "Manchons": 2.0, "Fermetures": 1.0},
-    "Integral 5": {"Néoprène 5": 1.6, "Renforts": 18.0, "Manchons": 4.0, "Fermetures": 1.0},
-    "Integral 7": {"Néoprène 7": 1.6, "Renforts": 22.0, "Manchons": 4.0, "Fermetures": 1.0},
-}
-CAPACITY_MIN_PER_MACHINE = 9600.0
+from constants import (
+    PRODUCTS,
+    DEFAULT_TIMES,
+    DEFAULT_NOMENCLATURE,
+    CAPACITY_MIN_PER_MACHINE,
+)
 
 
 @dataclass(frozen=True)

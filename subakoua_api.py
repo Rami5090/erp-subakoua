@@ -18,12 +18,20 @@ from urllib.parse import urlencode, urljoin
 
 from playwright.sync_api import BrowserContext, APIResponse, TimeoutError as PlaywrightTimeoutError
 
-import document_optimizer as optimizer
-from study_ui_routes import routes_for as study_ui_routes_for
+import study_catalog
+from study_catalog import (
+    get_endpoint_path,
+    get_response_keys,
+    get_url_template,
+    get_ui_routes_for,
+)
+from constants import (
+    period_label_to_code,
+    period_code_to_label,
+    period_month_id,
+)
 
 BASE_URL = "https://subakoua.arkhe.com"
-ENDPOINT_CATALOG_PATH = Path(__file__).resolve().parent / "study_api_catalog.json"
-DEFAULT_ENDPOINTS = json.loads(ENDPOINT_CATALOG_PATH.read_text(encoding="utf-8")).get("known_endpoints", {})
 
 
 @dataclass(frozen=True)
@@ -86,17 +94,17 @@ class SubakouaAPIClient:
     def period_code(period: str) -> str:
         if re.fullmatch(r"\d{4}", str(period).strip()):
             return str(period).strip()
-        return optimizer.period_label_to_code(period)
+        return period_label_to_code(period)
 
     @staticmethod
     def period_label(period: str) -> str:
         if re.fullmatch(r"\d{4}", str(period).strip()):
-            return optimizer.period_code_to_label(period)
+            return period_code_to_label(period)
         return str(period).strip()
 
     @staticmethod
     def month_id(period: str) -> int:
-        return optimizer.period_month_id(SubakouaAPIClient.period_label(period))
+        return period_month_id(SubakouaAPIClient.period_label(period))
 
     def _url(self, path: str) -> str:
         return urljoin(self.base_url + "/", path.lstrip("/"))
@@ -178,8 +186,8 @@ class SubakouaAPIClient:
         return list(out.values())
 
     def endpoint_for(self, study_id: str) -> str | None:
-        info = DEFAULT_ENDPOINTS.get(study_id)
-        return str(info.get("path")) if info else None
+        path = get_endpoint_path(study_id)
+        return path if path else None
 
     def build_study_endpoint(self, study_id: str, period: str) -> str:
         template = self.endpoint_for(study_id)
@@ -422,7 +430,7 @@ class SubakouaAPIClient:
         période dans le sélecteur UI n'est volontairement plus utilisée ici.
         """
         month_id = self.month_id(self.period_label(period))
-        direct = study_ui_routes_for(study_id, month_id, self.base_url)
+        direct = study_catalog.get_ui_routes_for(study_id, month_id, self.base_url)
         for cand in direct:
             url = str(cand.get("url") or "").strip()
             if not url:
@@ -464,7 +472,7 @@ class SubakouaAPIClient:
     def resolve_study_ui_url(self, study_id: str, period: str) -> str | None:
         """Retourne la première URL UI auditée/inférée pour une étude et une période."""
         month_id = self.month_id(self.period_label(period))
-        rows = study_ui_routes_for(study_id, month_id, self.base_url)
+        rows = study_catalog.get_ui_routes_for(study_id, month_id, self.base_url)
         return str(rows[0]["url"]) if rows else None
 
     def _click_search_result_dom(self, page: Page, label: str, study_id: str) -> bool:

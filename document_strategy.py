@@ -1,9 +1,9 @@
 """Matrice explicite document -> information -> décision pour Subakoua.
 
-Les intitulés/prix/IDs proviennent du catalogue audité. La classification
-sémantique (domaines, leviers, horizons, priorité) est une couche analytique
-transparente et modifiable : elle n'est pas présentée comme une règle native
-de Subakoua.
+Les intitulés/prix/IDs proviennent du catalogue unifié (study_catalog.json).
+La classification sémantique (domaines, leviers, horizons, priorité) est une couche
+analytique transparente et modifiable : elle n'est pas présentée comme une règle
+native de Subakoua.
 """
 from __future__ import annotations
 
@@ -11,13 +11,15 @@ import csv
 import json
 import re
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
+
+import study_catalog
 
 BASE_DIR = Path(__file__).resolve().parent
-CATALOG_PATH = BASE_DIR / "subakoua_study_catalog.csv"
-ENDPOINT_CATALOG_PATH = BASE_DIR / "study_api_catalog.json"
-MATRIX_CSV_PATH = BASE_DIR / "study_information_matrix.csv"
-MATRIX_JSON_PATH = BASE_DIR / "study_information_matrix.json"
+CATALOG_PATH = BASE_DIR / "subakoua_study_catalog.csv"  # legacy
+ENDPOINT_CATALOG_PATH = BASE_DIR / "study_api_catalog.json"  # legacy
+MATRIX_CSV_PATH = BASE_DIR / "study_information_matrix.csv"  # legacy
+MATRIX_JSON_PATH = BASE_DIR / "study_information_matrix.json"  # legacy
 
 
 def _norm(text: Any) -> str:
@@ -154,27 +156,32 @@ def _classify(label: str, study_id: str, endpoint: Mapping[str, Any] | None, pri
     }
 
 
-def build_matrix(catalog_path: Path = CATALOG_PATH, endpoint_path: Path = ENDPOINT_CATALOG_PATH) -> list[dict[str, Any]]:
-    endpoint_data = json.loads(endpoint_path.read_text(encoding="utf-8")) if endpoint_path.exists() else {"known_endpoints": {}}
-    endpoints = endpoint_data.get("known_endpoints", {}) or {}
+def build_matrix() -> list[dict[str, Any]]:
+    """Construit la matrice à partir du catalogue unifié."""
     rows: list[dict[str, Any]] = []
-    with catalog_path.open(encoding="utf-8-sig", newline="") as f:
-        for src in csv.DictReader(f):
-            sid = str(src["study_id"])
-            label = str(src["label"])
-            price = float(src.get("price") or 0)
-            meta = _classify(label, sid, endpoints.get(sid), price)
-            endpoint_path = str((endpoints.get(sid) or {}).get("path") or "")
-            response_keys = list((endpoints.get(sid) or {}).get("response_keys") or [])
-            rows.append({
-                "study_id": sid,
-                "label": label,
-                "price": price,
-                "endpoint_known": bool(endpoint_path),
-                "endpoint_path": endpoint_path,
-                "response_keys": ", ".join(response_keys),
-                **meta,
-            })
+    for s in study_catalog.get_all_studies():
+        sid = s["study_id"]
+        label = s.get("label", "")
+        price = float(s.get("price", 0))
+        endpoint_known = s.get("endpoint_known", False)
+        endpoint_path = s.get("endpoint_path", "")
+        response_keys = s.get("response_keys", [])
+        if isinstance(response_keys, str):
+            response_keys = [k.strip() for k in response_keys.split(",") if k.strip()]
+        
+        # Build endpoint dict for _classify
+        endpoint = {"response_keys": response_keys} if endpoint_known else None
+        
+        meta = _classify(label, sid, endpoint, price)
+        rows.append({
+            "study_id": sid,
+            "label": label,
+            "price": price,
+            "endpoint_known": endpoint_known,
+            "endpoint_path": endpoint_path,
+            "response_keys": ", ".join(response_keys),
+            **meta,
+        })
     return rows
 
 
@@ -195,5 +202,6 @@ def matrix_by_study_id() -> dict[str, dict[str, Any]]:
 
 
 if __name__ == "__main__":
+    import csv
     c, j = write_matrix()
     print(f"Matrice générée : {c.name} / {j.name} ({len(build_matrix())} études)")

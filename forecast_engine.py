@@ -22,20 +22,16 @@ except Exception:  # pragma: no cover
     ExponentialSmoothing = None
     Holt = None
 
-MONTH_NAMES = [
-    "Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet",
-    "Août", "Septembre", "Octobre", "Novembre", "Décembre",
-]
-PRODUCTS = ["Shorty 3", "Integral 3", "Shorty 5", "Integral 5", "Integral 7"]
-PRODUCT_GROUP = {"Shorty 3": 3, "Integral 3": 3, "Shorty 5": 5, "Integral 5": 5, "Integral 7": 7}
-PRODUCT_ID_TO_NAME = {
-    "SHORTY_C": "Shorty 3",
-    "MONO_C": "Integral 3",
-    "SHORTY_T": "Shorty 5",
-    "MONO_T": "Integral 5",
-    "MONO_F": "Integral 7",
-}
-PERIOD_INDEX = {f"Année {y} - {m}": (y - 1) * 12 + i for y in range(1, 5) for i, m in enumerate(MONTH_NAMES)}
+from constants import (
+    MONTH_NAMES,
+    PRODUCTS,
+    PRODUCT_GROUP,
+    PRODUCT_ID_TO_NAME,
+    PERIOD_INDEX,
+    period_to_seq,
+    period_label_to_code,
+    period_month_id,
+)
 
 
 @dataclass(frozen=True)

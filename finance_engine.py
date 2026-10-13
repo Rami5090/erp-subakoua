@@ -13,21 +13,22 @@ from dataclasses import dataclass, asdict, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
+from constants import (
+    TVA_STANDARD as TVA_STANDARD_F,
+    ACOMPTE_CREDIT_FOURNISSEUR as ACOMPTE_CREDIT_FOURNISSEUR_F,
+    DUREE_AMORTISSEMENT_MOIS as DUREE_AMORTISSEMENT_MOIS_F,
+    TAUX_RENDEMENT_EPARGNE_ANNUEL as TAUX_RENDEMENT_EPARGNE_ANNUEL_F,
+    NOMBRE_PARTS as NOMBRE_PARTS_F,
+    TAUX_CHARGES_SOCIALES as TAUX_CHARGES_SOCIALES_F,
+    TOURS_PERIODES,
+)
 
-TVA_STANDARD = Decimal("0.20")
-ACOMPTE_CREDIT_FOURNISSEUR = Decimal("0.30")
-DUREE_AMORTISSEMENT_MOIS = Decimal("60")
-TAUX_RENDEMENT_EPARGNE_ANNUEL = Decimal("0.012")
-NOMBRE_PARTS = Decimal("40000")
-TAUX_CHARGES_SOCIALES = Decimal("0.50")
-
-TOURS_PERIODES = {
-    1: "Année 1 - Janvier", 2: "Année 1 - Février", 3: "Année 1 - Mars",
-    4: "Année 1 - Avril", 5: "Année 1 - Mai", 6: "Année 1 - Juin",
-    7: "Année 1 - Juillet", 8: "Année 1 - Août", 9: "Année 1 - Septembre",
-    10: "Année 1 - Octobre", 11: "Année 1 - Novembre", 12: "Année 1 - Décembre",
-    13: "Année 2 - Janvier", 14: "Année 2 - Février", 15: "Année 2 - Mars",
-}
+TVA_STANDARD = Decimal(str(TVA_STANDARD_F))
+ACOMPTE_CREDIT_FOURNISSEUR = Decimal(str(ACOMPTE_CREDIT_FOURNISSEUR_F))
+DUREE_AMORTISSEMENT_MOIS = Decimal(str(DUREE_AMORTISSEMENT_MOIS_F))
+TAUX_RENDEMENT_EPARGNE_ANNUEL = Decimal(str(TAUX_RENDEMENT_EPARGNE_ANNUEL_F))
+NOMBRE_PARTS = Decimal(str(NOMBRE_PARTS_F))
+TAUX_CHARGES_SOCIALES = Decimal(str(TAUX_CHARGES_SOCIALES_F))
 
 
 @dataclass(frozen=True)
