@@ -24,6 +24,30 @@ from finance_engine import (
     calculate_fiscal_social_projection,
     project_bank_debt,
 )
+from forecast_engine import (
+    extract_competitive_snapshot,
+    build_period_data,
+    build_study_data,
+    ordered_periods,
+    period_index,
+    extract_own_sales_history,
+    extract_structural_seasonality,
+    rolling_forecast_12m,
+)
+from optimizer_engine import (
+    build_competitive_history,
+    latest_competitor_frame,
+    calibrate_descriptive_response,
+    predict_anchored_share,
+    resolve_reference_share,
+    detect_segment_product,
+    resolve_own_levers,
+    evaluate_scenario,
+    CapacityProfile,
+    DEFAULT_TIMES,
+    DEFAULT_NOMENCLATURE,
+    CAPACITY_MIN_PER_MACHINE,
+)
 
 from auth import setup as auth_setup, is_editor, require_editor, readonly_notice
 from db_utils import get_readonly_engine_if_configured
@@ -77,6 +101,230 @@ def fmt_eur(value):
         return f"{float(value):,.0f} €".replace(",", " ")
     except Exception:
         return "—"
+
+
+def _compute_pdm_scenario(
+    engine,
+    tour_id_actif: int,
+    tour_id_precedent: int,
+    periode_actuelle: str,
+    periode_m1: str,
+    donnees_mkg: dict,
+    ordres_prod_dict: dict,
+    nb_m_dec_sim: int,
+    nb_m_ass_sim: int,
+    nb_m_cond_sim: int,
+    budget_mkg_prev: float,
+    budgets_p_dict: dict,
+    own_company: int = 3,
+) -> dict:
+    """Calcule la PDM potentielle et réalisable pour le scénario courant du simulateur.
+
+    Retourne un dict avec:
+    - pdm_potentielle: PDM avant contrainte de capacité
+    - pdm_realisable: PDM après contrainte de capacité
+    - pdm_reference: PDM de référence (ancrage)
+    - calibration_confidence: niveau de confiance de la calibration
+    - capacity_bottlenecks: ateliers en surcapacité
+    - service_rate: taux de service (demande servie / demande totale)
+    - warnings: liste d'avertissements
+    """
+    warnings = []
+    result = {
+        "pdm_potentielle": 0.0,
+        "pdm_realisable": 0.0,
+        "pdm_reference": 0.0,
+        "calibration_confidence": "indisponible",
+        "capacity_bottlenecks": [],
+        "service_rate": 1.0,
+        "warnings": warnings,
+    }
+
+    if engine is None:
+        warnings.append("Base de données non connectée")
+        return result
+
+    try:
+        # 1. Charger les données legacy (erp_donnees) pour l'historique
+        with engine.connect() as conn:
+            legacy_rows = conn.execute(
+                text("SELECT periode, module, contenu FROM erp_donnees ORDER BY id ASC")
+            ).mappings().all()
+            legacy_data = [dict(r) for r in legacy_rows]
+
+        period_data = build_period_data(legacy_data)
+
+        # 2. Charger les données API (erp_etudes) si disponibles
+        study_data = {}
+        try:
+            with engine.connect() as conn:
+                study_rows = conn.execute(
+                    text("SELECT periode, study_id, label, module, price, read_allowed, payload FROM erp_etudes ORDER BY id ASC")
+                ).mappings().all()
+                for r in study_rows:
+                    if r.get("read_allowed"):
+                        period_data.setdefault(r["periode"], {})
+                        # build_study_data expects a specific format
+                # Build study_data dict for extract_competitive_snapshot
+                study_data = build_study_data([dict(r) for r in study_rows if r.get("read_allowed")])
+        except Exception:
+            study_data = {}
+
+        # 3. Extraire le snapshot concurrentiel pour la période de référence (M-1)
+        competitive = extract_competitive_snapshot(
+            period_data,
+            own_company_number=own_company,
+            study_data=study_data,
+            anchor_period=periode_m1,
+        )
+
+        if not competitive.get("rows"):
+            warnings.append("Aucune donnée concurrentielle trouvée pour l'ancrage")
+            return result
+
+        # 4. Construire l'historique de calibration
+        hist = build_competitive_history(
+            {p: {"monitoring": period_data.get(p, {}).get("monitoring", {})} for p in period_data},
+            own_company,
+        )
+
+        # 5. Calibrer la réponse descriptive
+        cal = calibrate_descriptive_response(hist)
+        if cal is None:
+            warnings.append("Calibration impossible : pas assez d'observations")
+            return result
+
+        # 6. Récupérer le cadre concurrentiel récent
+        competitors = latest_competitor_frame(hist, own_company, periode_m1)
+
+        if competitors.empty:
+            warnings.append("Aucun concurrent exploitable après filtrage")
+            return result
+
+        # 7. Déterminer la PDM de référence (ancrage)
+        from optimizer_engine import resolve_reference_share, detect_segment_product, resolve_own_levers
+        actual_sales_row = None  # Will be derived from competitive
+        actual_total = 0.0
+        try:
+            # Essayer de récupérer les ventes propres depuis le snapshot
+            own_row = competitive.get("own")
+            if own_row and own_row.get("ventes") is not None:
+                actual_total = float(own_row["ventes"])
+        except Exception:
+            pass
+
+        ref = resolve_reference_share(competitive, hist, own_company, periode_m1, fallback_units=actual_total)
+        segment_share = ref.get("share", 0.0) if ref.get("share") is not None else 0.0
+        segment_units = ref.get("units", 0)
+
+        if segment_share is None or segment_share <= 0:
+            warnings.append("PDM de référence indisponible")
+            segment_share = 0.0
+
+        result["pdm_reference"] = segment_share * 100.0
+
+        # 8. Identifier le produit du segment
+        actual_sales_row_data = competitive.get("own") or {}
+        segment_product = detect_segment_product(actual_sales_row_data, segment_units)
+
+        # 9. Résoudre les leviers de départ
+        levers = resolve_own_levers(competitive.get("own") or {}, hist, own_company, periode_m1)
+
+        # 10. Construire le scénario actuel depuis les entrées du simulateur
+        # Prix : moyenne pondérée ou prix du produit segment
+        prix_s3 = donnees_mkg.get('Prix_S3', 115.0)
+        prix_i3 = donnees_mkg.get('Prix_I3', 190.0)
+        prix_s5 = donnees_mkg.get('Prix_S5', 220.0)
+        prix_i5 = donnees_mkg.get('Prix_I5', 280.0)
+        prix_i7 = donnees_mkg.get('Prix_I7', 375.0)
+
+        # Qualité : depuis le simulateur (à ajouter) ou défaut
+        qualite_cible = 50.0  # défaut, à lire depuis le simulateur
+
+        # Publicité marque
+        pub_marque = budget_mkg_prev
+
+        # Publicité produits (moyenne)
+        pub_prod_moy = sum(budgets_p_dict.values()) / max(1, len(budgets_p_dict)) if budgets_p_dict else 0.0
+
+        # Override with simulator values if available
+        scenario = {
+            "price": float(prix_i5),  # prix produit segment par défaut
+            "quality": qualite_cible,
+            "brand_ads": pub_marque,
+            "product_ads": pub_prod_moy,
+        }
+
+        baseline_scenario = {
+            "price": float(levers.get("prix", scenario["price"])),
+            "quality": float(levers.get("qualite", scenario["quality"])),
+            "brand_ads": float(levers.get("publicite_marque", scenario["brand_ads"])),
+            "product_ads": float(levers.get("publicite_produit", scenario["product_ads"])),
+        }
+
+        # 10. Profil de capacité
+        machines = {
+            "Decoupe": nb_m_dec_sim,
+            "Assemblage": nb_m_ass_sim,
+            "Conditionnement": nb_m_cond_sim,
+        }
+
+        cap = CapacityProfile(
+            machines=machines,
+            times={p: dict(v) for p, v in DEFAULT_TIMES.items()},
+            capacity_min=CAPACITY_MIN_PER_MACHINE,
+            source="simulateur",
+        )
+
+        # 11. Évaluer le scénario de base (référence)
+        from optimizer_engine import evaluate_scenario
+        from forecast_engine import rolling_forecast_12m
+
+        # Besoin de forecast pour evaluate_scenario
+        from forecast_engine import extract_own_sales_history, extract_structural_seasonality
+        sales = extract_own_sales_history(period_data, study_data=study_data)
+        struct = extract_structural_seasonality(period_data, study_data=study_data)
+
+        forecast_df, _ = rolling_forecast_12m(sales, struct, periode_m1, horizon=12)
+
+        base_eval = evaluate_scenario(
+            forecast_df,
+            segment_product,
+            segment_share,
+            segment_units,
+            cal,
+            competitors,
+            baseline_scenario,
+            budget_mkg_prev,
+            cap,
+        )
+
+        # 12. Évaluer le scénario candidat (simulateur)
+        cand_eval = evaluate_scenario(
+            forecast_df,
+            segment_product,
+            segment_share,
+            segment_units,
+            cal,
+            competitors,
+            scenario,
+            budget_mkg_prev,
+            cap,
+        )
+
+        result["pdm_potentielle"] = cand_eval.get("potential_share", 0.0) * 100.0
+        result["pdm_realisable"] = cand_eval.get("predicted_share", 0.0) * 100.0
+        result["capacity_bottlenecks"] = cand_eval.get("capacity_bottlenecks", [])
+        result["service_rate"] = cand_eval.get("service_rate", 1.0)
+        result["calibration_confidence"] = cal.confidence
+
+        if cand_eval.get("max_demand_capacity_utilization", 0) > 1.0:
+            warnings.append(f"Demande > capacité : {cand_eval.get('capacity_bottlenecks')}")
+
+    except Exception as e:
+        warnings.append(f"Erreur calcul PDM : {type(e).__name__}: {e}")
+
+    return result
 
 
 @st.cache_resource
@@ -1738,6 +1986,23 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_profitabilite_cumule = (res_avant_impot_cumule_sim / ca_cumule_sim * 100) if ca_cumule_sim > 0 else taux_profitabilite
         taux_rentabilite_cumule = (res_avant_impot_cumule_sim / capitaux_propres * 100) if capitaux_propres > 0 else taux_rentabilite
 
+        # Calcul PDM pour le scénario courant
+        pdm_result = _compute_pdm_scenario(
+            engine=engine,
+            tour_id_actif=tour_id_actif,
+            tour_id_precedent=tour_id_precedent,
+            periode_actuelle=periode_db,
+            periode_m1=period_for_tour(tour_id_precedent),
+            donnees_mkg=donnees_mkg,
+            ordres_prod_dict=ordres_prod_dict,
+            nb_m_dec_sim=nb_m_dec_sim,
+            nb_m_ass_sim=nb_m_ass_sim,
+            nb_m_cond_sim=nb_m_cond_sim,
+            budget_mkg_prev=budget_mkg_prev,
+            budgets_p_dict=budgets_p_dict,
+            own_company=3,
+        )
+
         # Tableau de bord court injecté en haut de la page via le placeholder.
         with kpi_header.container(border=True):
             st.markdown("**⚡ Tableau de bord de décision — résultat de la simulation courante**")
@@ -1752,12 +2017,23 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             k4.metric("Dette finale", fmt_eur(projection.dette_bancaire_finale))
             k5.metric("BFR final", fmt_eur(bfr_projection_detail.bfr))
             k6.metric("Profitabilité", f"{taux_profitabilite:.1f} %")
+
+            # Ligne PDM
+            k7, k8, k9 = st.columns(3)
+            k7.metric("PDM de référence", f"{pdm_result['pdm_reference']:.2f} %", help=f"Source : {pdm_result.get('calibration_confidence', 'inconnue')}")
+            k8.metric("PDM potentielle", f"{pdm_result['pdm_potentielle']:.2f} %", help="Avant contrainte de capacité")
+            k9.metric("PDM réalisable", f"{pdm_result['pdm_realisable']:.2f} %", help=f"Après contrainte capacité (taux service : {pdm_result['service_rate']*100:.1f}%)")
+
             if not treso_ouverture_connue:
                 st.warning("⚠️ Pont M-1 incomplet : solde bancaire d'ouverture introuvable en base. Trésorerie, dette et variation de BFR affichées ne sont pas fiables.")
             elif projection.tresorerie_finale < 0:
                 st.error(f"⚠️ Découvert projeté : {fmt_eur(projection.tresorerie_finale)}")
             else:
                 st.success("✅ Trésorerie projetée positive.")
+
+            if pdm_result['warnings']:
+                for w in pdm_result['warnings']:
+                    st.warning(f"⚠️ PDM : {w}")
 
         with diag_box.container():
             _titre_diag = "🧭 Période de référence utilisée" + (f" — ⚠️ {len(diag_ref.alerts)} alerte(s)" if diag_ref.alerts else " — ✅ cohérente")
