@@ -1158,11 +1158,23 @@ elif module_principal == "📥 Saisie des Données Réelles":
             df_m = pd.read_sql(f"SELECT * FROM Parc_Machines_Mensuel WHERE Tour_ID = {tour_saisie}", engine)
             d_rh = charger_donnees_rh_bdd(tour_saisie)
             d_mkg = charger_donnees_mkg_bdd(tour_saisie)
+            d_ventes = pd.read_sql(f"SELECT * FROM Ventes_Historique WHERE Tour_ID = {tour_saisie}", engine)
             dfin = pd.read_sql(f"SELECT * FROM Finances_Mensuelles WHERE Tour_ID = {tour_saisie}", engine)
         except Exception: pass
 
     def get_h(col, def_v): return float(df_h[col].iloc[0]) if not df_h.empty and col in df_h.columns else def_v
     def get_m(col, def_v=0): return int(df_m[col].iloc[0]) if not df_m.empty and col in df_m.columns else def_v
+    def get_v(col, def_v=0): return int(df_ventes[col].iloc[0]) if not df_ventes.empty and col in df_ventes.columns else def_v
+    def get_mk(col, def_v=0.0):
+        val = d_mkg.get(col, def_v) if isinstance(d_mkg, dict) else def_v
+        try:
+            return float(val) if val not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+    def get_mk_str(col, def_v=""):
+        val = d_mkg.get(col, def_v) if isinstance(d_mkg, dict) else def_v
+        return str(val) if val not in (None, "") else str(def_v)
+    def get_fin(col, def_v=0.0): return float(dfin[col].iloc[0]) if not dfin.empty and col in dfin.columns else def_v
 
     tab_r1, tab_r2, tab_r3, tab_r4, tab_r5, tab_r6 = st.tabs(["📦 Stocks", "🏭 Machines", "👥 RH", "🎯 Marketing", "📈 Ventes Réelles", "💶 Finance"])
     
@@ -1229,6 +1241,181 @@ elif module_principal == "📥 Saisie des Données Réelles":
                     with engine.begin() as conn:
                         conn.execute(text(f"INSERT INTO Decisions_RH_Mensuel (Tour_ID, Mois, Eff_Employes_Prod, Sal_Employes_Prod, Eff_Cadres_Prod, Sal_Cadres_Prod, Eff_Directeurs_Prod, Sal_Directeurs_Prod, Eff_Employes_Appro, Sal_Employes_Appro, Eff_Cadres_Appro, Sal_Cadres_Appro, Eff_Directeurs_Appro, Sal_Directeurs_Appro, Eff_Employes_Admin, Sal_Employes_Admin, Eff_Cadres_Admin, Sal_Cadres_Admin, Eff_Directeurs_Admin, Sal_Directeurs_Admin) VALUES ({tour_saisie}, '{mois_saisie}', {eff_ep}, {sal_ep}, {eff_cp}, {sal_cp}, {eff_dp}, {sal_dp}, {eff_ea}, {sal_ea}, {eff_ca}, {sal_ca}, {eff_da}, {sal_da}, {eff_ef}, {sal_ef}, {eff_cf}, {sal_cf}, {eff_df}, {sal_df}) ON DUPLICATE KEY UPDATE Eff_Employes_Prod={eff_ep}, Sal_Employes_Prod={sal_ep}, Eff_Cadres_Prod={eff_cp}, Sal_Cadres_Prod={sal_cp}, Eff_Directeurs_Prod={eff_dp}, Sal_Directeurs_Prod={sal_dp}, Eff_Employes_Appro={eff_ea}, Sal_Employes_Appro={sal_ea}, Eff_Cadres_Appro={eff_ca}, Sal_Cadres_Appro={sal_ca}, Eff_Directeurs_Appro={eff_da}, Sal_Directeurs_Appro={sal_da}, Eff_Employes_Admin={eff_ef}, Sal_Employes_Admin={sal_ef}, Eff_Cadres_Admin={eff_cf}, Sal_Cadres_Admin={sal_cf}, Eff_Directeurs_Admin={eff_df}, Sal_Directeurs_Admin={sal_df};"))
                     st.success("Pyramide RH enregistrée !")
+
+    with tab_r4:
+        with st.form("f_marketing"):
+            st.subheader("Saisie des Décisions Marketing (prix, budget, axes)")
+            st.caption("Ces valeurs alimentent le simulateur comme référence M-1 (prix par défaut, budget de marque, PLV produits).")
+
+            st.markdown("**💰 Prix de vente HT par produit**")
+            mk1, mk2, mk3, mk4, mk5 = st.columns(5)
+            mk_p_s3 = mk1.number_input("Shorty 3 (€)", value=get_mk('Prix_S3', 115.0), step=1.0)
+            mk_p_i3 = mk2.number_input("Integral 3 (€)", value=get_mk('Prix_I3', 190.0), step=1.0)
+            mk_p_s5 = mk3.number_input("Shorty 5 (€)", value=get_mk('Prix_S5', 220.0), step=1.0)
+            mk_p_i5 = mk4.number_input("Integral 5 (€)", value=get_mk('Prix_I5', 280.0), step=1.0)
+            mk_p_i7 = mk5.number_input("Integral 7 (€)", value=get_mk('Prix_I7', 375.0), step=1.0)
+
+            st.markdown("**📣 Budget publicitaire**")
+            mk_b1, mk_b2, mk_b3 = st.columns([1.2, 1, 1])
+            mk_budget_marque = mk_b1.number_input(
+                "Budget Pub Marque HT (€)", value=get_mk('Budget_Marque', 60500.0), step=500.0
+            )
+            _AXES = ["", "Prix", "Qualité", "Durée de vie", "Esthétique", "Souplesse", "Enfilage", "Protection thermique"]
+            _axe_p_val = get_mk_str('Axe_Principal', '')
+            _axe_a_val = get_mk_str('Axe_Accessoire', '')
+            mk_axe_principal = mk_b2.selectbox(
+                "Axe principal", _AXES, index=_AXES.index(_axe_p_val) if _axe_p_val in _AXES else 0,
+            )
+            mk_axe_accessoire = mk_b3.selectbox(
+                "Axe accessoire", _AXES, index=_AXES.index(_axe_a_val) if _axe_a_val in _AXES else 0,
+            )
+
+            st.markdown("**📢 Publicité produits (PLV mensuelle HT)**")
+            mk_p1, mk_p2, mk_p3, mk_p4, mk_p5 = st.columns(5)
+            mk_plv_s3 = mk_p1.number_input("PLV Shorty 3 (€)", value=get_mk('Pub_S3', 3100.0), step=100.0)
+            mk_plv_i3 = mk_p2.number_input("PLV Integral 3 (€)", value=get_mk('Pub_I3', 4100.0), step=100.0)
+            mk_plv_s5 = mk_p3.number_input("PLV Shorty 5 (€)", value=get_mk('Pub_S5', 3200.0), step=100.0)
+            mk_plv_i5 = mk_p4.number_input("PLV Integral 5 (€)", value=get_mk('Pub_I5', 4200.0), step=100.0)
+            mk_plv_i7 = mk_p5.number_input("PLV Integral 7 (€)", value=get_mk('Pub_I7', 3500.0), step=100.0)
+
+            _ca_mk = (mk_p_s3 * get_v('Ventes_S3', 50)) + (mk_p_i3 * get_v('Ventes_I3', 500)) + (mk_p_s5 * get_v('Ventes_S5', 100)) + (mk_p_i5 * get_v('Ventes_I5', 1500)) + (mk_p_i7 * get_v('Ventes_I7', 2500))
+            st.metric("CA théorique du mois (prix × ventes M-1)", f"{_ca_mk:,.0f} €".replace(",", " "))
+
+            if st.form_submit_button("💾 Enregistrer les Décisions Marketing"):
+                if engine:
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("""
+                                INSERT INTO Decisions_Marketing
+                                    (Tour_ID, Mois, Prix_S3, Prix_I3, Prix_S5, Prix_I5, Prix_I7,
+                                     Budget_Marque, Axe_Principal, Axe_Accessoire,
+                                     Pub_S3, Pub_I3, Pub_S5, Pub_I5, Pub_I7)
+                                VALUES
+                                    (:tour_id, :mois, :p_s3, :p_i3, :p_s5, :p_i5, :p_i7,
+                                     :budget, :axe_p, :axe_a,
+                                     :plv_s3, :plv_i3, :plv_s5, :plv_i5, :plv_i7)
+                                ON DUPLICATE KEY UPDATE
+                                    Mois=:mois, Prix_S3=:p_s3, Prix_I3=:p_i3, Prix_S5=:p_s5,
+                                    Prix_I5=:p_i5, Prix_I7=:p_i7, Budget_Marque=:budget,
+                                    Axe_Principal=:axe_p, Axe_Accessoire=:axe_a,
+                                    Pub_S3=:plv_s3, Pub_I3=:plv_i3, Pub_S5=:plv_s5,
+                                    Pub_I5=:plv_i5, Pub_I7=:plv_i7
+                            """), {
+                                "tour_id": int(tour_saisie), "mois": mois_saisie,
+                                "p_s3": mk_p_s3, "p_i3": mk_p_i3, "p_s5": mk_p_s5, "p_i5": mk_p_i5, "p_i7": mk_p_i7,
+                                "budget": mk_budget_marque, "axe_p": mk_axe_principal, "axe_a": mk_axe_accessoire,
+                                "plv_s3": mk_plv_s3, "plv_i3": mk_plv_i3, "plv_s5": mk_plv_s5,
+                                "plv_i5": mk_plv_i5, "plv_i7": mk_plv_i7,
+                            })
+                        st.success("✅ Décisions marketing enregistrées !")
+                    except Exception as exc:
+                        st.error(f"Erreur d'enregistrement marketing : {type(exc).__name__}: {exc}")
+
+    with tab_r5:
+        with st.form("f_ventes"):
+            st.subheader("Saisie des Ventes Réelles du mois")
+            st.caption("Ces volumes servent de référence M-1 : volumes par défaut du simulateur, CA prévisionnel et détection de repli.")
+            v1, v2, v3, v4, v5 = st.columns(5)
+            v_s3 = v1.number_input("Shorty 3 (u)", value=get_v('Ventes_S3', 50), min_value=0, step=1)
+            v_i3 = v2.number_input("Integral 3 (u)", value=get_v('Ventes_I3', 500), min_value=0, step=1)
+            v_s5 = v3.number_input("Shorty 5 (u)", value=get_v('Ventes_S5', 100), min_value=0, step=1)
+            v_i5 = v4.number_input("Integral 5 (u)", value=get_v('Ventes_I5', 1500), min_value=0, step=1)
+            v_i7 = v5.number_input("Integral 7 (u)", value=get_v('Ventes_I7', 2500), min_value=0, step=1)
+
+            _total_v = v_s3 + v_i3 + v_s5 + v_i5 + v_i7
+            _mix = pd.DataFrame({
+                "Produit": ["Shorty 3", "Integral 3", "Shorty 5", "Integral 5", "Integral 7"],
+                "Unités": [v_s3, v_i3, v_s5, v_i5, v_i7],
+            })
+            _mix["Part (%)"] = (_mix["Unités"] / _total_v * 100).round(1) if _total_v else 0.0
+            _mix["CA (€)"] = [v_s3 * mk_p_s3, v_i3 * mk_p_i3, v_s5 * mk_p_s5, v_i5 * mk_p_i5, v_i7 * mk_p_i7]
+            st.markdown("**📊 Mix de ventes du mois**")
+            st.dataframe(_mix, width="stretch", hide_index=True)
+            st.metric("Volume total vendu", f"{_total_v:,} u".replace(",", " "))
+            st.metric("CA total (prix tab Marketing × volumes)", f"{_mix['CA (€)'].sum():,.0f} €".replace(",", " "))
+
+            if st.form_submit_button("💾 Enregistrer les Ventes"):
+                if engine:
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("""
+                                INSERT INTO Ventes_Historique (Tour_ID, Mois, Ventes_S3, Ventes_I3, Ventes_S5, Ventes_I5, Ventes_I7)
+                                VALUES (:tour_id, :mois, :s3, :i3, :s5, :i5, :i7)
+                                ON DUPLICATE KEY UPDATE
+                                    Mois=:mois, Ventes_S3=:s3, Ventes_I3=:i3, Ventes_S5=:s5, Ventes_I5=:i5, Ventes_I7=:i7
+                            """), {
+                                "tour_id": int(tour_saisie), "mois": mois_saisie,
+                                "s3": v_s3, "i3": v_i3, "s5": v_s5, "i5": v_i5, "i7": v_i7,
+                            })
+                        st.success("✅ Ventes réelles enregistrées !")
+                    except Exception as exc:
+                        st.error(f"Erreur d'enregistrement des ventes : {type(exc).__name__}: {exc}")
+
+    with tab_r6:
+        with st.form("f_finances"):
+            st.subheader("Saisie des Résultats Financiers Réels du mois")
+            st.caption(
+                "Ces montants complètent l'état financier extrait (banque / expert-comptable). "
+                "Ils servent de filet de sécurité : toute valeur laissée à 0 n'écrase pas la donnée extraite."
+            )
+            st.caption("⚠️ Laisser un champ à 0 signifie « donnée non saisie » : le moteur conserve alors la valeur extraite de l'étude comptable.")
+
+            fin1, fin2, fin3 = st.columns(3)
+            with fin1:
+                st.markdown("**📈 Produits & résultat**")
+                f_ca = st.number_input("Chiffre d'affaires net HT (€)", value=get_fin('CA_Net', 0.0), step=1000.0)
+                f_achats = st.number_input("Achats matières (€)", value=get_fin('Achats_Matieres', 0.0), step=100.0)
+                f_autres = st.number_input("Autres charges externes (€)", value=get_fin('Autres_Charges_Externes', 0.0), step=100.0)
+                f_resultat = st.number_input("Résultat net (€)", value=get_fin('Resultat_Net', 0.0), step=1000.0)
+            with fin2:
+                st.markdown("**👥 Charges de personnel**")
+                f_remun = st.number_input("Rémunération personnel (€)", value=get_fin('Remuneration_Personnel', 0.0), step=100.0)
+                f_social = st.number_input("Charges sociales (€)", value=get_fin('Charges_Sociales', 0.0), step=100.0)
+                f_amort = st.number_input("Dotations amortissements (€)", value=get_fin('Dotations_Amortissements', 0.0), step=100.0)
+            with fin3:
+                st.markdown("**🏦 Bilan & trésorerie**")
+                f_afim = st.number_input("Total actif immobilisé (€)", value=get_fin('Total_Actif_Immobilise', 0.0), step=1000.0)
+                f_afc = st.number_input("Total actif circulant (€)", value=get_fin('Total_Actif_Circulant', 0.0), step=1000.0)
+                f_cp = st.number_input("Total capitaux propres (€)", value=get_fin('Total_Capitaux_Propres', 0.0), step=1000.0)
+                f_dette = st.number_input("Emprunts bancaires (€)", value=get_fin('Emprunts_Bancaires', 0.0), step=1000.0)
+                f_banque = st.number_input("Disponibilités banque (€)", value=get_fin('Disponibilites_Banque', 0.0), step=1000.0)
+
+            f_fin_saisi = [f_ca, f_achats, f_autres, f_resultat, f_remun, f_social, f_amort, f_afim, f_afc, f_cp, f_dette, f_banque]
+            if any(float(x) != 0.0 for x in f_fin_saisi):
+                st.caption(f"Champs renseignés : **{sum(1 for x in f_fin_saisi if float(x) != 0.0)} / 12**")
+            else:
+                st.info("Aucun champ renseigné : l'enregistrement créera une ligne vide qui n'écrasera pas les données extraites.")
+
+            if st.form_submit_button("💾 Enregistrer les Données Financières"):
+                if engine:
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("""
+                                INSERT INTO Finances_Mensuelles
+                                    (Tour_ID, Mois, CA_Net, Achats_Matieres, Autres_Charges_Externes,
+                                     Remuneration_Personnel, Charges_Sociales, Dotations_Amortissements,
+                                     Resultat_Net, Total_Actif_Immobilise, Total_Actif_Circulant,
+                                     Total_Capitaux_Propres, Emprunts_Bancaires, Disponibilites_Banque)
+                                VALUES
+                                    (:tour_id, :mois, :ca, :achats, :autres,
+                                     :remun, :social, :amort,
+                                     :resultat, :afim, :afc,
+                                     :cp, :dette, :banque)
+                                ON DUPLICATE KEY UPDATE
+                                    Mois=:mois, CA_Net=:ca, Achats_Matieres=:achats, Autres_Charges_Externes=:autres,
+                                    Remuneration_Personnel=:remun, Charges_Sociales=:social, Dotations_Amortissements=:amort,
+                                    Resultat_Net=:resultat, Total_Actif_Immobilise=:afim, Total_Actif_Circulant=:afc,
+                                    Total_Capitaux_Propres=:cp, Emprunts_Bancaires=:dette, Disponibilites_Banque=:banque
+                            """), {
+                                "tour_id": int(tour_saisie), "mois": mois_saisie,
+                                "ca": f_ca, "achats": f_achats, "autres": f_autres,
+                                "remun": f_remun, "social": f_social, "amort": f_amort,
+                                "resultat": f_resultat, "afim": f_afim, "afc": f_afc,
+                                "cp": f_cp, "dette": f_dette, "banque": f_banque,
+                            })
+                        st.success("✅ Données financières enregistrées !")
+                    except Exception as exc:
+                        st.error(f"Erreur d'enregistrement financier : {type(exc).__name__}: {exc}")
 
 # ==========================================
 # MODULE 3 : SIMULATEUR & DÉCISION STRATÉGIQUE
