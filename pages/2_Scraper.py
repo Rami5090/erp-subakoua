@@ -264,10 +264,10 @@ with tab_plan:
 
     c1, c2 = st.columns(2)
     with c1:
-        preset = st.selectbox("Sélection rapide des périodes", ["Personnalisée", "Toutes", "Année 1", "Année 2"], key="smart_period_preset")
+        preset = st.selectbox("Sélection rapide des périodes", ["Personnalisée", "Toutes", "Année 0", "Année 1", "Année 2"], key="smart_period_preset")
         if preset == "Toutes":
             default_periods = available
-        elif preset in {"Année 1", "Année 2"}:
+        elif preset in {"Année 0", "Année 1", "Année 2"}:
             default_periods = [p for p in available if period_year(p) == preset]
         else:
             default_periods = st.session_state.get("smart_target_periods", available[:1])

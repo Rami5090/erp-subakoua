@@ -56,7 +56,9 @@ def test_strategic_5000_excluded_by_default():
 
 def test_try_next_period_handles_before_first_period():
     import document_optimizer as o
-    assert o.try_next_period("Année 1 - Janvier", -1) is None
+    # Le socle remonte à Année 0 : la fenêtre d'achat de Janvier A1 est Décembre A0.
+    assert o.try_next_period("Année 1 - Janvier", -1) == "Année 0 - Décembre"
+    assert o.try_next_period("Année 0 - Janvier", -1) is None
 
 
 def test_coverage_is_not_saturated_by_generic_tags():

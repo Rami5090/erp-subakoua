@@ -88,6 +88,10 @@ DECISION_MODULES = {
 MARQUEUR_DECISIONS = "__champs__"
 
 MOIS_DISPONIBLES = [
+    "Année 0 - Janvier", "Année 0 - Février", "Année 0 - Mars",
+    "Année 0 - Avril", "Année 0 - Mai", "Année 0 - Juin",
+    "Année 0 - Juillet", "Année 0 - Août", "Année 0 - Septembre",
+    "Année 0 - Octobre", "Année 0 - Novembre", "Année 0 - Décembre",
     "Année 1 - Janvier", "Année 1 - Février", "Année 1 - Mars",
     "Année 1 - Avril", "Année 1 - Mai", "Année 1 - Juin",
     "Année 1 - Juillet", "Année 1 - Août", "Année 1 - Septembre",

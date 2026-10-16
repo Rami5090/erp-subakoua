@@ -61,11 +61,15 @@ MONTH_NAMES = [
 ]
 MONTH_BY_NAME = {x.lower(): i + 1 for i, x in enumerate(MONTH_NAMES)}
 
-# Index période (Année 1 - Janvier = 1)
-PERIOD_INDEX = {f"Année {y} - {m}": (y - 1) * 12 + i for y in range(1, 5) for i, m in enumerate(MONTH_NAMES)}
+# Index période (Année 1 - Janvier = 0 ; Année 0 - Janvier = -12).
+# Le socle documentaire Subakoua remonte à Année 0 - Janvier : l'Année 0
+# (historique pré-joué) fait partie du modèle, pas seulement l'Année 1+.
+PERIOD_INDEX = {f"Année {y} - {m}": (y - 1) * 12 + i for y in range(0, 5) for i, m in enumerate(MONTH_NAMES)}
 
-# Tours -> Périodes
+# Tours -> Périodes (tour 0 = Année 0 - Décembre : point de départ du jeu,
+# période d'achat des études lisibles en Année 1 - Janvier).
 TOURS_PERIODES = {
+    0: "Année 0 - Décembre",
     1: "Année 1 - Janvier", 2: "Année 1 - Février", 3: "Année 1 - Mars",
     4: "Année 1 - Avril", 5: "Année 1 - Mai", 6: "Année 1 - Juin",
     7: "Année 1 - Juillet", 8: "Année 1 - Août", 9: "Année 1 - Septembre",
@@ -95,7 +99,7 @@ PRODUCT_PATTERNS = [
 
 
 def period_to_seq(period: str) -> int:
-    """Convertit 'Année 1 - Janvier' -> séquence 1-based."""
+    """Convertit 'Année 1 - Janvier' -> séquence 1-based (Année 0 - Janvier -> -11)."""
     import re
     m = re.fullmatch(r"Année\s+(\d+)\s*-\s*(.+)", str(period).strip(), re.I)
     if not m:
@@ -115,13 +119,13 @@ def period_label_to_code(period: str) -> str:
 
 
 def period_code_to_label(code: str) -> str:
-    """Convertit '0101' -> 'Année 1 - Janvier'."""
+    """Convertit '0101' -> 'Année 1 - Janvier' ('0001' -> 'Année 0 - Janvier')."""
     code = str(code).strip()
     if not re.fullmatch(r"\d{4}", code):
         raise ValueError(f"Code période invalide: {code!r}")
     year = int(code[:2])
     month = int(code[2:])
-    if year < 1 or month not in range(1, 13):
+    if year < 0 or month not in range(1, 13):
         raise ValueError(f"Code période invalide: {code!r}")
     return f"Année {year} - {MONTH_NAMES[month - 1]}"
 
@@ -132,10 +136,10 @@ def period_month_id(period: str) -> int:
 
 
 def next_period(period: str, offset: int = 1) -> str:
-    """Période suivante/précédente."""
+    """Période suivante/précédente (plancher : Année 0 - Janvier)."""
     seq = period_to_seq(period) + offset
-    if seq < 1:
-        raise ValueError("La période résultante est antérieure à Année 1 - Janvier")
+    if seq < -11:
+        raise ValueError("La période résultante est antérieure à Année 0 - Janvier")
     year = (seq - 1) // 12 + 1
     month = (seq - 1) % 12 + 1
     return f"Année {year} - {MONTH_NAMES[month - 1]}"

@@ -85,10 +85,11 @@ def _etude(periode: str, study_id: str):
         return _decode(rows[0][0])
 
 
+_tours = sorted(TOURS_PERIODES)
 tour = st.selectbox(
     "Période du livrable",
-    sorted(TOURS_PERIODES),
-    index=7,
+    _tours,
+    index=_tours.index(8),
     format_func=lambda t: f"Tour {t} — {TOURS_PERIODES[t]}",
 )
 periode = TOURS_PERIODES[int(tour)]
@@ -143,7 +144,9 @@ couts, cout_warns, couts_src = {}, [], periode
 couts_detail: dict = {}
 cost_payload = _etude(periode, "productionCostDetailStudy")
 if not cost_payload or not cost_payload.get("productsProductionCostDetails"):
-    for t in range(int(tour) - 1, 0, -1):
+    for t in range(int(tour) - 1, -1, -1):
+        if t not in TOURS_PERIODES:
+            continue
         p = _etude(TOURS_PERIODES[t], "productionCostDetailStudy")
         if p and p.get("productsProductionCostDetails"):
             cost_payload = p
