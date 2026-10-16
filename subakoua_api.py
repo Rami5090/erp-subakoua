@@ -318,20 +318,28 @@ class SubakouaAPIClient:
             page.wait_for_timeout(900)
         raise SubakouaAPIError("Zone Études/Documents introuvable dans le portail Subakoua.")
 
-    def _click_buy_visible(self, page: Page, scope=None) -> bool:
-        """Clique sur le premier bouton Acheter visible dans le scope donné."""
+    def _buy_locators(self, page: Page, scope=None) -> list:
+        """Localisateurs des contrôles d'achat (boutons ET liens)."""
         root = scope or page
+        locs = []
         for pattern in (
             r"acheter",
             r"acheter l[’\']étude",
         ):
-            try:
-                loc = root.get_by_role("button", name=re.compile(pattern, re.I))
-                if self._click_first_visible(loc, timeout=5000):
-                    page.wait_for_timeout(600)
-                    return True
-            except Exception:
-                pass
+            rx = re.compile(pattern, re.I)
+            for role in ("button", "link"):
+                try:
+                    locs.append(root.get_by_role(role, name=rx))
+                except Exception:
+                    pass
+        return locs
+
+    def _click_buy_visible(self, page: Page, scope=None) -> bool:
+        """Clique sur le premier bouton/lien Acheter visible dans le scope donné."""
+        for loc in self._buy_locators(page, scope):
+            if self._click_first_visible(loc, timeout=5000):
+                page.wait_for_timeout(600)
+                return True
         return False
 
     @staticmethod
@@ -540,14 +548,9 @@ class SubakouaAPIClient:
         return urls
 
     def _buy_button_visible(self, page: Page, scope=None) -> bool:
-        """Détecte un bouton Acheter visible SANS cliquer (dry-run)."""
-        root = scope or page
-        for pattern in (
-            r"acheter",
-            r"acheter l[’\']étude",
-        ):
+        """Détecte un bouton/lien Acheter visible SANS cliquer (dry-run)."""
+        for loc in self._buy_locators(page, scope):
             try:
-                loc = root.get_by_role("button", name=re.compile(pattern, re.I))
                 for i in range(min(loc.count(), 10)):
                     try:
                         if loc.nth(i).is_visible():
@@ -818,6 +821,9 @@ class SubakouaAPIClient:
             detail["erreur"] = ("session portail expirée : reconnecte-toi (relance l'acquisition, "
                                 "un nouveau login sera établi)")
             return False, detail
+        # Sections collectées sur le dashboard (navigation complète),
+        # avant que la zone ne restreigne la vue à une seule section.
+        dash_sections = self._study_section_links(page)
         try:
             self._open_study_area(page)
         except Exception as exc:
@@ -848,13 +854,29 @@ class SubakouaAPIClient:
         _select()
         if _try_here():
             return True, detail
-        for url in self._study_section_links(page):
+        seen: set[str] = set()
+        try:
+            seen.add((page.url or "").rstrip("/").lower())
+        except Exception:
+            pass
+        for url in list(dash_sections) + self._study_section_links(page):
+            if detail["sections"] >= 6:
+                break
+            try:
+                if url.rstrip("/").lower() in seen:
+                    continue
+            except Exception:
+                pass
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
                 page.wait_for_timeout(1000)
             except Exception as exc:
                 self.logger.debug("Section études inexploitable %s : %s", url, exc)
                 continue
+            try:
+                seen.add((page.url or "").rstrip("/").lower())
+            except Exception:
+                pass
             detail["sections"] += 1
             detail["sections_vues"].append(url)
             _select()
@@ -912,6 +934,7 @@ class SubakouaAPIClient:
         page = self.page
         tried = self._study_url_candidates(study_id, period)
         via: str | None = None
+        via_texte = ""
         for url in tried[:8]:
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
@@ -919,6 +942,12 @@ class SubakouaAPIClient:
                 if self._buy_button_visible(page):
                     via = url
                     break
+                if not via_texte:
+                    try:
+                        body = page.locator("body").inner_text(timeout=5000)
+                        via_texte = self._norm_ui_text(body)[:400]
+                    except Exception:
+                        pass
             except Exception as exc:
                 self.logger.debug("Sonde route inexploitable %s : %s", url, exc)
         try:
@@ -931,6 +960,7 @@ class SubakouaAPIClient:
             "trouvée": via is not None,
             "via": via or "",
             "routes_testées": len(tried),
+            "via_texte": via_texte,
             "recherche_globale": "présente" if search_present else "absente",
         }
         out.update(self.probe_marketplace(study_id, period))
@@ -962,6 +992,7 @@ class SubakouaAPIClient:
             if self._session_expired(page):
                 out["marche_session"] = "expirée"
                 return out
+            dash_sections = self._study_section_links(page)
             self._open_study_area(page)
             out["marche_zone"] = True
             if period:
@@ -994,12 +1025,28 @@ class SubakouaAPIClient:
             if _check():
                 out["marche_acheter"] = True
                 return out
-            for url in self._study_section_links(page):
+            seen: set[str] = set()
+            try:
+                seen.add((page.url or "").rstrip("/").lower())
+            except Exception:
+                pass
+            for url in list(dash_sections) + self._study_section_links(page):
+                if out["marche_sections"] >= 6:
+                    break
+                try:
+                    if url.rstrip("/").lower() in seen:
+                        continue
+                except Exception:
+                    pass
                 try:
                     page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
                     page.wait_for_timeout(1000)
                 except Exception:
                     continue
+                try:
+                    seen.add((page.url or "").rstrip("/").lower())
+                except Exception:
+                    pass
                 out["marche_sections"] += 1
                 out["marche_sections_vues"].append(url)
                 if period:

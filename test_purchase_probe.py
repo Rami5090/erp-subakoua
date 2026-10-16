@@ -74,7 +74,7 @@ class FakePage:
                  period_current="Année 1 - Janvier",
                  start_url="https://subakoua.arkhe.com/companies",
                  links_after_calls=0, password_visible=False,
-                 evaluate_result="__raise__"):
+                 evaluate_result="__raise__", link_buy_visible=False):
         self.url = start_url
         self.visited = []
         self._buy_visible = buy_visible
@@ -88,6 +88,7 @@ class FakePage:
         self._sections = list(sections)
         self._period_current = period_current
         self._evaluate_result = evaluate_result
+        self._link_buy_visible = link_buy_visible
 
     def evaluate(self, expr, arg=None):
         if self._evaluate_result == "__raise__":
@@ -134,6 +135,8 @@ class FakePage:
                      if self._links_ready() and (rx is None or rx.search(n.inner_text()))]
             if role == "button" and self._buy_visible:
                 nodes = nodes + [FakeNode(True, text="Acheter")]
+            if role == "link" and self._link_buy_visible:
+                nodes = nodes + [FakeNode(True, text="Acheter l'étude")]
             return FakeLocator(nodes, wait_raises=False)
         return FakeLocator([], wait_raises=False)
 
@@ -337,6 +340,51 @@ def test_session_active_par_defaut():
     page = FakePage(links=["Études"])
     client = make_client(page)
     assert client._session_expired(page) is False
+
+
+def test_lien_acheter_detecte():
+    page = FakePage(link_buy_visible=True)
+    client = make_client(page)
+    assert client._buy_button_visible(page) is True
+    page2 = FakePage()
+    assert client._buy_button_visible(page2) is False
+
+
+def test_sections_dashboard_avant_zone():
+    seen_urls = []
+
+    class DashPage(FakePage):
+        def locator(self, sel):
+            if "a[href]" in sel and self.url.endswith("/companies"):
+                return FakeLocator(
+                    [FakeNode(True, text="Comptabilité",
+                              attrs={"href": "/companies/partners/accountant/synthesis"})],
+                    wait_raises=False)
+            return super().locator(sel)
+
+    page = DashPage(
+        links=["Études"],
+        card={"text": "TVA", "buy": True},
+        card_on=["accountant"],
+        period_current="Année 1 - Janvier",
+    )
+    orig_goto = page.goto
+    def goto(url, **kwargs):
+        seen_urls.append(url)
+        orig_goto(url, **kwargs)
+    page.goto = goto
+    client = make_client(page)
+    client = _no_wait(client)
+    ok, detail = client._buy_from_marketplace(page, "peeefstvp", "TVA", "Année 1 - Janvier")
+    assert ok is True
+    assert seen_urls[0] == "https://subakoua.arkhe.com/companies/partners/accountant/synthesis"
+
+
+def test_via_texte_remonte():
+    page = FakePage()
+    client = make_client(page)
+    out = client.probe_purchase_target("peeedccg", "Année 1 - Janvier")
+    assert "via_texte" in out
 
 
 def test_scoring_js_rapide():
