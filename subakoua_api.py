@@ -35,6 +35,48 @@ from constants import (
 
 BASE_URL = "https://subakoua.arkhe.com"
 
+#: Sélecteur des nœuds cliquables candidats (cartes d'études).
+_CANDIDATE_SELECTOR = (
+    'a, button, [role="link"], [role="button"], li, [tabindex="0"], '
+    '[routerlink], [ng-reflect-router-link]'
+)
+
+#: Scoring des cartes en UN seul aller-retour navigateur (même règle que Python).
+_CANDIDATE_SCORING_JS = """({selector, label, tokens, studyId}) => {
+  const norm = (v) => (v || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const visible = (el) => {
+    const s = getComputedStyle(el); const r = el.getBoundingClientRect();
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+  };
+  const labelNorm = norm(label), idNorm = norm(studyId);
+  const els = Array.from(document.querySelectorAll(selector));
+  const out = [];
+  const cap = Math.min(els.length, 500);
+  for (let i = 0; i < cap; i++) {
+    const el = els[i];
+    if (!visible(el)) continue;
+    const txt = norm(el.innerText || el.textContent || '');
+    const attrs = norm([el.getAttribute('href'), el.getAttribute('routerlink'),
+      el.getAttribute('ng-reflect-router-link'), el.getAttribute('data-study-id'),
+      el.getAttribute('data-studyid'), el.getAttribute('data-id'),
+      el.getAttribute('value')].filter(Boolean).join(' '));
+    if (idNorm && attrs.includes(idNorm)) { out.push({i, score: 100}); continue; }
+    if (!txt) continue;
+    if (labelNorm && txt.includes(labelNorm)) { out.push({i, score: 95}); continue; }
+    if (tokens.length) {
+      const hits = tokens.filter(t => txt.includes(t)).length;
+      const coverage = hits / tokens.length;
+      if (coverage >= 0.60) {
+        const words = txt.split(' ').length;
+        const specificity = Math.max(0, 1 - Math.max(0, words - 20) / 80);
+        out.push({i, score: coverage * 80 + specificity * 10});
+      }
+    }
+  }
+  out.sort((a, b) => b.score - a.score || a.i - b.i);
+  return {total: els.length, matches: out.slice(0, 20)};
+}"""
+
 
 @dataclass(frozen=True)
 class PlayerContext:
@@ -326,20 +368,48 @@ class SubakouaAPIClient:
         }
         return [tok for tok in norm.split() if len(tok) >= 3 and tok not in stop]
 
+    def _wait_for_study_content(self, page: Page, label: str, study_id: str,
+                                timeout_ms: int = 8000) -> bool:
+        """Attend que les cartes soient montées avant de scorer (Angular tardif)."""
+        deadline = time.time() + timeout_ms / 1000.0
+        while True:
+            if self._find_study_candidates(page, label, study_id):
+                return True
+            if time.time() >= deadline:
+                return False
+            try:
+                page.wait_for_timeout(800)
+            except Exception:
+                return False
+
     def _find_study_candidates(self, page: Page, label: str, study_id: str) -> list:
         """Scoring des cartes d'étude dans le DOM visible. Ne clique jamais.
 
-        Retourne les nœuds candidats par score décroissant : ID exact dans les
-        attributs (100), libellé exact (95), couverture des mots du titre (≥60%).
+        Un seul aller-retour navigateur via evaluate ; repli Python si indisponible.
+        Règle de score identique des deux côtés : ID exact dans les attributs
+        (100), libellé exact (95), couverture des mots du titre (≥60%).
         """
+        try:
+            found = page.evaluate(_CANDIDATE_SCORING_JS, {
+                "selector": _CANDIDATE_SELECTOR,
+                "label": label,
+                "tokens": self._label_tokens(label),
+                "studyId": study_id,
+            })
+            if isinstance(found, dict) and isinstance(found.get("matches"), list):
+                candidates = page.locator(_CANDIDATE_SELECTOR)
+                return [candidates.nth(int(m["i"])) for m in found["matches"][:20]]
+        except Exception as exc:
+            self.logger.debug("Scoring JS indisponible, repli Python : %s", exc)
+        return self._find_study_candidates_slow(page, label, study_id)
+
+    def _find_study_candidates_slow(self, page: Page, label: str, study_id: str) -> list:
+        """Version Python nœud par nœud (repli quand evaluate est indisponible)."""
         tokens = self._label_tokens(label)
         label_norm = self._norm_ui_text(label)
         id_norm = self._norm_ui_text(study_id)
 
-        candidates = page.locator(
-            'a, button, [role="link"], [role="button"], li, [tabindex="0"], '
-            '[routerlink], [ng-reflect-router-link]'
-        )
+        candidates = page.locator(_CANDIDATE_SELECTOR)
         try:
             count = min(candidates.count(), 500)
         except Exception:
@@ -755,6 +825,7 @@ class SubakouaAPIClient:
                     detail["erreur"] = f"sélecteur de période : {exc}"
 
         def _try_here() -> bool:
+            self._wait_for_study_content(page, label, study_id)
             if self._find_study_candidates(page, label, study_id):
                 detail["carte"] = True
             if self._click_search_result_candidate(page, label, study_id):
@@ -866,7 +937,7 @@ class SubakouaAPIClient:
             "marche_zone": False, "marche_periode": False,
             "marche_carte": False, "marche_acheter": False,
             "marche_sections": 0, "marche_via": "", "marche_sections_vues": [],
-            "marche_session": "active",
+            "marche_session": "active", "marche_texte": "",
         }
         if self.page is None:
             raise SubakouaAPIError("Aucune page Playwright attachée : diagnostic UI impossible.")
@@ -892,6 +963,7 @@ class SubakouaAPIClient:
                     self.logger.debug("Sonde période %s : %s", study_id, exc)
 
             def _check() -> bool:
+                self._wait_for_study_content(page, label, study_id)
                 cards = self._find_study_candidates(page, label, study_id)
                 if cards:
                     out["marche_carte"] = True
@@ -903,6 +975,11 @@ class SubakouaAPIClient:
                         out["marche_via"] = page.url
                     except Exception:
                         pass
+                try:
+                    body = page.locator("body").inner_text(timeout=5000)
+                    out["marche_texte"] = self._norm_ui_text(body)[:400]
+                except Exception:
+                    pass
                 return found
 
             if _check():

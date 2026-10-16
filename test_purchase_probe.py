@@ -73,7 +73,8 @@ class FakePage:
                  card=None, card_on=None, sections=(),
                  period_current="Année 1 - Janvier",
                  start_url="https://subakoua.arkhe.com/companies",
-                 links_after_calls=0, password_visible=False):
+                 links_after_calls=0, password_visible=False,
+                 evaluate_result="__raise__"):
         self.url = start_url
         self.visited = []
         self._buy_visible = buy_visible
@@ -86,6 +87,12 @@ class FakePage:
         self._card_on = card_on
         self._sections = list(sections)
         self._period_current = period_current
+        self._evaluate_result = evaluate_result
+
+    def evaluate(self, expr, arg=None):
+        if self._evaluate_result == "__raise__":
+            raise RuntimeError("evaluate indisponible")
+        return self._evaluate_result
 
     def _links_ready(self):
         return self._role_calls > self._links_after_calls
@@ -173,6 +180,14 @@ def make_client(page):
     return client
 
 
+def _no_wait(client):
+    """Attente instantanée : le mécanisme d'attente est couvert ailleurs,
+    ici on valide les chemins sans payer les timeouts négatifs."""
+    real = client._wait_for_study_content
+    client._wait_for_study_content = lambda *a, **k: real(*a, **{**k, "timeout_ms": 50})
+    return client
+
+
 def test_open_study_erreur_diagnostique():
     page = FakePage()
     client = make_client(page)
@@ -187,6 +202,7 @@ def test_open_study_erreur_diagnostique():
 def test_probe_trouve_sans_cliquer():
     page = FakePage(buy_visible=True)
     client = make_client(page)
+    client = _no_wait(client)
     out = client.probe_purchase_target("peeedccg", "Année 1 - Janvier")
     assert out["trouvée"] is True
     assert out["via"]
@@ -262,6 +278,7 @@ def test_section_soeur_trouve_la_carte():
         period_current="Année 1 - Janvier",
     )
     client = make_client(page)
+    client = _no_wait(client)
     ok, detail = client._buy_from_marketplace(page, "peeefstvp", "TVA", "Année 1 - Janvier")
     assert ok is True
     assert detail["sections"] == 1
@@ -291,6 +308,7 @@ def test_probe_sections_remontees():
         period_current="Année 1 - Janvier",
     )
     client = make_client(page)
+    client = _no_wait(client)
     out = client.probe_marketplace("peeefstvp", "Année 1 - Janvier")
     assert out["marche_acheter"] is True
     assert out["marche_sections"] == 1
@@ -321,6 +339,25 @@ def test_session_active_par_defaut():
     assert client._session_expired(page) is False
 
 
+def test_scoring_js_rapide():
+    page = FakePage(
+        card={"text": "TVA", "buy": True},
+        evaluate_result={"total": 1, "matches": [{"i": 0, "score": 95}]},
+    )
+    client = make_client(page)
+    nodes = client._find_study_candidates(page, "TVA", "peeefstvp")
+    assert len(nodes) == 1
+    assert "TVA" in nodes[0].inner_text()
+
+
+def test_probe_texte_remonte():
+    page = FakePage(links=["Études"])
+    client = make_client(page)
+    client = _no_wait(client)
+    out = client.probe_marketplace("x", "Année 1 - Janvier")
+    assert "marche_texte" in out
+
+
 def test_sections_vues_tracees():
     page = FakePage(
         links=["Études"],
@@ -329,6 +366,7 @@ def test_sections_vues_tracees():
         period_current="Année 1 - Janvier",
     )
     client = make_client(page)
+    client = _no_wait(client)
     ok, detail = client._buy_from_marketplace(page, "x", "Introuvable", "Année 1 - Janvier")
     assert ok is False
     assert detail["sections"] == 1
