@@ -464,6 +464,43 @@ with tab_acq:
                         if pw:
                             pw.stop()
 
+    if st.button("🧪 Tester la navigation d'achat (sans acheter)", width="stretch",
+                 disabled=(not acq_periods or not acq_ids),
+                 help="Dry-run sans risque : vérifie que chaque étude est atteignable dans "
+                      "l'interface, sans cliquer sur Acheter ni dépenser."):
+        if not sub_user or not sub_pass:
+            st.error("Identifiants Subakoua manquants.")
+        else:
+            cfg = make_config(sub_user, sub_pass)
+            pw = browser = context = None
+            try:
+                pw, browser, context, page, api = api_session(cfg, log_name="subakoua_probe")
+                probe_out = []
+                for per in acq_periods:
+                    for sid in acq_ids:
+                        try:
+                            probe_out.append(api.probe_purchase_target(sid, per))
+                        except Exception as exc:
+                            probe_out.append({"period": per, "study_id": sid, "trouvée": False,
+                                              "via": "", "routes_testées": 0,
+                                              "recherche_globale": "?",
+                                              "page_courante": f"sonde impossible : {exc}"})
+                st.session_state["acq_probe"] = probe_out
+            except Exception as exc:
+                st.error(f"Sonde interrompue : {exc}")
+            finally:
+                try:
+                    if context:
+                        context.close()
+                finally:
+                    if browser:
+                        browser.close()
+                    if pw:
+                        pw.stop()
+
+    if st.session_state.get("acq_probe"):
+        st.dataframe(pd.DataFrame(st.session_state["acq_probe"]), width="stretch", hide_index=True)
+
     if st.session_state.get("acq_results"):
         st.dataframe(pd.DataFrame(st.session_state["acq_results"]), width="stretch", hide_index=True)
         _bought_only = [r for r in st.session_state["acq_results"] if r.get("status") == "ACHETEE"]

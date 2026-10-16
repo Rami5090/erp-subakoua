@@ -424,6 +424,54 @@ class SubakouaAPIClient:
                 out.append(full)
         return out
 
+    def _study_url_candidates(self, study_id: str, period: str | None) -> list[str]:
+        """Routes UI candidates SANS navigation (audit + ligne catalogue live)."""
+        urls: list[str] = []
+        if period:
+            try:
+                month_id = self.month_id(self.period_label(period))
+                for cand in study_catalog.get_ui_routes_for(study_id, month_id, self.base_url):
+                    url = str((cand or {}).get("url") or "").strip()
+                    if url and url not in urls:
+                        urls.append(url)
+            except Exception as exc:
+                self.logger.debug("Routes audit indisponibles pour %s : %s", study_id, exc)
+        try:
+            period_code = self.period_code(period) if period else ""
+            row = self._catalog_rows.get((period_code, study_id))
+            if row is None and period:
+                try:
+                    self.catalog(period, [study_id])
+                    row = self._catalog_rows.get((period_code, study_id))
+                except Exception as exc:
+                    self.logger.debug("Route catalogue indisponible pour %s : %s", study_id, exc)
+                    row = None
+            for url in self._candidate_urls_from_row(row):
+                if url not in urls:
+                    urls.append(url)
+        except Exception as exc:
+            self.logger.debug("Extraction routes catalogue %s : %s", study_id, exc)
+        return urls
+
+    def _buy_button_visible(self, page: Page, scope=None) -> bool:
+        """Détecte un bouton Acheter visible SANS cliquer (dry-run)."""
+        root = scope or page
+        for pattern in (
+            r"acheter",
+            r"acheter l[’\']étude",
+        ):
+            try:
+                loc = root.get_by_role("button", name=re.compile(pattern, re.I))
+                for i in range(min(loc.count(), 10)):
+                    try:
+                        if loc.nth(i).is_visible():
+                            return True
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        return False
+
     def _navigate_to_study_url_candidates(self, page: Page, study_id: str, period: str) -> bool:
         """Ouvre directement une route UI connue pour l'étude, puis clique Acheter.
 
@@ -431,16 +479,11 @@ class SubakouaAPIClient:
         live reste un fallback si une URL est exposée par l'API. La sélection de
         période dans le sélecteur UI n'est volontairement plus utilisée ici.
         """
-        month_id = self.month_id(self.period_label(period))
-        direct = study_catalog.get_ui_routes_for(study_id, month_id, self.base_url)
-        for cand in direct:
-            url = str(cand.get("url") or "").strip()
-            if not url:
-                continue
+        for url in self._study_url_candidates(study_id, period):
             try:
                 self.logger.info(
-                    "Achat UI | route directe | étude=%s | month=%s | source=%s | url=%s",
-                    study_id, month_id, cand.get("source", ""), url,
+                    "Achat UI | route directe | étude=%s | url=%s",
+                    study_id, url,
                 )
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
                 page.wait_for_timeout(1200)
@@ -448,27 +491,6 @@ class SubakouaAPIClient:
                     return True
             except Exception as exc:
                 self.logger.debug("Route UI directe non exploitable %s : %s", url, exc)
-
-        # Fallback: certaines lignes du catalogue live peuvent contenir une URL/href.
-        period_code = self.period_code(period)
-        row = self._catalog_rows.get((period_code, study_id))
-        if row is None:
-            try:
-                self.catalog(period, [study_id])
-                row = self._catalog_rows.get((period_code, study_id))
-            except Exception as exc:
-                self.logger.debug("Route catalogue indisponible pour %s : %s", study_id, exc)
-                row = None
-        candidates = self._candidate_urls_from_row(row)
-        for url in candidates:
-            try:
-                self.logger.info("Achat UI | route catalogue détectée : %s", url)
-                page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
-                page.wait_for_timeout(1200)
-                if self._click_buy_visible(page):
-                    return True
-            except Exception as exc:
-                self.logger.debug("Route catalogue non exploitable %s : %s", url, exc)
         return False
 
     def resolve_study_ui_url(self, study_id: str, period: str) -> str | None:
@@ -629,10 +651,58 @@ class SubakouaAPIClient:
         if self._click_search_result_candidate(page, label, study_id):
             return
 
+        tried = self._study_url_candidates(study_id, period)
+        try:
+            search_present = bool(page.locator("input#search-query").first.is_visible())
+        except Exception:
+            search_present = False
+        try:
+            current_url = page.url
+        except Exception:
+            current_url = "?"
         raise SubakouaAPIError(
             f"Étude introuvable dans l'interface : {label or study_id} ({study_id}). "
-            "La recherche globale n'a pas exposé de cible navigable."
+            f"{len(tried)} route(s) directe(s) testée(s), champ de recherche global "
+            f"{'présent' if search_present else 'absent'}, page courante : {current_url}."
         )
+
+    def probe_purchase_target(self, study_id: str, period: str) -> dict[str, Any]:
+        """Dry-run SANS achat : vérifie qu'une cible d'achat est atteignable.
+
+        Navigue vers les routes candidates mais ne clique JAMAIS sur
+        Acheter/Confirmer. Retourne un diagnostic structuré affichable.
+        """
+        if self.page is None:
+            raise SubakouaAPIError("Aucune page Playwright attachée : diagnostic UI impossible.")
+        page = self.page
+        tried = self._study_url_candidates(study_id, period)
+        via: str | None = None
+        for url in tried[:8]:
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
+                page.wait_for_timeout(1200)
+                if self._buy_button_visible(page):
+                    via = url
+                    break
+            except Exception as exc:
+                self.logger.debug("Sonde route inexploitable %s : %s", url, exc)
+        try:
+            search_present = bool(page.locator("input#search-query").first.is_visible())
+        except Exception:
+            search_present = False
+        try:
+            current_url = page.url
+        except Exception:
+            current_url = "?"
+        return {
+            "period": self.period_label(period),
+            "study_id": study_id,
+            "trouvée": via is not None,
+            "via": via or "",
+            "routes_testées": len(tried),
+            "recherche_globale": "présente" if search_present else "absente",
+            "page_courante": current_url,
+        }
 
     def _find_visible_purchase_dialog(self, page: Page):
         """Retourne le dialogue d'achat réellement visible, indépendamment de l'accessibility tree."""
