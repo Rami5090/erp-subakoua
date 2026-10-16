@@ -409,6 +409,20 @@ def test_lien_acheter_detecte():
     assert client._buy_button_visible(page2) is False
 
 
+def test_buy_texte_detecte_sans_roles():
+    page = FakePage(evaluate_result=True)
+    client = make_client(page)
+    assert client._buy_text_target_exists(page) is True
+    assert client._buy_button_visible(page) is True
+    assert client._click_buy_text_fallback(page) is True
+
+
+def test_buy_texte_absent_sans_js():
+    page = FakePage()
+    client = make_client(page)
+    assert client._buy_text_target_exists(page) is False
+
+
 def test_sections_dashboard_avant_zone():
     seen_urls = []
 

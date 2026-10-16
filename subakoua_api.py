@@ -77,6 +77,40 @@ _CANDIDATE_SCORING_JS = """({selector, label, tokens, studyId}) => {
   return {total: els.length, matches: out.slice(0, 20)};
 }"""
 
+#: Détecte un contrôle Acheter par texte exact + ancêtre cliquable (sans les rôles ARIA).
+_BUY_TEXT_DETECT_JS = """() => {
+  const norm = (v) => (v || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const visible = (el) => {
+    const s = getComputedStyle(el); const r = el.getBoundingClientRect();
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+  };
+  const els = Array.from(document.querySelectorAll('button, a'));
+  for (const el of els) {
+    if (!visible(el)) continue;
+    if (norm(el.innerText || el.textContent || '') !== 'acheter') continue;
+    const target = el.closest('button, a, [role="button"]') || el;
+    if (target && visible(target)) return true;
+  }
+  return false;
+}"""
+
+#: Clique le contrôle Acheter trouvé par texte exact (dernier recours d'achat).
+_BUY_TEXT_CLICK_JS = """() => {
+  const norm = (v) => (v || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const visible = (el) => {
+    const s = getComputedStyle(el); const r = el.getBoundingClientRect();
+    return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+  };
+  const els = Array.from(document.querySelectorAll('button, a'));
+  for (const el of els) {
+    if (!visible(el)) continue;
+    if (norm(el.innerText || el.textContent || '') !== 'acheter') continue;
+    const target = el.closest('button, a, [role="button"]') || el;
+    if (target && visible(target)) { target.click(); return true; }
+  }
+  return false;
+}"""
+
 
 @dataclass(frozen=True)
 class PlayerContext:
@@ -342,7 +376,43 @@ class SubakouaAPIClient:
             if self._click_first_visible(loc, timeout=5000):
                 page.wait_for_timeout(600)
                 return True
-        return False
+        return self._click_buy_text_fallback(page, scope)
+
+    def _buy_text_target_exists(self, page: Page, scope=None) -> bool:
+        """Détecte un contrôle Acheter par son texte exact, sans tenir compte des rôles.
+
+        PrimeNG/Angular expose parfois le bouton sans rôle accessible : on cherche
+        un libellé « acheter » exact avec un ancêtre cliquable (button/a).
+        Ne clique jamais (dry-run compatible).
+        """
+        try:
+            if scope is not None:
+                loc = scope.locator("button, a").filter(
+                    has_text=re.compile(r"^\s*acheter\s*$", re.I))
+                return bool(loc.count() > 0)
+            return bool(page.evaluate(_BUY_TEXT_DETECT_JS))
+        except Exception:
+            return False
+
+    def _click_buy_text_fallback(self, page: Page, scope=None) -> bool:
+        """Clique le contrôle Acheter trouvé par son texte (dernier recours)."""
+        try:
+            if scope is not None:
+                loc = scope.locator("button, a").filter(
+                    has_text=re.compile(r"^\s*acheter\s*$", re.I))
+                for i in range(min(loc.count(), 5)):
+                    try:
+                        btn = loc.nth(i)
+                        if btn.is_visible():
+                            btn.click(timeout=5000)
+                            page.wait_for_timeout(600)
+                            return True
+                    except Exception:
+                        continue
+                return False
+            return bool(page.evaluate(_BUY_TEXT_CLICK_JS))
+        except Exception:
+            return False
 
     @staticmethod
     def _visible_text_locator(page: Page, label: str):
@@ -561,7 +631,7 @@ class SubakouaAPIClient:
                         continue
             except Exception:
                 pass
-        return False
+        return self._buy_text_target_exists(page, scope)
 
     def _wait_for_study_ready(self, page: Page, timeout_ms: int = 8000) -> bool:
         """Attend que la page d'étude soit stabilisée après changement de mois.
