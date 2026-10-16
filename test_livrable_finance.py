@@ -1,5 +1,14 @@
 from decimal import Decimal
-from livrable_finance import build_bilan, build_marges, couts_from_cost_study
+from livrable_finance import (
+    build_bilan,
+    build_marges,
+    couts_from_cost_study,
+    couts_detail_from_cost_study,
+    pdf_field_values,
+    fmt_fr,
+    fmt_pct,
+    LivrableFinance,
+)
 
 # Bilan Août : 19 lignes extraites le 16/10/2026 (montants Net exercice N / Exercice N)
 BILAN_AOUT = [
@@ -50,3 +59,71 @@ def test_couts_study_production_nulle_signalee():
     couts, warns = couts_from_cost_study(payload)
     assert "Integral 7" not in couts
     assert any("nulle" in w for w in warns)
+
+
+def test_pdf_values_bilan_et_marges():
+    bilan = build_bilan(BILAN_AOUT)
+    prix = {"Shorty 3": Decimal("130"), "Integral 3": Decimal("205"),
+            "Shorty 5": Decimal("240"), "Integral 5": Decimal("310"), "Integral 7": Decimal("360")}
+    couts_detail = {"Shorty 3": {"neoprene": Decimal("14.21"), "renforts": Decimal("0"),
+                                 "manchons": Decimal("0"), "fermetures": Decimal("3.21"),
+                                 "decoupe": Decimal("4.46"), "assemblage": Decimal("15.15"),
+                                 "conditionnement": Decimal("1.60"), "autres": Decimal("0")}}
+    marges, _ = build_marges(prix, Decimal("0"), Decimal("0.20"),
+                             {"Shorty 3": Decimal("38.63")})
+    liv = LivrableFinance("Année 1 - Août", bilan, Decimal("4433396"), Decimal("1882635.56"),
+                          Decimal("22307946.04"), Decimal("7398514.24"), tuple(marges))
+    vals = pdf_field_values(liv, couts_detail, prix)
+    assert vals["Compte banqueRow1"] == "3 082 581,20"
+    assert vals["B F R ERow1"] == "6 086 348,44"
+    assert vals["Chiffre daffairesRow1"] == "4 433 396,00"
+    # net/CAF non achetés : vidés pour ne pas laisser le mois précédent
+    assert vals["Résultat netRow1"] == ""
+    assert vals["C A FRow1"] == ""
+    # marges Shorty 3 : cout 14.21+3.21+4.46+15.15+1.60 = 38.63
+    assert vals["Shorty 3Néoprène d"] == "14,21"
+    assert vals["Shorty 3Coût Variable Un canal A l bdefghijk"] == "38,63"
+    assert vals["Shorty 3Marge unitaire canal A na l"] == "91,37"
+    assert vals["Shorty 3Marge unitaire canal B oa m"] == "65,37"
+    # Integral 7 sans coût : champs vidés, pas de zéro trompeur
+    assert vals["Integral 7Néoprène d"] == ""
+    assert vals["Integral 7Marge unitaire canal A na l"] == ""
+    # rédactionnel jamais touché
+    assert "Réponses" not in vals and "Nos conclusions" not in vals
+
+
+def test_couts_detail_breakdown():
+    payload = {"productsProductionCostDetails": [{
+        "productRef": "SHORTY_C", "producedProductsNumber": 900,
+        "directCostDetail": {"phasesCostDetails": [
+            {"materialsCosts": [{"objectRef": "NEOPRENE_3", "totalCost": 12787.06}],
+             "workshopsCosts": [{"objectRef": "CUTTING", "totalCost": 4009.5}]},
+            {"materialsCosts": [{"objectRef": "CLOSURES", "totalCost": 2892.43}],
+             "workshopsCosts": [{"objectRef": "ASSEMBLY", "totalCost": 13635.0}]}]},
+        "finalProductionPhaseCostDetail": {}}]}
+    det, warns = couts_detail_from_cost_study(payload)
+    assert det["Shorty 3"]["neoprene"] == Decimal("14.21")
+    assert det["Shorty 3"]["decoupe"] == Decimal("4.46")
+    assert det["Shorty 3"]["conditionnement"] == Decimal("1.60")
+    assert any("conditionnement" in w for w in warns)
+
+
+def test_format_fr():
+    assert fmt_fr(Decimal("3082581.2")) == "3 082 581,20"
+    assert fmt_pct(Decimal("0.1935")) == "19,35 %"
+
+
+def test_missing_studies():
+    from livrable_finance import missing_studies
+    catalog = {
+        "productionCostDetailStudy": {"label": "Coûts de production", "price": 50.0},
+        "peeedscrdl": {"label": "CR détaillé", "price": 100.0},
+        "bankStatements": {"label": "Relevés", "price": 0.0},
+    }
+    missing = missing_studies({"bankStatements"}, catalog)
+    ids = [m["study_id"] for m in missing]
+    assert "productionCostDetailStudy" in ids
+    assert "peeedscrdl" in ids
+    assert "bankStatements" not in ids
+    couts = next(m for m in missing if m["study_id"] == "productionCostDetailStudy")
+    assert couts["price"] == 50.0 and "Marges" in couts["pourquoi"]

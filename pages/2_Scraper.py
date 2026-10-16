@@ -228,6 +228,30 @@ available = unique_periods(st.session_state.get("scraper_periods") or list(legac
 st.session_state["scraper_periods"] = available
 
 # ---------------------------------------------------------------------------
+# Demande entrante du Livrable Finance (page 5) : études manquantes à acheter
+# / synchroniser. On pré-remplit l'onglet Synchroniser et on guide vers le
+# Plan si l'achat portail reste à faire (la synchro seule ne peut pas acheter).
+# ---------------------------------------------------------------------------
+_liv_req = st.session_state.get("livrable_buy_request")
+if isinstance(_liv_req, dict) and _liv_req.get("study_ids"):
+    _liv_per = str(_liv_req.get("periode", ""))
+    _liv_ids = [str(s) for s in _liv_req.get("study_ids", [])]
+    st.info(
+        f"📄 Demande du **{_liv_req.get('source', 'Livrable Finance')}** ({_liv_per}) : "
+        f"**{len(_liv_ids)}** document(s) présélectionné(s) dans l'onglet « 📥 Synchroniser » ci-dessous. "
+        "Si une étude n'est pas encore achetée sur le portail, passe d'abord par l'onglet "
+        "« 🎯 Plan documentaire » pour l'acheter, puis synchronise ici."
+    )
+    if _liv_per in available:
+        st.session_state["smart_sync_periods"] = [_liv_per]
+        st.session_state["smart_target_periods"] = [_liv_per]
+    else:
+        st.warning(f"Période demandée {_liv_per} introuvable côté scraper.")
+    if st.button("✔ Compris, effacer cette demande", key="liv_req_dismiss"):
+        st.session_state.pop("livrable_buy_request", None)
+        st.rerun()
+
+# ---------------------------------------------------------------------------
 # ONGLET 1 : PLAN DOCUMENTAIRE
 # ---------------------------------------------------------------------------
 tab_plan, tab_sync, tab_legacy = st.tabs(["🎯 Plan documentaire", "📥 Synchroniser", "🧱 Secours DOM"])
@@ -385,7 +409,13 @@ with tab_sync:
     options = {p.study_id: f"{p.label} · {p.price:g} € · API" for p in known_profiles}
     saved_plan_ids = [r["study_id"] for r in st.session_state.get("smart_plan", []) if r.get("endpoint_known")]
     default_ids = [sid for sid in saved_plan_ids if sid in options]
-    selected_ids = st.multiselect("Études API à lire", list(options), default=default_ids or list(options)[:8], format_func=lambda sid: options[sid])
+    # Demande du Livrable Finance : présélection prioritaire (une seule fois).
+    _liv_req2 = st.session_state.get("livrable_buy_request")
+    if _liv_req2 and "smart_sync_study_ids" not in st.session_state:
+        _want = [str(s) for s in _liv_req2.get("study_ids", []) if str(s) in options]
+        if _want:
+            st.session_state["smart_sync_study_ids"] = _want
+    selected_ids = st.multiselect("Études API à lire", list(options), default=default_ids or list(options)[:8], format_func=lambda sid: options[sid], key="smart_sync_study_ids")
 
     if st.button("📥 Synchroniser les études sélectionnées", type="primary", width="stretch", disabled=(not target_periods or not selected_ids)):
         if not sub_user or not sub_pass:

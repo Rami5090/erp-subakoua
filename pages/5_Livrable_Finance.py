@@ -15,12 +15,17 @@ from livrable_finance import (
     build_bilan,
     build_marges,
     couts_from_cost_study,
+    couts_detail_from_cost_study,
+    missing_studies,
+    pdf_field_values,
+    fill_pdf,
     LivrableFinance,
 )
+import document_optimizer as doc_optimizer
 from constants import TOURS_PERIODES
 from period_context import match_period
 from db_utils import get_read_engine
-from auth import setup as auth_setup
+from auth import setup as auth_setup, is_editor
 
 st.set_page_config(page_title="Livrable Finance mensuel", layout="wide")
 auth_setup()
@@ -134,6 +139,7 @@ except Exception:
 
 # --- Coûts : étude du mois, sinon dernier mois antérieur ---
 couts, cout_warns, couts_src = {}, [], periode
+couts_detail: dict = {}
 cost_payload = _etude(periode, "productionCostDetailStudy")
 if not cost_payload or not cost_payload.get("productsProductionCostDetails"):
     for t in range(int(tour) - 1, 0, -1):
@@ -144,6 +150,9 @@ if not cost_payload or not cost_payload.get("productsProductionCostDetails"):
             break
 if cost_payload:
     couts, cout_warns = couts_from_cost_study(cost_payload)
+    det, det_warns = couts_detail_from_cost_study(cost_payload)
+    couts_detail = det
+    cout_warns = tuple(list(cout_warns) + [w for w in det_warns if w not in cout_warns])
     if couts_src == periode:
         couts_src = f"{periode}"
 
@@ -194,3 +203,80 @@ if liv.warnings:
 st.caption(f"Prix source : {prix_src}.")
 st.download_button("⬇️ Télécharger le livrable (Markdown)", liv.markdown().encode("utf-8"),
                    file_name=f"livrable_finance_{periode.replace(' ', '_')}.md")
+
+st.divider()
+st.subheader("📕 Remplir le PDF « Mission spécifique Finance »")
+st.caption("Remplit directement les cellules du PDF : diagnostic, marges, taux. "
+           "Le rédactionnel (Réponses, Commentaires, Nos conclusions, équipe) n'est jamais écrasé. "
+           "Les résultats nets/CAF non achetés (SPECIMEN) sont vidés pour ne pas laisser un ancien mois.")
+default_template = "C:/Users/ramih/OneDrive/BUT MLT3/Redoublement/Mission specifique Finance.pdf"
+template_path = st.text_input("Chemin du PDF template", value=default_template)
+if st.button("Générer le PDF rempli", type="primary"):
+    import os
+    import tempfile
+    if not template_path or not os.path.exists(template_path):
+        st.error("Template PDF introuvable : vérifie le chemin.")
+        st.stop()
+    values = pdf_field_values(liv, couts_detail, prix)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        out_path = tmp.name
+    try:
+        n, missing = fill_pdf(template_path, out_path, values)
+        with open(out_path, "rb") as f:
+            pdf_bytes = f.read()
+        st.success(f"PDF rempli : {n} champs renseignés."
+                   + (f" Champs non trouvés : {len(missing)}." if missing else ""))
+        if missing:
+            with st.expander("Champs non matchés (info)"):
+                st.write(sorted(missing))
+        st.download_button(
+            "⬇️ Télécharger le PDF rempli",
+            pdf_bytes,
+            file_name=f"Mission_specifique_Finance_{periode.replace(' ', '_')}_rempli.pdf",
+            mime="application/pdf",
+        )
+    finally:
+        try:
+            os.unlink(out_path)
+        except Exception:
+            pass
+
+st.divider()
+st.subheader("📚 Documents manquants pour un livrable complet")
+st.caption("Chaque étude manquante explique quelles cellules du PDF restent vides ou en fallback. "
+           "Coche celles à acheter, puis le bouton t'emmène page Scraper avec la sélection pré-remplie "
+           "(onglet « 📥 Synchroniser » ; si l'étude n'est pas encore achetée sur le portail, passe d'abord par l'onglet « 🎯 Plan documentaire »).")
+
+with engine.connect() as _conn:
+    from sqlalchemy import text as _text
+    _have_rows = _conn.execute(
+        _text("SELECT study_id FROM erp_etudes WHERE periode=:p AND read_allowed=1"),
+        {"p": periode},
+    ).all()
+_have_ids = {str(r[0]) for r in _have_rows}
+_profiles = doc_optimizer.load_profiles()
+_catalog = {sid: {"label": p.label, "price": p.price} for sid, p in _profiles.items()}
+_missing = missing_studies(_have_ids, _catalog)
+
+if not _missing:
+    st.success("Aucun document manquant : le livrable est complet pour cette période.")
+else:
+    _md = pd.DataFrame([{"Document": m["label"], "Prix (€)": m["price"],
+                         "Sert à": m["pourquoi"]} for m in _missing])
+    st.dataframe(_md, hide_index=True, use_container_width=True)
+    if not is_editor():
+        st.warning("Mode visiteur (lecture seule) : l'achat/synchronisation exige le mode Utilisateur.")
+    else:
+        _cols = st.columns(2)
+        _picked: list[str] = []
+        for _i, _m in enumerate(_missing):
+            if _cols[_i % 2].checkbox(f"{_m['label']} · {_m['price']:g} €",
+                                      value=True, key=f"liv_missing_{periode}_{_m['study_id']}"):
+                _picked.append(_m["study_id"])
+        _total = sum(_m["price"] for _m in _missing if _m["study_id"] in _picked)
+        st.metric("Sélection", f"{len(_picked)} document(s) · {_total:,.0f} €".replace(",", " "))
+        if st.button("🛒 Acheter ces documents dans l'ERP", type="primary", disabled=not _picked):
+            st.session_state["livrable_buy_request"] = {
+                "periode": periode, "study_ids": _picked, "source": "Livrable Finance",
+            }
+            st.switch_page("pages/2_Scraper.py")
