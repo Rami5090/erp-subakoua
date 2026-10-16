@@ -7,10 +7,11 @@ from subakoua_api import SubakouaAPIClient, SubakouaAPIError
 
 
 class FakeNode:
-    def __init__(self, visible=False, text="", attrs=None):
+    def __init__(self, visible=False, text="", attrs=None, scoped_buy=False):
         self._visible = visible
         self._text = text
         self._attrs = attrs or {}
+        self._scoped_buy = scoped_buy
         self.clicked = False
 
     def is_visible(self):
@@ -25,6 +26,14 @@ class FakeNode:
     def click(self, timeout=None, force=False):
         self.clicked = True
         return True
+
+    def wait_for(self, state=None, timeout=None):
+        pass
+
+    def get_by_role(self, role, name=None):
+        if role == "button" and self._scoped_buy:
+            return FakeLocator([FakeNode(True, text="Acheter")], wait_raises=False)
+        return FakeLocator([], wait_raises=False)
 
 
 class FakeLocator:
@@ -42,23 +51,33 @@ class FakeLocator:
     def first(self):
         return self._nodes[0] if self._nodes else FakeNode(False)
 
+    @property
+    def last(self):
+        return self._nodes[-1] if self._nodes else FakeNode(False)
+
     def wait_for(self, state=None, timeout=None):
         if self._wait_raises:
             raise RuntimeError("timeout")
 
     def filter(self, **kwargs):
-        return self
+        want = str(kwargs.get("has_text", ""))
+        return FakeLocator([n for n in self._nodes if want in n.inner_text()],
+                           wait_raises=False)
 
     def inner_text(self, timeout=None):
         return ""
 
 
 class FakePage:
-    def __init__(self, *, buy_visible=False, search_visible=False):
+    def __init__(self, *, buy_visible=False, search_visible=False, links=(),
+                 card=None, period_current="Année 1 - Janvier"):
         self.url = "https://subakoua.arkhe.com/companies"
         self.visited = []
         self._buy_visible = buy_visible
         self._search_visible = search_visible
+        self._links = list(links)
+        self._card = card
+        self._period_current = period_current
 
     def goto(self, url, **kwargs):
         self.visited.append(url)
@@ -67,17 +86,48 @@ class FakePage:
     def wait_for_timeout(self, ms):
         pass
 
+    def _nav_nodes(self):
+        return [FakeNode(True, text=t) for t in self._links]
+
+    def _card_nodes(self):
+        if not self._card:
+            return []
+        return [FakeNode(True, text=self._card.get("text", ""),
+                         scoped_buy=bool(self._card.get("buy")))]
+
     def get_by_role(self, role, name=None):
-        if role == "button" and self._buy_visible:
-            return FakeLocator([FakeNode(True, text="Acheter")], wait_raises=False)
+        import re as _re
+        if role in ("link", "button"):
+            pat = name.pattern if hasattr(name, "pattern") else str(name or "")
+            try:
+                rx = _re.compile(pat, _re.I)
+            except Exception:
+                rx = None
+            nodes = [n for n in self._nav_nodes()
+                     if rx is None or rx.search(n.inner_text())]
+            if role == "button" and self._buy_visible:
+                nodes = nodes + [FakeNode(True, text="Acheter")]
+            return FakeLocator(nodes, wait_raises=False)
         return FakeLocator([], wait_raises=False)
+
+    def get_by_text(self, label, exact=False):
+        nodes = [n for n in self._nav_nodes()
+                 if (n.inner_text() == label if exact else label in n.inner_text())]
+        return FakeLocator(nodes, wait_raises=False)
 
     def locator(self, sel):
         if sel == "input#search-query":
             if self._search_visible:
                 return FakeLocator([FakeNode(True)], wait_raises=False)
             return FakeLocator([FakeNode(False)], wait_raises=True)
-        return FakeLocator([], wait_raises=False)
+        if "okw-select-period" in sel:
+            return FakeLocator([FakeNode(True, text=self._period_current)],
+                               wait_raises=False)
+        if "p-select-option-label" in sel:
+            return FakeLocator([FakeNode(True, text=self._period_current)],
+                               wait_raises=False)
+        return FakeLocator(self._nav_nodes() + self._card_nodes(),
+                           wait_raises=False)
 
 
 def make_client(page):
@@ -123,3 +173,54 @@ def test_probe_introuvable_structure():
     assert out["trouvée"] is False
     assert out["via"] == ""
     assert out["recherche_globale"] == "absente"
+
+
+def test_marketplace_succes_scoped_carte():
+    page = FakePage(
+        links=["Études"],
+        card={"text": "Calcul des coûts de production", "buy": True},
+        period_current="Année 1 - Janvier",
+    )
+    client = make_client(page)
+    ok, detail = client._buy_from_marketplace(
+        page, "productionCostDetailStudy",
+        "Calcul des coûts de production", "Année 1 - Janvier")
+    assert ok is True
+    assert detail["zone_ouverte"] is True
+    assert detail["periode_ok"] is True
+    assert detail["carte"] is True
+
+
+def test_marketplace_sans_zone():
+    page = FakePage()
+    client = make_client(page)
+    ok, detail = client._buy_from_marketplace(page, "x", "Y", "Année 1 - Janvier")
+    assert ok is False
+    assert detail["zone_ouverte"] is False
+    assert "erreur" in detail
+
+
+def test_open_study_replie_marketplace():
+    page = FakePage(
+        links=["Études"],
+        card={"text": "Calcul des coûts de production", "buy": True},
+        period_current="Année 1 - Janvier",
+    )
+    client = make_client(page)
+    # Ne lève pas : les routes directes échouent, la zone Études prend le relais.
+    client._open_study(page, "productionCostDetailStudy",
+                       "Calcul des coûts de production", "Année 1 - Janvier")
+
+
+def test_probe_marketplace_cles():
+    page = FakePage(
+        links=["Études"],
+        card={"text": "TVA", "buy": True},
+        period_current="Année 1 - Janvier",
+    )
+    client = make_client(page)
+    out = client.probe_marketplace("peeefstvp", "Année 1 - Janvier")
+    assert out["marche_zone"] is True
+    assert out["marche_periode"] is True
+    assert out["marche_carte"] is True
+    assert out["marche_acheter"] is True

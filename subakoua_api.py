@@ -320,12 +320,11 @@ class SubakouaAPIClient:
         }
         return [tok for tok in norm.split() if len(tok) >= 3 and tok not in stop]
 
-    def _click_search_result_candidate(self, page: Page, label: str, study_id: str) -> bool:
-        """Cherche une étude dans le DOM visible puis clique sa cible exploitable.
+    def _find_study_candidates(self, page: Page, label: str, study_id: str) -> list:
+        """Scoring des cartes d'étude dans le DOM visible. Ne clique jamais.
 
-        Angular/PrimeNG peut rendre le résultat de la recherche hors du composant
-        ``okw-main-header-filtered-studies-list``. On cherche donc dans tout le
-        DOM visible, en scorant les candidats sur les mots du titre et l'ID.
+        Retourne les nœuds candidats par score décroissant : ID exact dans les
+        attributs (100), libellé exact (95), couverture des mots du titre (≥60%).
         """
         tokens = self._label_tokens(label)
         label_norm = self._norm_ui_text(label)
@@ -375,10 +374,21 @@ class SubakouaAPIClient:
                         scored.append((score, i))
             except Exception:
                 continue
+        return [candidates.nth(idx) for _, idx in sorted(scored, reverse=True)]
 
-        for _, idx in sorted(scored, reverse=True):
-            node = candidates.nth(idx)
+    def _click_search_result_candidate(self, page: Page, label: str, study_id: str) -> bool:
+        """Cherche une étude dans le DOM visible puis clique sa cible exploitable.
+
+        Angular/PrimeNG peut rendre le résultat de la recherche hors du composant
+        ``okw-main-header-filtered-studies-list``. On cherche donc dans tout le
+        DOM visible, en scorant les candidats sur les mots du titre et l'ID.
+        Le bouton Acheter est d'abord cherché DANS la carte (pas de confusion
+        avec une autre étude), puis on clique la carte et on cherche globalement.
+        """
+        for node in self._find_study_candidates(page, label, study_id):
             try:
+                if self._click_buy_visible(page, scope=node):
+                    return True
                 before = page.url
                 node.click(timeout=5000)
                 page.wait_for_timeout(1000)
@@ -638,9 +648,44 @@ class SubakouaAPIClient:
                 continue
         return False
 
+    def _buy_from_marketplace(self, page: Page, study_id: str, label: str, period: str | None) -> tuple[bool, dict[str, Any]]:
+        """Achète via la zone Études du portail : ouverture, période, carte.
+
+        C'est le chemin d'achat normal (les routes directes d'audit pointent
+        vers des pages de consultation, pas vers des cartes achetables).
+        Retourne (succès, diagnostic).
+        """
+        detail: dict[str, Any] = {"zone_ouverte": False, "periode_ok": False, "carte": False}
+        try:
+            self._open_study_area(page)
+        except Exception as exc:
+            detail["erreur"] = f"zone Études inaccessible : {exc}"
+            return False, detail
+        detail["zone_ouverte"] = True
+        if period:
+            try:
+                self._select_purchase_period(page, period)
+                detail["periode_ok"] = True
+            except Exception as exc:
+                detail["erreur"] = f"sélecteur de période : {exc}"
+        if self._find_study_candidates(page, label, study_id):
+            detail["carte"] = True
+        if self._click_search_result_candidate(page, label, study_id):
+            return True, detail
+        if not detail.get("erreur"):
+            detail["erreur"] = "carte d'étude introuvable après ouverture de la zone et sélection période"
+        return False, detail
+
     def _open_study(self, page: Page, study_id: str, label: str, period: str | None = None) -> None:
-        """Ouvre une étude et son bouton Acheter sans dépendre d'une fausse zone « Études »."""
+        """Ouvre une étude et son bouton Acheter.
+
+        Ordre : routes directes (rapide) → zone Études du portail avec période
+        (chemin d'achat normal) → recherche globale → DOM courant.
+        """
         if period and self._navigate_to_study_url_candidates(page, study_id, period):
+            return
+        market_ok, market_detail = self._buy_from_marketplace(page, study_id, label, period)
+        if market_ok:
             return
         if self._search_global_study(page, study_id, label):
             return
@@ -662,15 +707,17 @@ class SubakouaAPIClient:
             current_url = "?"
         raise SubakouaAPIError(
             f"Étude introuvable dans l'interface : {label or study_id} ({study_id}). "
-            f"{len(tried)} route(s) directe(s) testée(s), champ de recherche global "
+            f"{len(tried)} route(s) directe(s) testée(s), zone Études : {market_detail}, "
+            f"champ de recherche global "
             f"{'présent' if search_present else 'absent'}, page courante : {current_url}."
         )
 
     def probe_purchase_target(self, study_id: str, period: str) -> dict[str, Any]:
         """Dry-run SANS achat : vérifie qu'une cible d'achat est atteignable.
 
-        Navigue vers les routes candidates mais ne clique JAMAIS sur
-        Acheter/Confirmer. Retourne un diagnostic structuré affichable.
+        Teste les routes directes PUIS la zone Études (ouverture, période,
+        carte, bouton visible). Ne clique JAMAIS sur Acheter/Confirmer.
+        Retourne un diagnostic structuré affichable.
         """
         if self.page is None:
             raise SubakouaAPIError("Aucune page Playwright attachée : diagnostic UI impossible.")
@@ -690,19 +737,53 @@ class SubakouaAPIClient:
             search_present = bool(page.locator("input#search-query").first.is_visible())
         except Exception:
             search_present = False
-        try:
-            current_url = page.url
-        except Exception:
-            current_url = "?"
-        return {
+        out: dict[str, Any] = {
             "period": self.period_label(period),
             "study_id": study_id,
             "trouvée": via is not None,
             "via": via or "",
             "routes_testées": len(tried),
             "recherche_globale": "présente" if search_present else "absente",
-            "page_courante": current_url,
         }
+        out.update(self.probe_marketplace(study_id, period))
+        try:
+            out["page_courante"] = page.url
+        except Exception:
+            out["page_courante"] = "?"
+        return out
+
+    def probe_marketplace(self, study_id: str, period: str) -> dict[str, Any]:
+        """Dry-run zone Études SANS achat : zone, période, carte, bouton visible."""
+        out: dict[str, Any] = {
+            "marche_zone": False, "marche_periode": False,
+            "marche_carte": False, "marche_acheter": False,
+        }
+        if self.page is None:
+            raise SubakouaAPIError("Aucune page Playwright attachée : diagnostic UI impossible.")
+        page = self.page
+        try:
+            label = ""
+            try:
+                profile = optimizer.load_profiles().get(study_id)
+                label = profile.label if profile else ""
+            except Exception:
+                label = ""
+            self._open_study_area(page)
+            out["marche_zone"] = True
+            if period:
+                try:
+                    self._select_purchase_period(page, period)
+                    out["marche_periode"] = True
+                except Exception as exc:
+                    self.logger.debug("Sonde période %s : %s", study_id, exc)
+            cards = self._find_study_candidates(page, label, study_id)
+            out["marche_carte"] = bool(cards)
+            out["marche_acheter"] = any(
+                self._buy_button_visible(page, scope=node) for node in cards[:3]
+            ) if cards else False
+        except Exception as exc:
+            self.logger.debug("Sonde marketplace %s : %s", study_id, exc)
+        return out
 
     def _find_visible_purchase_dialog(self, page: Page):
         """Retourne le dialogue d'achat réellement visible, indépendamment de l'accessibility tree."""
