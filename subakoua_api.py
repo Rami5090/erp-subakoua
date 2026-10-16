@@ -256,18 +256,24 @@ class SubakouaAPIClient:
         return False
 
     def _open_study_area(self, page: Page) -> None:
-        """Ouvre la zone documentaire du portail avec plusieurs sélecteurs robustes."""
+        """Ouvre la zone documentaire du portail avec plusieurs sélecteurs robustes.
+
+        Le menu Angular peut mettre un moment à se monter après navigation :
+        on réessaie plusieurs fois avant d'abandonner.
+        """
         labels = ["Études", "Etudes", "Documents", "Études disponibles", "Etudes disponibles"]
-        for label in labels:
-            if self._click_first_visible(page.get_by_role("link", name=re.compile(re.escape(label), re.I))):
-                page.wait_for_timeout(900)
-                return
-            if self._click_first_visible(page.get_by_role("button", name=re.compile(re.escape(label), re.I))):
-                page.wait_for_timeout(900)
-                return
-            if self._click_first_visible(page.get_by_text(label, exact=True)):
-                page.wait_for_timeout(900)
-                return
+        for _ in range(4):
+            for label in labels:
+                if self._click_first_visible(page.get_by_role("link", name=re.compile(re.escape(label), re.I))):
+                    page.wait_for_timeout(900)
+                    return
+                if self._click_first_visible(page.get_by_role("button", name=re.compile(re.escape(label), re.I))):
+                    page.wait_for_timeout(900)
+                    return
+                if self._click_first_visible(page.get_by_text(label, exact=True)):
+                    page.wait_for_timeout(900)
+                    return
+            page.wait_for_timeout(900)
         raise SubakouaAPIError("Zone Études/Documents introuvable dans le portail Subakoua.")
 
     def _click_buy_visible(self, page: Page, scope=None) -> bool:
@@ -702,7 +708,8 @@ class SubakouaAPIClient:
         Retourne (succès, diagnostic).
         """
         detail: dict[str, Any] = {"zone_ouverte": False, "periode_ok": False,
-                                 "carte": False, "sections": 0, "via": ""}
+                                 "carte": False, "sections": 0, "via": "",
+                                 "sections_vues": []}
         try:
             self._goto_dashboard(page)
         except Exception as exc:
@@ -745,6 +752,7 @@ class SubakouaAPIClient:
                 self.logger.debug("Section études inexploitable %s : %s", url, exc)
                 continue
             detail["sections"] += 1
+            detail["sections_vues"].append(url)
             _select()
             if _try_here():
                 return True, detail
@@ -833,7 +841,7 @@ class SubakouaAPIClient:
         out: dict[str, Any] = {
             "marche_zone": False, "marche_periode": False,
             "marche_carte": False, "marche_acheter": False,
-            "marche_sections": 0, "marche_via": "",
+            "marche_sections": 0, "marche_via": "", "marche_sections_vues": [],
         }
         if self.page is None:
             raise SubakouaAPIError("Aucune page Playwright attachée : diagnostic UI impossible.")
@@ -879,6 +887,7 @@ class SubakouaAPIClient:
                 except Exception:
                     continue
                 out["marche_sections"] += 1
+                out["marche_sections_vues"].append(url)
                 if period:
                     try:
                         self._select_purchase_period(page, period)

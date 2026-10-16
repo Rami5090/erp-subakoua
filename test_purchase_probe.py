@@ -72,16 +72,22 @@ class FakePage:
     def __init__(self, *, buy_visible=False, search_visible=False, links=(),
                  card=None, card_on=None, sections=(),
                  period_current="Année 1 - Janvier",
-                 start_url="https://subakoua.arkhe.com/companies"):
+                 start_url="https://subakoua.arkhe.com/companies",
+                 links_after_calls=0):
         self.url = start_url
         self.visited = []
         self._buy_visible = buy_visible
         self._search_visible = search_visible
         self._links = list(links)
+        self._links_after_calls = links_after_calls
+        self._role_calls = 0
         self._card = card
         self._card_on = card_on
         self._sections = list(sections)
         self._period_current = period_current
+
+    def _links_ready(self):
+        return self._role_calls > self._links_after_calls
 
     def _card_here(self):
         if not self._card:
@@ -110,13 +116,14 @@ class FakePage:
     def get_by_role(self, role, name=None):
         import re as _re
         if role in ("link", "button"):
+            self._role_calls += 1
             pat = name.pattern if hasattr(name, "pattern") else str(name or "")
             try:
                 rx = _re.compile(pat, _re.I)
             except Exception:
                 rx = None
             nodes = [n for n in self._nav_nodes()
-                     if rx is None or rx.search(n.inner_text())]
+                     if self._links_ready() and (rx is None or rx.search(n.inner_text()))]
             if role == "button" and self._buy_visible:
                 nodes = nodes + [FakeNode(True, text="Acheter")]
             return FakeLocator(nodes, wait_raises=False)
@@ -124,7 +131,7 @@ class FakePage:
 
     def get_by_text(self, label, exact=False):
         nodes = [n for n in self._nav_nodes()
-                 if (n.inner_text() == label if exact else label in n.inner_text())]
+                 if self._links_ready() and (n.inner_text() == label if exact else label in n.inner_text())]
         return FakeLocator(nodes, wait_raises=False)
 
     def locator(self, sel):
@@ -283,3 +290,23 @@ def test_probe_sections_remontees():
     assert out["marche_acheter"] is True
     assert out["marche_sections"] == 1
     assert "accountant" in out["marche_via"]
+
+
+def test_zone_reessayee_si_menu_lent():
+    page = FakePage(links=["Études"], links_after_calls=2)
+    client = make_client(page)
+    client._open_study_area(page)  # ne lève pas : réessaie jusqu'au rendu du menu
+
+
+def test_sections_vues_tracees():
+    page = FakePage(
+        links=["Études"],
+        sections=[("/companies/partners/accountant/synthesis", "Comptabilité")],
+        card_on=["jamais"],
+        period_current="Année 1 - Janvier",
+    )
+    client = make_client(page)
+    ok, detail = client._buy_from_marketplace(page, "x", "Introuvable", "Année 1 - Janvier")
+    assert ok is False
+    assert detail["sections"] == 1
+    assert detail["sections_vues"] == ["https://subakoua.arkhe.com/companies/partners/accountant/synthesis"]
