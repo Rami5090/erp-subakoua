@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import study_catalog
+import document_strategy
 from constants import (
     MONTH_NAMES,
     MONTH_BY_NAME,
