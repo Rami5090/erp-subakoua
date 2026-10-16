@@ -825,6 +825,10 @@ class SubakouaAPIClient:
             return False, detail
         # Sections collectées sur le dashboard (navigation complète),
         # avant que la zone ne restreigne la vue à une seule section.
+        try:
+            page.wait_for_timeout(1500)
+        except Exception:
+            pass
         dash_sections = self._study_section_links(page)
         try:
             self._open_study_area(page)
@@ -985,6 +989,7 @@ class SubakouaAPIClient:
             "marche_carte": False, "marche_acheter": False,
             "marche_sections": 0, "marche_via": "", "marche_sections_vues": [],
             "marche_session": "active", "marche_texte": "", "marche_carte_page": "",
+            "marche_detail": False,
         }
         if self.page is None:
             raise SubakouaAPIError("Aucune page Playwright attachée : diagnostic UI impossible.")
@@ -1000,6 +1005,10 @@ class SubakouaAPIClient:
             if self._session_expired(page):
                 out["marche_session"] = "expirée"
                 return out
+            try:
+                page.wait_for_timeout(1500)
+            except Exception:
+                pass
             dash_sections = self._study_section_links(page)
             self._open_study_area(page)
             out["marche_zone"] = True
@@ -1027,12 +1036,28 @@ class SubakouaAPIClient:
                         out["marche_via"] = page.url
                     except Exception:
                         pass
+                    return True
+                # La carte peut mener à une page détail qui porte le bouton :
+                # on l'ouvre (sans jamais cliquer Acheter) et on revérifie.
+                for node in cards[:2]:
+                    try:
+                        node.click(timeout=5000)
+                        page.wait_for_timeout(1200)
+                    except Exception:
+                        continue
+                    out["marche_detail"] = True
+                    if self._buy_button_visible(page):
+                        try:
+                            out["marche_via"] = page.url
+                        except Exception:
+                            pass
+                        return True
                 try:
                     body = page.locator("body").inner_text(timeout=5000)
                     out["marche_texte"] = self._norm_ui_text(body)[:400]
                 except Exception:
                     pass
-                return found
+                return False
 
             if _check():
                 out["marche_acheter"] = True

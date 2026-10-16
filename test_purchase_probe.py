@@ -7,11 +7,12 @@ from subakoua_api import SubakouaAPIClient, SubakouaAPIError
 
 
 class FakeNode:
-    def __init__(self, visible=False, text="", attrs=None, scoped_buy=False):
+    def __init__(self, visible=False, text="", attrs=None, scoped_buy=False, on_click=None):
         self._visible = visible
         self._text = text
         self._attrs = attrs or {}
         self._scoped_buy = scoped_buy
+        self._on_click = on_click
         self.clicked = False
 
     def is_visible(self):
@@ -25,6 +26,8 @@ class FakeNode:
 
     def click(self, timeout=None, force=False):
         self.clicked = True
+        if self._on_click is not None:
+            self._on_click()
         return True
 
     def wait_for(self, state=None, timeout=None):
@@ -103,7 +106,8 @@ class FakePage:
             return []
         if self._card_on is None or any(s in (self.url or "") for s in self._card_on):
             return [FakeNode(True, text=self._card.get("text", ""),
-                             scoped_buy=bool(self._card.get("buy")))]
+                             scoped_buy=bool(self._card.get("buy")),
+                             on_click=self._fire_card_click)]
         return []
 
     def goto(self, url, **kwargs):
@@ -118,6 +122,9 @@ class FakePage:
 
     def _card_nodes(self):
         return self._card_here()
+
+    def _fire_card_click(self):
+        self.reveal_buy = True
 
     def _section_nodes(self):
         return [FakeNode(True, text=t, attrs={"href": h}) for h, t in self._sections]
@@ -134,6 +141,8 @@ class FakePage:
             nodes = [n for n in self._nav_nodes()
                      if self._links_ready() and (rx is None or rx.search(n.inner_text()))]
             if role == "button" and self._buy_visible:
+                nodes = nodes + [FakeNode(True, text="Acheter")]
+            if role == "button" and getattr(self, "reveal_buy", False):
                 nodes = nodes + [FakeNode(True, text="Acheter")]
             if role == "link" and self._link_buy_visible:
                 nodes = nodes + [FakeNode(True, text="Acheter l'étude")]
@@ -340,6 +349,21 @@ def test_session_active_par_defaut():
     page = FakePage(links=["Études"])
     client = make_client(page)
     assert client._session_expired(page) is False
+
+
+def test_detail_ouvert_si_carte_sans_bouton():
+    page = FakePage(
+        links=["Études"],
+        card={"text": "TVA", "buy": False},
+        period_current="Année 1 - Janvier",
+    )
+    client = make_client(page)
+    client = _no_wait(client)
+    out = client.probe_marketplace("peeefstvp", "Année 1 - Janvier")
+    assert out["marche_carte"] is True
+    assert out["marche_detail"] is True
+    assert out["marche_acheter"] is True
+    assert out["marche_via"] != ""
 
 
 def test_lien_acheter_detecte():
