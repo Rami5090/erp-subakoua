@@ -273,13 +273,6 @@ with tab_plan:
             default_periods = st.session_state.get("smart_target_periods", available[:1])
         selected_periods = st.multiselect("Périodes cibles", available, default=default_periods, key="smart_target_periods")
     with c2:
-        current_period = st.selectbox(
-            "Période courante pour les achats",
-            available,
-            index=min(len(available) - 1, max(0, available.index(st.session_state.get("smart_current_period", available[-1])) if st.session_state.get("smart_current_period", available[-1]) in available else len(available) - 1)),
-            key="smart_current_period",
-            help="Une étude achetée sur la période courante est observée comme disponible sur la période suivante dans l'audit. Le moteur ne force jamais un achat hors période.",
-        )
         budget = st.number_input("Budget documentaire par période cible (€)", min_value=0.0, max_value=1_000_000.0, value=600.0, step=50.0, key="smart_budget")
         allow_5000 = st.checkbox("Autoriser les études stratégiques à 5 000 €", value=False, key="smart_allow_5000")
 
@@ -334,10 +327,10 @@ with tab_plan:
     if plan_rows:
         plan = plan_items_from_dicts(plan_rows)
         st.subheader("💳 Études payantes recommandées")
+        st.caption("Règle : un achat pour la période X donne les données de la période X, sans décalage.")
         df = pd.DataFrame([
             {
                 "Période cible": x.target_period,
-                "Période achat": x.purchase_period,
                 "Document": x.label,
                 "Prix (€)": x.price,
                 "Valeur / €": x.efficiency,
@@ -350,31 +343,25 @@ with tab_plan:
         ])
         st.dataframe(df, width="stretch", hide_index=True)
 
-        purchasable = smart_scraper.only_purchasable_now(plan, current_period)
-        total_now = sum(x.price for x in purchasable)
-        historical_only = any(x.status == "HORS FENÊTRE D'ACHAT" for x in plan)
-        if historical_only:
-            st.info("La période cible est antérieure au premier mois du jeu : elle peut être analysée, mais aucun achat documentaire ne peut être planifié en amont.")
-        st.metric("Achats réellement exigibles maintenant", f"{len(purchasable)} · {total_now:,.0f} €")
+        total_now = sum(x.price for x in plan)
+        st.metric("Achats du plan", f"{len(plan)} · {total_now:,.0f} €")
 
         authorize = st.checkbox(
-            "⚠️ J'autorise les achats réels affichés ci-dessous sur la période courante",
+            "⚠️ J'autorise les achats réels affichés ci-dessous",
             value=False,
             key="smart_authorize_purchase",
             help="Cette case est indispensable. Sans elle, le bouton ne fait qu'un mode simulation.",
         )
-        now_df = pd.DataFrame([{"Document": x.label, "Prix (€)": x.price, "Cible": x.target_period, "Endpoint": "✅" if x.endpoint_known else "⚠️"} for x in purchasable])
+        now_df = pd.DataFrame([{"Document": x.label, "Prix (€)": x.price, "Cible": x.target_period, "Endpoint": "✅" if x.endpoint_known else "⚠️"} for x in plan])
         if not now_df.empty:
             st.dataframe(now_df, width="stretch", hide_index=True)
-        else:
-            st.info("Aucun achat du plan n'est actuellement exigible sur la période courante. Les autres restent à planifier.")
 
-        if st.button("💳 Acheter maintenant les études exigibles", type="secondary", width="stretch", disabled=(not purchasable or not authorize)):
+        if st.button("💳 Acheter maintenant les études du plan", type="secondary", width="stretch", disabled=(not plan or not authorize)):
             cfg = make_config(sub_user, sub_pass)
             pw = browser = context = None
             try:
                 pw, browser, context, page, api = api_session(cfg, log_name="subakoua_purchase")
-                results = smart_scraper.execute_purchase_plan(api, purchasable, current_period=current_period, allow_real_purchases=True)
+                results = smart_scraper.execute_purchase_plan(api, plan, allow_real_purchases=True)
                 st.session_state["smart_purchase_results"] = results
                 st.success(f"Opération terminée : {sum(1 for r in results if r.get('status') == 'ACHETE')} achat(s) confirmé(s).")
             except Exception as exc:
@@ -396,9 +383,9 @@ with tab_plan:
 with tab_acq:
     st.subheader("🔁 Acquérir : acheter si besoin, puis synchroniser")
     st.caption(
-        "Un seul passage : lecture → achat (seulement si autorisé, sous budget, hors 5 000 € sans opt-in, "
-        "prix live vérifié) → relecture. Un achat courant n'ouvre la lecture qu'à partir de la période "
-        "suivante : un mois clos non acheté le reste, et c'est tracé au lieu d'être masqué. "
+        "Un seul passage par période cible : lecture → achat (seulement si autorisé, sous budget, "
+        "hors 5 000 € sans opt-in, prix live vérifié) → relecture. Un achat pour la période X donne "
+        "les données de la période X, sans décalage. "
         "Chaque exécution est enregistrée dans `erp_scraper_runs`."
     )
     st.info(
@@ -424,21 +411,17 @@ with tab_acq:
                              default=list(acq_options)[:4],
                              format_func=lambda sid: acq_options[sid], key="acq_study_ids")
 
-    ca1, ca2, ca3 = st.columns(3)
+    ca1, ca2 = st.columns(2)
     with ca1:
-        acq_current = st.selectbox("Période courante d'achat", available,
-                                   index=len(available) - 1, key="acq_current_period",
-                                   help="L'achat s'effectue sur cette période et ouvre la lecture à partir de la suivante.")
-    with ca2:
         acq_budget = st.number_input("Budget d'achat (€)", min_value=0.0, max_value=1_000_000.0,
                                      value=600.0, step=50.0, key="acq_budget")
-    with ca3:
+    with ca2:
         acq_allow_5000 = st.checkbox("Autoriser les études à 5 000 €", value=False, key="acq_allow_5000")
 
     acq_estimate = sum(_acq_profiles[sid].price for sid in acq_ids if sid in _acq_profiles)
     st.metric("Coût estimé max", f"{acq_estimate:,.0f} €".replace(",", " "))
     acq_authorize = st.checkbox(
-        "⚠️ J'autorise les achats réels ci-dessus sur la période courante",
+        "⚠️ J'autorise les achats réels ci-dessus",
         value=False, key="acq_authorize_purchase",
         help="Indispensable : sans elle, le bouton liste seulement ce qui serait acheté.",
     )
@@ -458,7 +441,7 @@ with tab_acq:
                 pw, browser, context, page, api = api_session(cfg, log_name="subakoua_acquire")
                 results = smart_scraper.acquire_studies(
                     api, conn, target_periods=acq_periods, study_ids=acq_ids,
-                    current_period=acq_current, budget=float(acq_budget),
+                    budget=float(acq_budget),
                     allow_real_purchases=bool(acq_authorize), allow_5000=bool(acq_allow_5000))
                 st.session_state["acq_results"] = results
                 counts: dict[str, int] = {}
@@ -483,10 +466,10 @@ with tab_acq:
 
     if st.session_state.get("acq_results"):
         st.dataframe(pd.DataFrame(st.session_state["acq_results"]), width="stretch", hide_index=True)
-        _bought_later = [r for r in st.session_state["acq_results"] if r.get("status") == "ACHETEE"]
-        if _bought_later:
-            st.info("Statut `ACHETEE` (sans synchronisation) : l'étude n'est pas encore lisible sur la période "
-                    "cible — reviens synchroniser sur la période suivante.")
+        _bought_only = [r for r in st.session_state["acq_results"] if r.get("status") == "ACHETEE"]
+        if _bought_only:
+            st.info("Statut `ACHETEE` (sans synchronisation) : l'étude a été payée mais reste illisible — "
+                    "anomalie à vérifier sur le portail, puis resynchronise.")
 
 with tab_sync:
     st.subheader("📥 Lire les études accessibles et synchroniser Aiven")
@@ -551,9 +534,8 @@ with tab_sync:
         if _refused:
             st.info(
                 "ℹ️ REFUSE = étude **non achetée** sur cette période (`readAllowed=false` côté portail) : "
-                "il n'y a rien à synchroniser. Pour l'obtenir, achète-la d'abord dans l'onglet "
-                "« 🎯 Plan documentaire » sur la période courante — elle sera lisible à la période suivante. "
-                "On ne peut pas racheter le passé : une étude manquante sur un mois clos le reste."
+                "il n'y a rien à synchroniser. Pour l'obtenir, achète-la pour cette période "
+                "(onglet « 🔁 Acquérir »), puis synchronise."
             )
 
 with tab_legacy:

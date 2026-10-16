@@ -355,17 +355,15 @@ def build_purchase_plan(
     target_period: str,
     budget: float,
     needs: Sequence[DecisionNeed] = DEFAULT_NEEDS,
-    purchase_lead_periods: int = 1,
     allow_5000: bool = False,
-    purchase_catalog_rows: Sequence[Mapping[str, object]] | None = None,
 ) -> list[PlanItem]:
     """Construit un plan par période avec un glouton à utilité marginale.
 
-    `catalog_rows` doit idéalement être le catalogue API *de la période cible*.
-    `boughtByTeam` est alors la source de vérité de disponibilité.
+    Règle : un achat pour la période X donne les données de la période X,
+    sans décalage. `catalog_rows` est le catalogue API *de la période cible*
+    et `boughtByTeam` est la source de vérité de disponibilité.
     """
     rows_by_id = {str(r["study_id"]): r for r in catalog_rows}
-    purchase_rows_by_id = {str(r["study_id"]): r for r in (purchase_catalog_rows if purchase_catalog_rows is not None else catalog_rows)}
     budget_left = max(0.0, float(budget))
     covered_evidence: set[str] = set()
     chosen: set[str] = set()
@@ -382,10 +380,9 @@ def build_purchase_plan(
         if bought or price <= 0:
             covered_evidence.update(_profile_evidence(profile))
 
-    # 2) Candidats payants restants : ils doivent être achetables sur la
-    # période d'achat (et non simplement visibles sur la période cible).
+    # 2) Candidats payants restants : non achetés sur la période cible.
     for sid, profile in profiles.items():
-        row = purchase_rows_by_id.get(sid)
+        row = rows_by_id.get(sid)
         if not row:
             continue
         price = float(row.get("price", profile.price) or 0)
@@ -423,25 +420,17 @@ def build_purchase_plan(
         candidates = [p for p in candidates if p.study_id != picked.study_id]
 
     plan: list[PlanItem] = []
-    purchase_period = try_next_period(target_period, -purchase_lead_periods)
     for sid in chosen:
         profile = profiles[sid]
-        row = purchase_rows_by_id.get(sid) or rows_by_id[sid]
+        row = rows_by_id[sid]
         utility, reason = score_profile(profile, needs)
-        if purchase_period is None:
-            # Une cible sur A1-Janvier n'a pas de période d'achat antérieure
-            # dans le modèle : on conserve l'analyse mais on interdit tout achat.
-            status = "HORS FENÊTRE D'ACHAT"
-            purchase_label = "Impossible — avant A1-Janvier"
-        else:
-            status = "RECOMMANDÉ" if profile.endpoint_known else "RECOMMANDÉ · endpoint à résoudre"
-            purchase_label = purchase_period
+        status = "RECOMMANDÉ" if profile.endpoint_known else "RECOMMANDÉ · endpoint à résoudre"
         plan.append(
             PlanItem(
                 study_id=sid,
                 label=profile.label,
                 price=float(row.get("price", profile.price) or 0),
-                purchase_period=purchase_label,
+                purchase_period=target_period,
                 target_period=target_period,
                 already_available=False,
                 endpoint_known=profile.endpoint_known,

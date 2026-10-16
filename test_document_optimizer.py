@@ -85,16 +85,26 @@ def test_explicit_evidence_has_granular_need_coverage():
     assert snap['coverage_by_need']['market_share']['coverage_percent'] > 0.0
 
 
-def test_paid_candidate_must_be_available_in_purchase_period_catalog():
+def test_paid_candidate_excluded_when_already_bought_on_target():
     profiles = d.load_profiles()
-    target_rows = [
-        {'study_id': 'companyResults', 'price': 100, 'boughtByTeam': False},
-    ]
-    purchase_rows = [
+    rows = [
         {'study_id': 'companyResults', 'price': 100, 'boughtByTeam': True},
     ]
     plan = d.build_purchase_plan(
-        profiles, target_rows, purchase_catalog_rows=purchase_rows,
+        profiles, rows,
         target_period='Année 1 - Février', budget=500
     )
     assert plan == []
+
+
+def test_paid_candidate_proposed_when_not_bought_on_target():
+    profiles = d.load_profiles()
+    rows = [
+        {'study_id': 'companyResults', 'price': 100, 'boughtByTeam': False},
+    ]
+    plan = d.build_purchase_plan(
+        profiles, rows,
+        target_period='Année 1 - Février', budget=500
+    )
+    assert any(x.study_id == 'companyResults' and x.purchase_period == 'Année 1 - Février'
+               for x in plan)

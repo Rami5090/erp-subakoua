@@ -74,7 +74,7 @@ def test_deja_lisible_synchronise_sans_achat():
     api = FakeAPI(bought={("P", "peeedccg"): True}, readable={("P", "peeedccg"): True})
     conn = FakeConnection()
     out = scraper.acquire_studies(api, conn, target_periods=["P"], study_ids=["peeedccg"],
-                                  current_period="P", budget=600.0, allow_real_purchases=True)
+                                  budget=600.0, allow_real_purchases=True)
     assert out[0]["status"] == "OK"
     assert api.purchases == []
     assert conn.inserts_into("erp_etudes")
@@ -85,7 +85,7 @@ def test_non_achete_sans_autorisation_ne_achete_pas():
     conn = FakeConnection()
     out = scraper.acquire_studies(api, conn, target_periods=["P"],
                                   study_ids=["productionCostDetailStudy"],
-                                  current_period="P", budget=600.0, allow_real_purchases=False)
+                                  budget=600.0, allow_real_purchases=False)
     assert out[0]["status"] == "A_ACHETER"
     assert api.purchases == []
 
@@ -94,7 +94,7 @@ def test_achete_puis_synchronise():
     api = FakeAPI(prices={("P", "peeedccg"): 100.0}, unlock_on_purchase={"peeedccg"})
     conn = FakeConnection()
     out = scraper.acquire_studies(api, conn, target_periods=["P"], study_ids=["peeedccg"],
-                                  current_period="P", budget=600.0, allow_real_purchases=True)
+                                  budget=600.0, allow_real_purchases=True)
     assert out[0]["status"] == "ACHETEE_ET_SYNCHRONISEE"
     assert api.purchases == [("P", "peeedccg")]
     assert conn.inserts_into("erp_etudes")
@@ -104,7 +104,7 @@ def test_strategique_sans_optin_refusee():
     api = FakeAPI(prices={("P", "peeumreusreprv"): 5000.0})
     conn = FakeConnection()
     out = scraper.acquire_studies(api, conn, target_periods=["P"], study_ids=["peeumreusreprv"],
-                                  current_period="P", budget=60000.0,
+                                  budget=60000.0,
                                   allow_real_purchases=True, allow_5000=False)
     assert out[0]["status"] == "REFUSE_STRATEGIQUE"
     assert api.purchases == []
@@ -116,7 +116,7 @@ def test_budget_depasse_refuse():
     conn = FakeConnection()
     out = scraper.acquire_studies(api, conn, target_periods=["P"],
                                   study_ids=["peeedccg", "peeedscrdl"],
-                                  current_period="P", budget=50.0, allow_real_purchases=True)
+                                  budget=50.0, allow_real_purchases=True)
     # peeedccg lisible directement (gratuit en budget) ; peeedscrdl à 100 € > budget 50 €.
     statuses = {r["study_id"]: r["status"] for r in out}
     assert statuses["peeedccg"] == "OK"
@@ -125,10 +125,10 @@ def test_budget_depasse_refuse():
 
 
 def test_achete_mais_passe_illisible_trace():
-    api = FakeAPI(prices={("P", "peeedscrdl"): 100.0})  # jamais lisible sur P (mois clos)
+    api = FakeAPI(prices={("P", "peeedscrdl"): 100.0})  # jamais lisible sur P
     conn = FakeConnection()
     out = scraper.acquire_studies(api, conn, target_periods=["P"], study_ids=["peeedscrdl"],
-                                  current_period="P", budget=600.0, allow_real_purchases=True)
+                                  budget=600.0, allow_real_purchases=True)
     assert out[0]["status"] == "ACHETEE"
-    assert "suivante" in out[0]["reason"]
+    assert "Resynchroniser" in out[0]["reason"]
     assert api.purchases == [("P", "peeedscrdl")]
