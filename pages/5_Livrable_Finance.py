@@ -6,6 +6,7 @@ Lecture seule pour tous : génère le pré-rempli du document mensuel
 from __future__ import annotations
 
 import json
+import os
 from decimal import Decimal
 
 import pandas as pd
@@ -22,7 +23,7 @@ from livrable_finance import (
     LivrableFinance,
 )
 import document_optimizer as doc_optimizer
-from constants import TOURS_PERIODES
+from constants import TOURS_PERIODES, period_label_to_code
 from period_context import match_period
 from db_utils import get_read_engine
 from auth import setup as auth_setup, is_editor
@@ -210,18 +211,27 @@ st.caption("Remplit directement les cellules du PDF : diagnostic, marges, taux. 
            "Le rédactionnel (Réponses, Commentaires, Nos conclusions, équipe) n'est jamais écrasé. "
            "Les résultats nets/CAF non achetés (SPECIMEN) sont vidés pour ne pas laisser un ancien mois.")
 default_template = "C:/Users/ramih/OneDrive/BUT MLT3/Redoublement/Mission specifique Finance.pdf"
-template_path = st.text_input("Chemin du PDF template", value=default_template)
-if st.button("Générer le PDF rempli", type="primary"):
-    import os
+uploaded = st.file_uploader("Template PDF « Mission spécifique Finance »", type=["pdf"],
+                            help="Choisis le PDF vierge. Sinon, le chemin local par défaut est utilisé s'il existe.")
+template_bytes: bytes | None = None
+template_source = ""
+if uploaded is not None:
+    template_bytes = uploaded.read()
+    template_source = f"fichier choisi : {uploaded.name}"
+elif os.path.exists(default_template):
+    with open(default_template, "rb") as _f:
+        template_bytes = _f.read()
+    template_source = "chemin local par défaut"
+if template_source:
+    st.caption(f"Template : {template_source}.")
+if st.button("Générer le PDF rempli", type="primary", disabled=template_bytes is None):
     import tempfile
-    if not template_path or not os.path.exists(template_path):
-        st.error("Template PDF introuvable : vérifie le chemin.")
-        st.stop()
+    alias = period_label_to_code(periode)  # ex. Année 1 - Août -> 0108
     values = pdf_field_values(liv, couts_detail, prix)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         out_path = tmp.name
     try:
-        n, missing = fill_pdf(template_path, out_path, values)
+        n, missing = fill_pdf(template_bytes, out_path, values)
         with open(out_path, "rb") as f:
             pdf_bytes = f.read()
         st.success(f"PDF rempli : {n} champs renseignés."
@@ -232,7 +242,7 @@ if st.button("Générer le PDF rempli", type="primary"):
         st.download_button(
             "⬇️ Télécharger le PDF rempli",
             pdf_bytes,
-            file_name=f"Mission_specifique_Finance_{periode.replace(' ', '_')}_rempli.pdf",
+            file_name=f"Mission_specifique_Finance_{alias}_rempli.pdf",
             mime="application/pdf",
         )
     finally:

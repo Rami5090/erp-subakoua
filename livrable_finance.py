@@ -492,18 +492,25 @@ def missing_studies(
     return out
 
 
-def fill_pdf(template_path: str, output_path: str, values: Mapping[str, str]) -> tuple[int, list[str]]:
+def fill_pdf(template: Any, output_path: str, values: Mapping[str, str]) -> tuple[int, list[str]]:
     """Remplit les champs du PDF template et écrit output_path.
 
+    `template` : chemin (str/Path) du PDF ou son contenu (bytes).
     Retourne (nb_champs_renseignés, champs_logiques_non_trouvés).
     Le matching est tolérant aux accents/casse/espaces.
     """
+    from io import BytesIO
+
     from pypdf import PdfReader, PdfWriter
 
-    reader = PdfReader(template_path)
+    if isinstance(template, (bytes, bytearray)):
+        reader = PdfReader(BytesIO(bytes(template)))
+        writer = PdfWriter(clone_from=reader)
+    else:
+        reader = PdfReader(str(template))
+        writer = PdfWriter(clone_from=str(template))
     fields = reader.get_fields() or {}
     norm_index: dict[str, str] = {_norm_field(k): k for k in fields.keys()}
-    writer = PdfWriter(clone_from=template_path)
     matched: dict[str, str] = {}
     missing: list[str] = []
     for logical, text in values.items():
