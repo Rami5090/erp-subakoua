@@ -758,25 +758,34 @@ class SubakouaAPIClient:
         """Liens visibles vers des sections d'études sœurs (hors page courante)."""
         found: list[str] = []
         try:
-            links = page.locator("a[href]")
+            links = page.locator("a[href], a[routerlink], a[ng-reflect-router-link]")
             for i in range(min(links.count(), 200)):
                 node = links.nth(i)
                 try:
                     if not node.is_visible():
                         continue
-                    href = str(node.get_attribute("href") or "")
+                    href = (
+                        str(node.get_attribute("href") or "")
+                        or str(node.get_attribute("routerlink") or "")
+                        or str(node.get_attribute("ng-reflect-router-link") or "")
+                    )
                     try:
                         txt = node.inner_text() or ""
                     except Exception:
                         txt = ""
                     low = f"{href} {txt}".lower()
-                    if not any(k in low for k in ("stud", "document", "comptab", "account", "banque", "bank")):
+                    if not any(k in low for k in ("stud", "document", "comptab", "accountant",
+                                                  "banque", "bank", "financ", "assur",
+                                                  "fournisseur", "concurren", "expert")):
                         continue
                     full = urljoin(self.base_url + "/", href.lstrip("/")) if href.startswith("/") else href
                     if not full.startswith(self.base_url) or full in found:
                         continue
                     try:
                         if full.rstrip("/") == (page.url or "").rstrip("/"):
+                            continue
+                        # Page profil utilisateur, pas une section d'études.
+                        if full.rstrip("/").lower().endswith("/account"):
                             continue
                     except Exception:
                         pass

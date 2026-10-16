@@ -151,7 +151,7 @@ class FakePage:
             if self._password_visible:
                 return FakeLocator([FakeNode(True)], wait_raises=False)
             return FakeLocator([], wait_raises=False)
-        if sel == "a[href]":
+        if "a[href]" in sel:
             return FakeLocator(self._section_nodes(), wait_raises=False)
         if "okw-select-period" in sel:
             return FakeLocator([FakeNode(True, text=self._period_current)],
@@ -371,3 +371,15 @@ def test_sections_vues_tracees():
     assert ok is False
     assert detail["sections"] == 1
     assert detail["sections_vues"] == ["https://subakoua.arkhe.com/companies/partners/accountant/synthesis"]
+
+
+def test_page_profil_exclue_des_sections():
+    page = FakePage(
+        links=["Études"],
+        sections=[("/account", "Bank account settings"),
+                  ("/companies/partners/accountant/synthesis", "Comptabilité")],
+        period_current="Année 1 - Janvier",
+    )
+    client = make_client(page)
+    links = client._study_section_links(page)
+    assert links == ["https://subakoua.arkhe.com/companies/partners/accountant/synthesis"]
