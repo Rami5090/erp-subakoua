@@ -255,7 +255,7 @@ st.divider()
 st.subheader("📚 Documents manquants pour un livrable complet")
 st.caption("Chaque étude manquante explique quelles cellules du PDF restent vides ou en fallback. "
            "Coche celles à acheter, puis le bouton t'emmène page Scraper avec la sélection pré-remplie "
-           "(onglet « 📥 Synchroniser » ; si l'étude n'est pas encore achetée sur le portail, passe d'abord par l'onglet « 🎯 Plan documentaire »).")
+           "(onglet « 🔁 Acquérir » : achat si besoin + synchronisation en un passage).")
 
 with engine.connect() as _conn:
     from sqlalchemy import text as _text

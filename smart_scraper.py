@@ -305,3 +305,158 @@ def register_run(connection, run_id: str, *, mode: str, periods: Sequence[str], 
             float(estimated_cost), status, json.dumps(details or {}, ensure_ascii=False),
         ))
     connection.commit()
+
+
+#: Seuil des études stratégiques : jamais d'achat automatique sans opt-in explicite.
+STRATEGIC_PRICE_THRESHOLD = 5000.0
+
+
+def acquire_studies(
+    api: SubakouaAPIClient,
+    connection,
+    *,
+    target_periods: Sequence[str],
+    study_ids: Sequence[str],
+    current_period: str,
+    budget: float,
+    allow_real_purchases: bool,
+    allow_5000: bool = False,
+    logger: logging.Logger | None = None,
+) -> list[dict[str, Any]]:
+    """Acquiert des études de bout en bout : lecture, achat si nécessaire, relecture.
+
+    Pour chaque (période, étude) :
+    1) tentative de lecture API (garde-fou readAllowed inchangé) ;
+    2) si lisible → stockage Aiven, statut ``OK`` ;
+    3) si illisible et non achetée → achat sur la période courante UNIQUEMENT si
+       autorisé, sous budget, hors stratégique (sauf opt-in) et prix live vérifié ;
+    4) relecture après achat : un achat courant n'ouvre la lecture qu'à partir de
+       la période suivante — un mois clos reste donc non lisible, et c'est tracé
+       au lieu d'être masqué.
+
+    Chaque exécution est tracée dans ``erp_scraper_runs`` (mode ``acquisition``).
+    """
+    log = logger or logging.getLogger("subakoua_smart_scraper")
+    profiles = optimizer.load_profiles()
+    run_id = build_run_id()
+    register_run(connection, run_id, mode="acquisition", periods=target_periods,
+                 studies=study_ids, estimated_cost=0.0, status="started")
+    results: list[dict[str, Any]] = []
+    spent = 0.0
+    try:
+        for period in target_periods:
+            try:
+                live_target = {row.study_id: row for row in api.catalog(period, study_ids)}
+            except Exception as exc:
+                log.exception("Catalogue live inaccessible %s", period)
+                for sid in study_ids:
+                    results.append({"period": period, "study_id": sid, "status": "ERREUR",
+                                    "error": f"Catalogue live inaccessible : {exc}"})
+                continue
+            for sid in study_ids:
+                profile = profiles.get(sid)
+                if profile is None:
+                    results.append({"period": period, "study_id": sid, "status": "INCONNU",
+                                    "reason": "Étude absente du catalogue unifié."})
+                    continue
+                live = live_target.get(sid)
+                try:
+                    fetched = api.fetch_study(sid, period, require_read_allowed=True)
+                except Exception as exc:
+                    log.exception("Lecture API en erreur %s / %s", period, sid)
+                    results.append({"period": period, "study_id": sid, "status": "ERREUR",
+                                    "error": str(exc)})
+                    continue
+                if fetched.valid:
+                    try:
+                        store_fetch_result(connection, fetched, label=profile.label)
+                    except Exception as exc:
+                        results.append({"period": period, "study_id": sid, "status": "ERREUR",
+                                        "error": f"Stockage Aiven impossible : {exc}"})
+                        continue
+                    results.append({"period": period, "study_id": sid, "status": "OK",
+                                    "endpoint": fetched.endpoint})
+                    continue
+                if live is not None and live.bought_by_team:
+                    results.append({"period": period, "study_id": sid, "status": "REFUSE",
+                                    "reason": f"Étude achetée mais illisible sur {period} : {fetched.reason}"})
+                    continue
+                price = float(live.price) if live is not None else float(profile.price)
+                if not allow_real_purchases:
+                    results.append({"period": period, "study_id": sid, "status": "A_ACHETER",
+                                    "price": price,
+                                    "reason": "Étude non achetée. Coche l'autorisation d'achat pour l'acheter puis la synchroniser."})
+                    continue
+                if price >= STRATEGIC_PRICE_THRESHOLD and not allow_5000:
+                    results.append({"period": period, "study_id": sid, "status": "REFUSE_STRATEGIQUE",
+                                    "price": price,
+                                    "reason": f"Étude à {price:g} € : achat stratégique exclu sans opt-in explicite."})
+                    continue
+                if spent + price > float(budget):
+                    results.append({"period": period, "study_id": sid, "status": "REFUSE_BUDGET",
+                                    "price": price,
+                                    "reason": f"Dépasserait le budget ({spent:g} € déjà engagés sur {float(budget):g} €)."})
+                    continue
+                try:
+                    live_now = {row.study_id: row for row in api.catalog(current_period, [sid])}.get(sid)
+                except Exception as exc:
+                    results.append({"period": period, "study_id": sid, "status": "ERREUR",
+                                    "error": f"Catalogue d'achat inaccessible ({current_period}) : {exc}"})
+                    continue
+                if live_now is None:
+                    results.append({"period": period, "study_id": sid, "status": "REFUSE",
+                                    "reason": f"Étude absente du catalogue live sur {current_period}."})
+                    continue
+                if live_now.bought_by_team:
+                    results.append({"period": period, "study_id": sid, "status": "DEJA_ACHETEE",
+                                    "reason": f"Déjà achetée sur {current_period} mais illisible sur {period} : "
+                                              "un achat courant n'ouvre la lecture qu'à partir de la période suivante."})
+                    continue
+                if abs(float(live_now.price) - price) > 0.01:
+                    price = float(live_now.price)
+                    if spent + price > float(budget):
+                        results.append({"period": period, "study_id": sid, "status": "REFUSE_BUDGET",
+                                        "price": price,
+                                        "reason": f"Prix live {price:g} € : dépasserait le budget."})
+                        continue
+                try:
+                    purchase = api.purchase_study(current_period, sid, label=profile.label,
+                                                  expected_price=float(live_now.price))
+                except Exception as exc:
+                    log.exception("Achat en erreur %s / %s", current_period, sid)
+                    results.append({"period": period, "study_id": sid, "status": "ERREUR",
+                                    "error": f"Achat impossible : {exc}"})
+                    continue
+                spent += float(live_now.price)
+                log.warning("ACHAT RÉEL Subakoua (acquisition) : %s | %s -> %s | prix=%s",
+                            sid, current_period, period, purchase.get("price"))
+                try:
+                    refetched = api.fetch_study(sid, period, require_read_allowed=True)
+                except Exception as exc:
+                    results.append({"period": period, "study_id": sid, "status": "ACHETEE",
+                                    "price": float(live_now.price),
+                                    "reason": f"Achetée ({float(live_now.price):g} €) mais relecture impossible : {exc}. "
+                                              "Resynchroniser plus tard."})
+                    continue
+                if refetched.valid:
+                    try:
+                        store_fetch_result(connection, refetched, label=profile.label)
+                    except Exception as exc:
+                        results.append({"period": period, "study_id": sid, "status": "ERREUR",
+                                        "error": f"Achetée mais stockage Aiven impossible : {exc}"})
+                        continue
+                    results.append({"period": period, "study_id": sid, "status": "ACHETEE_ET_SYNCHRONISEE",
+                                    "price": float(live_now.price), "endpoint": refetched.endpoint})
+                else:
+                    results.append({"period": period, "study_id": sid, "status": "ACHETEE",
+                                    "price": float(live_now.price),
+                                    "reason": f"Achetée ({float(live_now.price):g} €) mais pas encore lisible sur {period} : "
+                                              "un achat courant n'ouvre la lecture qu'à partir de la période suivante. "
+                                              "Resynchroniser sur la période suivante."})
+    finally:
+        summary = {"depense": round(spent, 2),
+                   "statuts": {s: sum(1 for r in results if r.get("status") == s) for s in
+                               {r.get("status", "?") for r in results}}}
+        register_run(connection, run_id, mode="acquisition", periods=target_periods,
+                     studies=study_ids, estimated_cost=spent, status="finished", details=summary)
+    return results

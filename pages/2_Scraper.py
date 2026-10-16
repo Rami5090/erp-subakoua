@@ -238,9 +238,8 @@ if isinstance(_liv_req, dict) and _liv_req.get("study_ids"):
     _liv_ids = [str(s) for s in _liv_req.get("study_ids", [])]
     st.info(
         f"📄 Demande du **{_liv_req.get('source', 'Livrable Finance')}** ({_liv_per}) : "
-        f"**{len(_liv_ids)}** document(s) présélectionné(s) dans l'onglet « 📥 Synchroniser » ci-dessous. "
-        "Si une étude n'est pas encore achetée sur le portail, passe d'abord par l'onglet "
-        "« 🎯 Plan documentaire » pour l'acheter, puis synchronise ici."
+        f"**{len(_liv_ids)}** document(s) présélectionné(s) dans l'onglet « 🔁 Acquérir » ci-dessous "
+        "(achat si besoin + synchronisation en un passage)."
     )
     if _liv_per in available:
         st.session_state["smart_sync_periods"] = [_liv_per]
@@ -254,7 +253,7 @@ if isinstance(_liv_req, dict) and _liv_req.get("study_ids"):
 # ---------------------------------------------------------------------------
 # ONGLET 1 : PLAN DOCUMENTAIRE
 # ---------------------------------------------------------------------------
-tab_plan, tab_sync, tab_legacy = st.tabs(["🎯 Plan documentaire", "📥 Synchroniser", "🧱 Secours DOM"])
+tab_plan, tab_acq, tab_sync, tab_legacy = st.tabs(["🎯 Plan documentaire", "🔁 Acquérir", "📥 Synchroniser", "🧱 Secours DOM"])
 
 with tab_plan:
     st.subheader("🎯 Construire le plan d'achat documentaire")
@@ -394,6 +393,101 @@ with tab_plan:
             st.subheader("🧾 Résultat des achats")
             st.dataframe(pd.DataFrame(st.session_state["smart_purchase_results"]), width="stretch", hide_index=True)
 
+with tab_acq:
+    st.subheader("🔁 Acquérir : acheter si besoin, puis synchroniser")
+    st.caption(
+        "Un seul passage : lecture → achat (seulement si autorisé, sous budget, hors 5 000 € sans opt-in, "
+        "prix live vérifié) → relecture. Un achat courant n'ouvre la lecture qu'à partir de la période "
+        "suivante : un mois clos non acheté le reste, et c'est tracé au lieu d'être masqué. "
+        "Chaque exécution est enregistrée dans `erp_scraper_runs`."
+    )
+    st.info(
+        "Règle conservée : sans la case d'autorisation ci-dessous, **aucun achat réel** n'est déclenché "
+        "(les études à acheter sont listées en `A_ACHETER`)."
+    )
+
+    _acq_req = st.session_state.get("livrable_buy_request")
+    if _acq_req and "acq_target_periods" not in st.session_state:
+        _req_per = str(_acq_req.get("periode", ""))
+        if _req_per in available:
+            st.session_state["acq_target_periods"] = [_req_per]
+    acq_periods = st.multiselect("Périodes cibles", available,
+                                 default=[available[-1]], key="acq_target_periods")
+    _acq_profiles = optimizer.load_profiles()
+    _acq_known = [p for p in _acq_profiles.values() if p.endpoint_known]
+    acq_options = {p.study_id: f"{p.label} · {p.price:g} € · API" for p in _acq_known}
+    if _acq_req and "acq_study_ids" not in st.session_state:
+        _want = [str(s) for s in _acq_req.get("study_ids", []) if str(s) in acq_options]
+        if _want:
+            st.session_state["acq_study_ids"] = _want
+    acq_ids = st.multiselect("Études à acquérir", list(acq_options),
+                             default=list(acq_options)[:4],
+                             format_func=lambda sid: acq_options[sid], key="acq_study_ids")
+
+    ca1, ca2, ca3 = st.columns(3)
+    with ca1:
+        acq_current = st.selectbox("Période courante d'achat", available,
+                                   index=len(available) - 1, key="acq_current_period",
+                                   help="L'achat s'effectue sur cette période et ouvre la lecture à partir de la suivante.")
+    with ca2:
+        acq_budget = st.number_input("Budget d'achat (€)", min_value=0.0, max_value=1_000_000.0,
+                                     value=600.0, step=50.0, key="acq_budget")
+    with ca3:
+        acq_allow_5000 = st.checkbox("Autoriser les études à 5 000 €", value=False, key="acq_allow_5000")
+
+    acq_estimate = sum(_acq_profiles[sid].price for sid in acq_ids if sid in _acq_profiles)
+    st.metric("Coût estimé max", f"{acq_estimate:,.0f} €".replace(",", " "))
+    acq_authorize = st.checkbox(
+        "⚠️ J'autorise les achats réels ci-dessus sur la période courante",
+        value=False, key="acq_authorize_purchase",
+        help="Indispensable : sans elle, le bouton liste seulement ce qui serait acheté.",
+    )
+
+    if st.button("🔁 Lancer l'acquisition", type="primary", width="stretch",
+                 disabled=(not acq_periods or not acq_ids)):
+        if not sub_user or not sub_pass:
+            st.error("Identifiants Subakoua manquants.")
+        elif not db_host or not db_name or not db_user or not db_pass:
+            st.error("Configuration Aiven incomplète.")
+        else:
+            cfg = make_config(sub_user, sub_pass)
+            conn = None
+            pw = browser = context = None
+            try:
+                conn = legacy.connect_mysql(cfg)
+                pw, browser, context, page, api = api_session(cfg, log_name="subakoua_acquire")
+                results = smart_scraper.acquire_studies(
+                    api, conn, target_periods=acq_periods, study_ids=acq_ids,
+                    current_period=acq_current, budget=float(acq_budget),
+                    allow_real_purchases=bool(acq_authorize), allow_5000=bool(acq_allow_5000))
+                st.session_state["acq_results"] = results
+                counts: dict[str, int] = {}
+                for r in results:
+                    counts[r.get("status", "?")] = counts.get(r.get("status", "?"), 0) + 1
+                st.success("Acquisition terminée — " + " · ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+            except Exception as exc:
+                st.error(f"Acquisition interrompue : {exc}")
+            finally:
+                try:
+                    if conn:
+                        conn.close()
+                finally:
+                    try:
+                        if context:
+                            context.close()
+                    finally:
+                        if browser:
+                            browser.close()
+                        if pw:
+                            pw.stop()
+
+    if st.session_state.get("acq_results"):
+        st.dataframe(pd.DataFrame(st.session_state["acq_results"]), width="stretch", hide_index=True)
+        _bought_later = [r for r in st.session_state["acq_results"] if r.get("status") == "ACHETEE"]
+        if _bought_later:
+            st.info("Statut `ACHETEE` (sans synchronisation) : l'étude n'est pas encore lisible sur la période "
+                    "cible — reviens synchroniser sur la période suivante.")
+
 with tab_sync:
     st.subheader("📥 Lire les études accessibles et synchroniser Aiven")
     st.caption("Cette étape ne déclenche aucun achat. Une étude n'est acceptée que si son API retourne `readAllowed=true` et le bon `studyId`.")
@@ -453,6 +547,14 @@ with tab_sync:
 
     if st.session_state.get("smart_sync_results"):
         st.dataframe(pd.DataFrame(st.session_state["smart_sync_results"]), width="stretch", hide_index=True)
+        _refused = [r for r in st.session_state["smart_sync_results"] if r.get("status") == "REFUSE"]
+        if _refused:
+            st.info(
+                "ℹ️ REFUSE = étude **non achetée** sur cette période (`readAllowed=false` côté portail) : "
+                "il n'y a rien à synchroniser. Pour l'obtenir, achète-la d'abord dans l'onglet "
+                "« 🎯 Plan documentaire » sur la période courante — elle sera lisible à la période suivante. "
+                "On ne peut pas racheter le passé : une étude manquante sur un mois clos le reste."
+            )
 
 with tab_legacy:
     st.warning("Mode de secours conservé pour les études dont aucun endpoint API n'a encore été cartographié. Il ne doit pas être privilégié lorsqu'une API connue existe.")
