@@ -654,6 +654,25 @@ class SubakouaAPIClient:
                 continue
         return False
 
+    def _session_expired(self, page: Page) -> bool:
+        """Détecte une session portail expirée (login à refaire).
+
+        Une zone Études introuvable en pleine série vient souvent de là :
+        sans session, le menu ne se rend plus et tout échoue en cascade.
+        """
+        try:
+            if "login" in (page.url or "").lower():
+                return True
+        except Exception:
+            pass
+        try:
+            pwd = page.locator('input[type="password"]')
+            if pwd.count() > 0 and pwd.first.is_visible():
+                return True
+        except Exception:
+            pass
+        return False
+
     def _goto_dashboard(self, page: Page) -> None:
         """Replace sur le dashboard (point de départ de toute navigation zone)."""
         url = (self.dashboard_url or f"{self.base_url}/companies").rstrip("/")
@@ -709,11 +728,16 @@ class SubakouaAPIClient:
         """
         detail: dict[str, Any] = {"zone_ouverte": False, "periode_ok": False,
                                  "carte": False, "sections": 0, "via": "",
-                                 "sections_vues": []}
+                                 "sections_vues": [], "session": "active"}
         try:
             self._goto_dashboard(page)
         except Exception as exc:
             detail["erreur"] = f"dashboard inaccessible : {exc}"
+            return False, detail
+        if self._session_expired(page):
+            detail["session"] = "expirée"
+            detail["erreur"] = ("session portail expirée : reconnecte-toi (relance l'acquisition, "
+                                "un nouveau login sera établi)")
             return False, detail
         try:
             self._open_study_area(page)
@@ -842,6 +866,7 @@ class SubakouaAPIClient:
             "marche_zone": False, "marche_periode": False,
             "marche_carte": False, "marche_acheter": False,
             "marche_sections": 0, "marche_via": "", "marche_sections_vues": [],
+            "marche_session": "active",
         }
         if self.page is None:
             raise SubakouaAPIError("Aucune page Playwright attachée : diagnostic UI impossible.")
@@ -854,6 +879,9 @@ class SubakouaAPIClient:
             except Exception:
                 label = ""
             self._goto_dashboard(page)
+            if self._session_expired(page):
+                out["marche_session"] = "expirée"
+                return out
             self._open_study_area(page)
             out["marche_zone"] = True
             if period:

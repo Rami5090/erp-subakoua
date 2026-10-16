@@ -73,11 +73,12 @@ class FakePage:
                  card=None, card_on=None, sections=(),
                  period_current="Année 1 - Janvier",
                  start_url="https://subakoua.arkhe.com/companies",
-                 links_after_calls=0):
+                 links_after_calls=0, password_visible=False):
         self.url = start_url
         self.visited = []
         self._buy_visible = buy_visible
         self._search_visible = search_visible
+        self._password_visible = password_visible
         self._links = list(links)
         self._links_after_calls = links_after_calls
         self._role_calls = 0
@@ -139,6 +140,10 @@ class FakePage:
             if self._search_visible:
                 return FakeLocator([FakeNode(True)], wait_raises=False)
             return FakeLocator([FakeNode(False)], wait_raises=True)
+        if sel == 'input[type="password"]':
+            if self._password_visible:
+                return FakeLocator([FakeNode(True)], wait_raises=False)
+            return FakeLocator([], wait_raises=False)
         if sel == "a[href]":
             return FakeLocator(self._section_nodes(), wait_raises=False)
         if "okw-select-period" in sel:
@@ -296,6 +301,24 @@ def test_zone_reessayee_si_menu_lent():
     page = FakePage(links=["Études"], links_after_calls=2)
     client = make_client(page)
     client._open_study_area(page)  # ne lève pas : réessaie jusqu'au rendu du menu
+
+
+def test_session_expiree_detectee():
+    page = FakePage(links=["Études"], password_visible=True)
+    client = make_client(page)
+    assert client._session_expired(page) is True
+    ok, detail = client._buy_from_marketplace(page, "x", "Y", "Année 1 - Janvier")
+    assert ok is False
+    assert detail["session"] == "expirée"
+    out = client.probe_marketplace("x", "Année 1 - Janvier")
+    assert out["marche_session"] == "expirée"
+    assert out["marche_zone"] is False
+
+
+def test_session_active_par_defaut():
+    page = FakePage(links=["Études"])
+    client = make_client(page)
+    assert client._session_expired(page) is False
 
 
 def test_sections_vues_tracees():
