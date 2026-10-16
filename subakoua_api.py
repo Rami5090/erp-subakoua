@@ -648,32 +648,108 @@ class SubakouaAPIClient:
                 continue
         return False
 
-    def _buy_from_marketplace(self, page: Page, study_id: str, label: str, period: str | None) -> tuple[bool, dict[str, Any]]:
-        """Achète via la zone Études du portail : ouverture, période, carte.
+    def _goto_dashboard(self, page: Page) -> None:
+        """Replace sur le dashboard (point de départ de toute navigation zone)."""
+        url = (self.dashboard_url or f"{self.base_url}/companies").rstrip("/")
+        try:
+            current = (page.url or "").rstrip("/")
+        except Exception:
+            current = ""
+        if current.lower() != url.lower():
+            page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
+            page.wait_for_timeout(700)
 
-        C'est le chemin d'achat normal (les routes directes d'audit pointent
-        vers des pages de consultation, pas vers des cartes achetables).
+    def _study_section_links(self, page: Page, limit: int = 6) -> list[str]:
+        """Liens visibles vers des sections d'études sœurs (hors page courante)."""
+        found: list[str] = []
+        try:
+            links = page.locator("a[href]")
+            for i in range(min(links.count(), 200)):
+                node = links.nth(i)
+                try:
+                    if not node.is_visible():
+                        continue
+                    href = str(node.get_attribute("href") or "")
+                    try:
+                        txt = node.inner_text() or ""
+                    except Exception:
+                        txt = ""
+                    low = f"{href} {txt}".lower()
+                    if not any(k in low for k in ("stud", "document", "comptab", "account", "banque", "bank")):
+                        continue
+                    full = urljoin(self.base_url + "/", href.lstrip("/")) if href.startswith("/") else href
+                    if not full.startswith(self.base_url) or full in found:
+                        continue
+                    try:
+                        if full.rstrip("/") == (page.url or "").rstrip("/"):
+                            continue
+                    except Exception:
+                        pass
+                    found.append(full)
+                    if len(found) >= limit:
+                        break
+                except Exception:
+                    continue
+        except Exception as exc:
+            self.logger.debug("Énumération sections études : %s", exc)
+        return found
+
+    def _buy_from_marketplace(self, page: Page, study_id: str, label: str, period: str | None) -> tuple[bool, dict[str, Any]]:
+        """Achète via la zone Études du portail : dashboard, zone, période, sections.
+
+        La zone atterrit sur une section (ex. études de marché) qui n'est pas
+        forcément celle de l'étude : les sections sœurs sont visitées ensuite.
         Retourne (succès, diagnostic).
         """
-        detail: dict[str, Any] = {"zone_ouverte": False, "periode_ok": False, "carte": False}
+        detail: dict[str, Any] = {"zone_ouverte": False, "periode_ok": False,
+                                 "carte": False, "sections": 0, "via": ""}
+        try:
+            self._goto_dashboard(page)
+        except Exception as exc:
+            detail["erreur"] = f"dashboard inaccessible : {exc}"
+            return False, detail
         try:
             self._open_study_area(page)
         except Exception as exc:
             detail["erreur"] = f"zone Études inaccessible : {exc}"
             return False, detail
         detail["zone_ouverte"] = True
-        if period:
-            try:
-                self._select_purchase_period(page, period)
-                detail["periode_ok"] = True
-            except Exception as exc:
-                detail["erreur"] = f"sélecteur de période : {exc}"
-        if self._find_study_candidates(page, label, study_id):
-            detail["carte"] = True
-        if self._click_search_result_candidate(page, label, study_id):
+
+        def _select() -> None:
+            if period:
+                try:
+                    self._select_purchase_period(page, period)
+                    detail["periode_ok"] = True
+                except Exception as exc:
+                    detail["erreur"] = f"sélecteur de période : {exc}"
+
+        def _try_here() -> bool:
+            if self._find_study_candidates(page, label, study_id):
+                detail["carte"] = True
+            if self._click_search_result_candidate(page, label, study_id):
+                try:
+                    detail["via"] = page.url
+                except Exception:
+                    pass
+                return True
+            return False
+
+        _select()
+        if _try_here():
             return True, detail
+        for url in self._study_section_links(page):
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
+                page.wait_for_timeout(1000)
+            except Exception as exc:
+                self.logger.debug("Section études inexploitable %s : %s", url, exc)
+                continue
+            detail["sections"] += 1
+            _select()
+            if _try_here():
+                return True, detail
         if not detail.get("erreur"):
-            detail["erreur"] = "carte d'étude introuvable après ouverture de la zone et sélection période"
+            detail["erreur"] = "carte d'étude introuvable (zone, période et sections sœurs visitées)"
         return False, detail
 
     def _open_study(self, page: Page, study_id: str, label: str, period: str | None = None) -> None:
@@ -757,6 +833,7 @@ class SubakouaAPIClient:
         out: dict[str, Any] = {
             "marche_zone": False, "marche_periode": False,
             "marche_carte": False, "marche_acheter": False,
+            "marche_sections": 0, "marche_via": "",
         }
         if self.page is None:
             raise SubakouaAPIError("Aucune page Playwright attachée : diagnostic UI impossible.")
@@ -768,6 +845,7 @@ class SubakouaAPIClient:
                 label = profile.label if profile else ""
             except Exception:
                 label = ""
+            self._goto_dashboard(page)
             self._open_study_area(page)
             out["marche_zone"] = True
             if period:
@@ -776,11 +854,40 @@ class SubakouaAPIClient:
                     out["marche_periode"] = True
                 except Exception as exc:
                     self.logger.debug("Sonde période %s : %s", study_id, exc)
-            cards = self._find_study_candidates(page, label, study_id)
-            out["marche_carte"] = bool(cards)
-            out["marche_acheter"] = any(
-                self._buy_button_visible(page, scope=node) for node in cards[:3]
-            ) if cards else False
+
+            def _check() -> bool:
+                cards = self._find_study_candidates(page, label, study_id)
+                if cards:
+                    out["marche_carte"] = True
+                found = any(
+                    self._buy_button_visible(page, scope=node) for node in cards[:3]
+                ) if cards else False
+                if found:
+                    try:
+                        out["marche_via"] = page.url
+                    except Exception:
+                        pass
+                return found
+
+            if _check():
+                out["marche_acheter"] = True
+                return out
+            for url in self._study_section_links(page):
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
+                    page.wait_for_timeout(1000)
+                except Exception:
+                    continue
+                out["marche_sections"] += 1
+                if period:
+                    try:
+                        self._select_purchase_period(page, period)
+                        out["marche_periode"] = True
+                    except Exception:
+                        pass
+                if _check():
+                    out["marche_acheter"] = True
+                    return out
         except Exception as exc:
             self.logger.debug("Sonde marketplace %s : %s", study_id, exc)
         return out

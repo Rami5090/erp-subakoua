@@ -70,14 +70,26 @@ class FakeLocator:
 
 class FakePage:
     def __init__(self, *, buy_visible=False, search_visible=False, links=(),
-                 card=None, period_current="Année 1 - Janvier"):
-        self.url = "https://subakoua.arkhe.com/companies"
+                 card=None, card_on=None, sections=(),
+                 period_current="Année 1 - Janvier",
+                 start_url="https://subakoua.arkhe.com/companies"):
+        self.url = start_url
         self.visited = []
         self._buy_visible = buy_visible
         self._search_visible = search_visible
         self._links = list(links)
         self._card = card
+        self._card_on = card_on
+        self._sections = list(sections)
         self._period_current = period_current
+
+    def _card_here(self):
+        if not self._card:
+            return []
+        if self._card_on is None or any(s in (self.url or "") for s in self._card_on):
+            return [FakeNode(True, text=self._card.get("text", ""),
+                             scoped_buy=bool(self._card.get("buy")))]
+        return []
 
     def goto(self, url, **kwargs):
         self.visited.append(url)
@@ -90,10 +102,10 @@ class FakePage:
         return [FakeNode(True, text=t) for t in self._links]
 
     def _card_nodes(self):
-        if not self._card:
-            return []
-        return [FakeNode(True, text=self._card.get("text", ""),
-                         scoped_buy=bool(self._card.get("buy")))]
+        return self._card_here()
+
+    def _section_nodes(self):
+        return [FakeNode(True, text=t, attrs={"href": h}) for h, t in self._sections]
 
     def get_by_role(self, role, name=None):
         import re as _re
@@ -120,6 +132,8 @@ class FakePage:
             if self._search_visible:
                 return FakeLocator([FakeNode(True)], wait_raises=False)
             return FakeLocator([FakeNode(False)], wait_raises=True)
+        if sel == "a[href]":
+            return FakeLocator(self._section_nodes(), wait_raises=False)
         if "okw-select-period" in sel:
             return FakeLocator([FakeNode(True, text=self._period_current)],
                                wait_raises=False)
@@ -133,6 +147,7 @@ class FakePage:
 def make_client(page):
     client = SubakouaAPIClient.__new__(SubakouaAPIClient)
     client.base_url = "https://subakoua.arkhe.com"
+    client.dashboard_url = "https://subakoua.arkhe.com/companies"
     client.timeout = 5000
     client.logger = logging.getLogger("test_probe")
     client.page = page
@@ -224,3 +239,47 @@ def test_probe_marketplace_cles():
     assert out["marche_periode"] is True
     assert out["marche_carte"] is True
     assert out["marche_acheter"] is True
+
+
+def test_section_soeur_trouve_la_carte():
+    page = FakePage(
+        links=["Études"],
+        sections=[("/companies/partners/accountant/synthesis", "Comptabilité")],
+        card={"text": "TVA", "buy": True},
+        card_on=["accountant"],
+        period_current="Année 1 - Janvier",
+    )
+    client = make_client(page)
+    ok, detail = client._buy_from_marketplace(page, "peeefstvp", "TVA", "Année 1 - Janvier")
+    assert ok is True
+    assert detail["sections"] == 1
+    assert "accountant" in detail["via"]
+    assert detail["carte"] is True
+
+
+def test_repart_du_dashboard():
+    page = FakePage(
+        links=["Études"],
+        card={"text": "TVA", "buy": True},
+        period_current="Année 1 - Janvier",
+        start_url="https://subakoua.arkhe.com/companies/partners/internalData/stocks/x",
+    )
+    client = make_client(page)
+    ok, detail = client._buy_from_marketplace(page, "peeefstvp", "TVA", "Année 1 - Janvier")
+    assert ok is True
+    assert page.visited[0] == "https://subakoua.arkhe.com/companies"
+
+
+def test_probe_sections_remontees():
+    page = FakePage(
+        links=["Études"],
+        sections=[("/companies/partners/accountant/synthesis", "Comptabilité")],
+        card={"text": "TVA", "buy": True},
+        card_on=["accountant"],
+        period_current="Année 1 - Janvier",
+    )
+    client = make_client(page)
+    out = client.probe_marketplace("peeefstvp", "Année 1 - Janvier")
+    assert out["marche_acheter"] is True
+    assert out["marche_sections"] == 1
+    assert "accountant" in out["marche_via"]
