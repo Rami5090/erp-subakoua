@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -19,6 +20,7 @@ from urllib.parse import urlencode, urljoin
 from playwright.sync_api import BrowserContext, APIResponse, TimeoutError as PlaywrightTimeoutError
 
 import study_catalog
+import document_optimizer as optimizer
 from study_catalog import (
     get_endpoint_path,
     get_response_keys,
