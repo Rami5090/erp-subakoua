@@ -14,7 +14,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import document_optimizer as optimizer
 from subakoua_api import StudyAvailability, StudyFetchResult, SubakouaAPIClient
@@ -304,6 +304,7 @@ def acquire_studies(
     allow_real_purchases: bool,
     allow_5000: bool = False,
     logger: logging.Logger | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Acquiert des études de bout en bout : lecture, achat si nécessaire, relecture.
 
@@ -339,6 +340,11 @@ def acquire_studies(
                                     "error": f"Catalogue live inaccessible : {exc}"})
                 continue
             for sid in study_ids:
+                if progress is not None:
+                    try:
+                        progress(f"🔎 {sid} / {period} …")
+                    except Exception:
+                        pass
                 profile = profiles.get(sid)
                 if profile is None:
                     results.append({"period": period, "study_id": sid, "status": "INCONNU",

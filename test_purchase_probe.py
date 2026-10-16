@@ -406,6 +406,33 @@ def test_probe_texte_remonte():
     assert "marche_texte" in out
 
 
+def test_progression_remontee():
+    from test_smart_scraper_acquire import FakeAPI, FakeConnection
+    import smart_scraper as scraper
+    api = FakeAPI()
+    conn = FakeConnection()
+    seen = []
+    out = scraper.acquire_studies(api, conn, target_periods=["P"], study_ids=["a", "b"],
+                                  budget=0.0, allow_real_purchases=False,
+                                  progress=seen.append)
+    assert len(seen) == 2
+    assert all("🔎" in s for s in seen)
+    assert len(out) == 2
+
+
+def test_sonde_limite_sections():
+    page = FakePage(
+        links=["Études"],
+        sections=[(f"/s{i}", f"Studies {i}") for i in range(5)],
+        card_on=["jamais"],
+        period_current="Année 1 - Janvier",
+    )
+    client = make_client(page)
+    client = _no_wait(client)
+    out = client.probe_marketplace("x", "Année 1 - Janvier", max_sections=2)
+    assert out["marche_sections"] == 2
+
+
 def test_sections_vues_tracees():
     page = FakePage(
         links=["Études"],

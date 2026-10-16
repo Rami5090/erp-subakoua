@@ -272,7 +272,9 @@ class SubakouaAPIClient:
     def _select_purchase_period(self, page: Page, period: str) -> None:
         selector = "okw-select-period span[role='combobox']"
         loc = page.locator(selector).first
-        loc.wait_for(state="visible", timeout=self.timeout)
+        # Sélecteur best-effort : 5 s max, sinon on continue sans (le contexte
+        # de période est généralement conservé entre sections du portail).
+        loc.wait_for(state="visible", timeout=5000)
         current = " ".join(loc.inner_text().split())
         wanted = self.period_label(period)
         if wanted in current:
@@ -843,6 +845,10 @@ class SubakouaAPIClient:
             self._wait_for_study_content(page, label, study_id)
             if self._find_study_candidates(page, label, study_id):
                 detail["carte"] = True
+                try:
+                    detail["carte_page"] = page.url
+                except Exception:
+                    pass
             if self._click_search_result_candidate(page, label, study_id):
                 try:
                     detail["via"] = page.url
@@ -922,7 +928,8 @@ class SubakouaAPIClient:
             f"{'présent' if search_present else 'absent'}, page courante : {current_url}."
         )
 
-    def probe_purchase_target(self, study_id: str, period: str) -> dict[str, Any]:
+    def probe_purchase_target(self, study_id: str, period: str,
+                              max_sections: int = 6) -> dict[str, Any]:
         """Dry-run SANS achat : vérifie qu'une cible d'achat est atteignable.
 
         Teste les routes directes PUIS la zone Études (ouverture, période,
@@ -963,20 +970,21 @@ class SubakouaAPIClient:
             "via_texte": via_texte,
             "recherche_globale": "présente" if search_present else "absente",
         }
-        out.update(self.probe_marketplace(study_id, period))
+        out.update(self.probe_marketplace(study_id, period, max_sections=max_sections))
         try:
             out["page_courante"] = page.url
         except Exception:
             out["page_courante"] = "?"
         return out
 
-    def probe_marketplace(self, study_id: str, period: str) -> dict[str, Any]:
+    def probe_marketplace(self, study_id: str, period: str,
+                            max_sections: int = 6) -> dict[str, Any]:
         """Dry-run zone Études SANS achat : zone, période, carte, bouton visible."""
         out: dict[str, Any] = {
             "marche_zone": False, "marche_periode": False,
             "marche_carte": False, "marche_acheter": False,
             "marche_sections": 0, "marche_via": "", "marche_sections_vues": [],
-            "marche_session": "active", "marche_texte": "",
+            "marche_session": "active", "marche_texte": "", "marche_carte_page": "",
         }
         if self.page is None:
             raise SubakouaAPIError("Aucune page Playwright attachée : diagnostic UI impossible.")
@@ -1007,6 +1015,10 @@ class SubakouaAPIClient:
                 cards = self._find_study_candidates(page, label, study_id)
                 if cards:
                     out["marche_carte"] = True
+                    try:
+                        out["marche_carte_page"] = page.url
+                    except Exception:
+                        pass
                 found = any(
                     self._buy_button_visible(page, scope=node) for node in cards[:3]
                 ) if cards else False
@@ -1031,7 +1043,7 @@ class SubakouaAPIClient:
             except Exception:
                 pass
             for url in list(dash_sections) + self._study_section_links(page):
-                if out["marche_sections"] >= 6:
+                if out["marche_sections"] >= max_sections:
                     break
                 try:
                     if url.rstrip("/").lower() in seen:

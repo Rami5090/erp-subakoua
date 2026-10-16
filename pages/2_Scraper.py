@@ -439,15 +439,23 @@ with tab_acq:
             try:
                 conn = legacy.connect_mysql(cfg)
                 pw, browser, context, page, api = api_session(cfg, log_name="subakoua_acquire")
-                results = smart_scraper.acquire_studies(
-                    api, conn, target_periods=acq_periods, study_ids=acq_ids,
-                    budget=float(acq_budget),
-                    allow_real_purchases=bool(acq_authorize), allow_5000=bool(acq_allow_5000))
+                results = []
+                with st.status("🔁 Acquisition en cours…", expanded=True) as status:
+                    try:
+                        results = smart_scraper.acquire_studies(
+                            api, conn, target_periods=acq_periods, study_ids=acq_ids,
+                            budget=float(acq_budget),
+                            allow_real_purchases=bool(acq_authorize), allow_5000=bool(acq_allow_5000),
+                            progress=status.write)
+                    except Exception as exc:
+                        st.error(f"Acquisition interrompue : {exc}")
+                        results = []
                 st.session_state["acq_results"] = results
-                counts: dict[str, int] = {}
-                for r in results:
-                    counts[r.get("status", "?")] = counts.get(r.get("status", "?"), 0) + 1
-                st.success("Acquisition terminée — " + " · ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+                if results:
+                    counts: dict[str, int] = {}
+                    for r in results:
+                        counts[r.get("status", "?")] = counts.get(r.get("status", "?"), 0) + 1
+                    st.success("Acquisition terminée — " + " · ".join(f"{k}={v}" for k, v in sorted(counts.items())))
             except Exception as exc:
                 st.error(f"Acquisition interrompue : {exc}")
             finally:
@@ -477,23 +485,30 @@ with tab_acq:
                 pw, browser, context, page, api = api_session(cfg, log_name="subakoua_probe")
                 probe_out = []
                 probe_fn = getattr(api, "probe_purchase_target", None)
-                for per in acq_periods:
-                    for sid in acq_ids:
-                        if probe_fn is None:
-                            probe_out.append({"period": per, "study_id": sid, "trouvée": False,
-                                              "via": "", "routes_testées": 0,
-                                              "recherche_globale": "?",
-                                              "page_courante": "client API obsolète : le Cloud n'a pas "
-                                                               "redéployé (reboote l'app : ⋮ → Reboot)."})
-                            continue
-                        try:
-                            probe_out.append(probe_fn(sid, per))
-                        except Exception as exc:
-                            probe_out.append({"period": per, "study_id": sid, "trouvée": False,
-                                              "via": "", "routes_testées": 0,
-                                              "recherche_globale": "?",
-                                              "page_courante": f"sonde impossible : {exc}"})
-                st.session_state["acq_probe"] = probe_out
+                total = len(acq_periods) * len(acq_ids)
+                with st.status("🧪 Sonde en cours…", expanded=True) as status:
+                    done = 0
+                    for per in acq_periods:
+                        for sid in acq_ids:
+                            done += 1
+                            status.write(f"🔎 {sid} / {per} ({done}/{total}) …")
+                            if probe_fn is None:
+                                probe_out.append({"period": per, "study_id": sid, "trouvée": False,
+                                                  "via": "", "routes_testées": 0,
+                                                  "recherche_globale": "?",
+                                                  "page_courante": "client API obsolète : le Cloud n'a pas "
+                                                                   "redéployé (reboote l'app : ⋮ → Reboot)."})
+                                continue
+                            try:
+                                probe_out.append(probe_fn(sid, per))
+                            except Exception as exc:
+                                probe_out.append({"period": per, "study_id": sid, "trouvée": False,
+                                                  "via": "", "routes_testées": 0,
+                                                  "recherche_globale": "?",
+                                                  "page_courante": f"sonde impossible : {exc}"})
+                            st.session_state["acq_probe"] = list(probe_out)
+                    status.update(label=f"🧪 Sonde terminée : {len(probe_out)} résultat(s)",
+                                  state="complete", expanded=False)
             except Exception as exc:
                 st.error(f"Sonde interrompue : {exc}")
             finally:
