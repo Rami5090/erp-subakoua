@@ -18,6 +18,7 @@ from livrable_finance import (
     couts_from_cost_study,
     couts_detail_from_cost_study,
     missing_studies,
+    parse_simplified_result,
     pdf_field_values,
     fill_pdf,
     LivrableFinance,
@@ -162,9 +163,11 @@ if cost_payload:
 
 marges, marge_warns = build_marges(prix, Decimal("0"), Decimal("0.20"), couts)
 
-# --- Flux / créances ---
+# --- Flux / créances / résultat ---
 bank = _etude(periode, "bankStatements")
 cre = _etude(periode, "peeedccscl")
+simplifie = parse_simplified_result(_etude(periode, "peeedscrsm"))
+res_warns = [] if simplifie is not None else ["Compte de résultat non acheté (SPECIMEN) : net, CAF et ratios vides."]
 
 liv = LivrableFinance(
     periode=periode, bilan=bilan,
@@ -173,13 +176,19 @@ liv = LivrableFinance(
     ca_cumule=Decimal(str(ratios_c.get("Chiffre d'affaires", 0) or 0)),
     resultat_cumule=Decimal(str(ratios_c.get("Résultat avant impôt", 0) or 0)),
     marges=tuple(marges),
+    resultat=simplifie,
     flux_banque={"initial": Decimal(str(bank.get("initialBankAmount", 0) if bank else 0)),
                  "final": Decimal(str(bank.get("finalBankAmount", 0) if bank else 0))},
     creances={"total": Decimal(str(cre.get("totalcl", 0) if cre else 0)),
               "encaissement": Decimal(str(cre.get("encaissement", 0) if cre else 0))},
     couts_source_periode=couts_src,
-    warnings=tuple(list(bilan.warnings) + list(cout_warns) + list(marge_warns)),
+    warnings=tuple(list(bilan.warnings) + list(cout_warns) + list(marge_warns) + res_warns),
 )
+
+if simplifie is not None:
+    c0, c00 = st.columns(2)
+    c0.metric("Résultat net mensuel", f"{simplifie.resultat_net:,.0f} €".replace(",", " "))
+    c00.metric("CAF mensuelle", f"{simplifie.caf:,.0f} €".replace(",", " "))
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Banque finale", f"{bilan.banque:,.0f} €".replace(",", " "))

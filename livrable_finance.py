@@ -212,6 +212,38 @@ def couts_from_cost_study(payload: Mapping[str, Any]) -> tuple[dict[str, Decimal
 
 
 @dataclass(frozen=True)
+class SimplifiedResult:
+    chiffre_affaires: Decimal
+    resultat_net: Decimal
+    impot: Decimal
+    dotations_amortissements: Decimal
+    dotations_depreciations: Decimal
+    caf: Decimal
+
+
+def parse_simplified_result(payload: Mapping[str, Any]) -> SimplifiedResult | None:
+    """Compte de résultat simplifié (peeedscrsm) : net, CAF.
+
+    CAF = résultat net + amortissements + dépréciations (pas de cession
+    constatée sur les périodes observées).
+    """
+    if not isinstance(payload, Mapping) or not payload:
+        return None
+    net = _d(payload.get("netResult"))
+    ca = _d(payload.get("biensLivraisons", payload.get("competitiveMarketTurnover")))
+    amort = _d(payload.get("amortization"))
+    deprec = _d(payload.get("depreciationProvision"))
+    return SimplifiedResult(
+        chiffre_affaires=ca,
+        resultat_net=net,
+        impot=_d(payload.get("incomeTaxes")),
+        dotations_amortissements=amort,
+        dotations_depreciations=deprec,
+        caf=net + amort + deprec,
+    )
+
+
+@dataclass(frozen=True)
 class LivrableFinance:
     periode: str
     bilan: BilanDiagnostic
@@ -220,6 +252,7 @@ class LivrableFinance:
     ca_cumule: Decimal
     resultat_cumule: Decimal
     marges: tuple[MargeLigne, ...] = ()
+    resultat: SimplifiedResult | None = None
     stocks_quantites: Mapping[str, Any] = field(default_factory=dict)
     flux_banque: Mapping[str, Decimal] = field(default_factory=dict)
     creances: Mapping[str, Decimal] = field(default_factory=dict)
@@ -242,6 +275,9 @@ class LivrableFinance:
                   f"- Résultat avant impôt mensuel : {self.resultat_avant_impot_mensuel} €",
                   f"- CA cumulé : {self.ca_cumule} €",
                   f"- Résultat cumulé : {self.resultat_cumule} €", ""]
+        if self.resultat is not None:
+            lines += [f"- Résultat net mensuel : {self.resultat.resultat_net} €",
+                      f"- CAF mensuelle : {self.resultat.caf} €", ""]
         lines += [f"## 3. Marges (coûts source : {self.couts_source_periode})",
                   "| Produit | Prix HT | Remise A | Remise B | Coût var. | Marge A | Marge B |",
                   "|---|---|---|---|---|---|---|"]
@@ -357,6 +393,7 @@ def pdf_field_values(
     prix_catalogue = prix_catalogue or {m.produit: m.prix_ht for m in livrable.marges}
     taux_b = _d(remise_taux_b)
     b = livrable.bilan
+    res = livrable.resultat
     v: dict[str, str] = {
         # --- P.4 diagnostic bilan ---
         "Compte banqueRow1": fmt_fr(b.banque),
@@ -372,20 +409,23 @@ def pdf_field_values(
         "Dettes à court termeRow1": fmt_fr(b.dettes_totales),
         "B F RRow1": fmt_fr(b.actif_circulant_net - b.dettes_totales + b.dette_financiere)
         if (b.actif_circulant_net or b.dettes_totales) else fmt_fr(b.bfre),
-        # --- P.5 diagnostic résultat (mensuel ; net/CAF vidés si SPECIMEN) ---
+        # --- P.5 diagnostic résultat (mensuel ; net/CAF si compte de résultat acheté) ---
         "Chiffre daffairesRow1": fmt_fr(livrable.ca_mensuel),
         "Capitaux propresRow1": fmt_fr(b.capitaux_propres),
         "Capitaux propresRow1_2": fmt_fr(b.capitaux_propres),
         "Dettes financièresRow1": fmt_fr(b.dette_financiere),
         "Dettes financièresRow1_2": fmt_fr(b.dette_financiere),
-        "Résultat netRow1": "",
-        "Résultat netRow1_2": "",
-        "C A FRow1": "",
-        "Taux de ProfitabilitéRow1": "",
-        "Taux de rentabilitéRow1": "",
+        "Résultat netRow1": fmt_fr(res.resultat_net) if res is not None else "",
+        "Résultat netRow1_2": fmt_fr(res.resultat_net) if res is not None else "",
+        "C A FRow1": fmt_fr(res.caf) if res is not None else "",
+        "Taux de ProfitabilitéRow1": fmt_pct(res.resultat_net / livrable.ca_mensuel)
+        if res is not None and livrable.ca_mensuel else "",
+        "Taux de rentabilitéRow1": fmt_pct(res.resultat_net / b.capitaux_propres)
+        if res is not None and b.capitaux_propres else "",
         "Ratio dindépendance financièreRow1": fmt_pct(b.dette_financiere / b.capitaux_propres) if b.capitaux_propres else "",
         # NB : le template écrit "dautofinancem ent" (espace parasite) — on garde son orthographe exacte.
-        "Ratio de capacité dautofinancem entRow1": "",
+        "Ratio de capacité dautofinancem entRow1": fmt_pct(b.dette_financiere / res.caf)
+        if res is not None and res.caf else "",
     }
     if taux_b_key is not None:
         pass

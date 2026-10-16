@@ -4,6 +4,8 @@ from livrable_finance import (
     build_marges,
     couts_from_cost_study,
     couts_detail_from_cost_study,
+    missing_studies,
+    parse_simplified_result,
     pdf_field_values,
     fmt_fr,
     fmt_pct,
@@ -111,6 +113,38 @@ def test_couts_detail_breakdown():
 def test_format_fr():
     assert fmt_fr(Decimal("3082581.2")) == "3 082 581,20"
     assert fmt_pct(Decimal("0.1935")) == "19,35 %"
+
+
+def test_simplifie_aout_net_et_caf():
+    res = parse_simplified_result({
+        "netResult": 1882635.56, "biensLivraisons": 4433396,
+        "incomeTaxes": 0.0, "amortization": 258166.65,
+        "depreciationProvision": 17140.76,
+    })
+    assert res is not None
+    assert res.resultat_net == Decimal("1882635.56")
+    assert res.caf == Decimal("2157942.97")
+    assert parse_simplified_result({}) is None
+    assert parse_simplified_result(None) is None  # type: ignore[arg-type]
+
+
+def test_pdf_remplit_net_caf_ratios():
+    bilan = build_bilan(BILAN_AOUT)
+    res = parse_simplified_result({
+        "netResult": 1882635.56, "biensLivraisons": 4433396,
+        "incomeTaxes": 0.0, "amortization": 258166.65,
+        "depreciationProvision": 17140.76,
+    })
+    liv = LivrableFinance("Année 1 - Août", bilan, Decimal("4433396"),
+                          Decimal("1882635.56"), Decimal("22307946.04"),
+                          Decimal("7398514.24"), (), resultat=res)
+    vals = pdf_field_values(liv, {}, {})
+    assert vals["Résultat netRow1"] == "1 882 635,56"
+    assert vals["Résultat netRow1_2"] == "1 882 635,56"
+    assert vals["C A FRow1"] == "2 157 942,97"
+    assert vals["Taux de ProfitabilitéRow1"] == "42,46 %"
+    assert vals["Taux de rentabilitéRow1"] == "14,05 %"
+    assert vals["Ratio de capacité dautofinancem entRow1"] == "120,20 %"
 
 
 def test_missing_studies():
