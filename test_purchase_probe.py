@@ -7,12 +7,14 @@ from subakoua_api import SubakouaAPIClient, SubakouaAPIError
 
 
 class FakeNode:
-    def __init__(self, visible=False, text="", attrs=None, scoped_buy=False, on_click=None):
+    def __init__(self, visible=False, text="", attrs=None, scoped_buy=False,
+                 on_click=None, record=None):
         self._visible = visible
         self._text = text
         self._attrs = attrs or {}
         self._scoped_buy = scoped_buy
         self._on_click = on_click
+        self._record = record
         self.clicked = False
 
     def is_visible(self):
@@ -28,6 +30,8 @@ class FakeNode:
         self.clicked = True
         if self._on_click is not None:
             self._on_click()
+        if self._record is not None:
+            self._record.append(self._text)
         return True
 
     def wait_for(self, state=None, timeout=None):
@@ -68,7 +72,7 @@ class FakeLocator:
                            wait_raises=False)
 
     def inner_text(self, timeout=None):
-        return ""
+        return " ".join(n.inner_text() for n in self._nodes)
 
 
 class FakePage:
@@ -77,7 +81,8 @@ class FakePage:
                  period_current="Année 1 - Janvier",
                  start_url="https://subakoua.arkhe.com/companies",
                  links_after_calls=0, password_visible=False,
-                 evaluate_result="__raise__", link_buy_visible=False):
+                 evaluate_result="__raise__", link_buy_visible=False,
+                 period_options=None, body_text=""):
         self.url = start_url
         self.visited = []
         self._buy_visible = buy_visible
@@ -90,8 +95,11 @@ class FakePage:
         self._card_on = card_on
         self._sections = list(sections)
         self._period_current = period_current
+        self._period_options = list(period_options) if period_options is not None else [period_current]
+        self._body_text = body_text
         self._evaluate_result = evaluate_result
         self._link_buy_visible = link_buy_visible
+        self.clicked_texts: list[str] = []
 
     def evaluate(self, expr, arg=None):
         if self._evaluate_result == "__raise__":
@@ -155,6 +163,9 @@ class FakePage:
         return FakeLocator(nodes, wait_raises=False)
 
     def locator(self, sel):
+        if sel == "body":
+            return FakeLocator([FakeNode(True, text=self._body_text)],
+                               wait_raises=False)
         if sel == "input#search-query":
             if self._search_visible:
                 return FakeLocator([FakeNode(True)], wait_raises=False)
@@ -169,7 +180,8 @@ class FakePage:
             return FakeLocator([FakeNode(True, text=self._period_current)],
                                wait_raises=False)
         if "p-select-option-label" in sel:
-            return FakeLocator([FakeNode(True, text=self._period_current)],
+            return FakeLocator([FakeNode(True, text=t, record=self.clicked_texts)
+                                for t in self._period_options],
                                wait_raises=False)
         return FakeLocator(self._nav_nodes() + self._card_nodes(),
                            wait_raises=False)
@@ -193,16 +205,19 @@ def make_client(page):
 
 
 def _no_wait(client):
-    """Attente instantanée : le mécanisme d'attente est couvert ailleurs,
+    """Attentes instantanées : les mécanismes d'attente sont couverts ailleurs,
     ici on valide les chemins sans payer les timeouts négatifs."""
-    real = client._wait_for_study_content
-    client._wait_for_study_content = lambda *a, **k: real(*a, **{**k, "timeout_ms": 50})
+    real_content = client._wait_for_study_content
+    client._wait_for_study_content = lambda *a, **k: real_content(*a, **{**k, "timeout_ms": 50})
+    real_ready = client._wait_for_study_ready
+    client._wait_for_study_ready = lambda *a, **k: real_ready(*a, **{**k, "timeout_ms": 50})
     return client
 
 
 def test_open_study_erreur_diagnostique():
     page = FakePage()
     client = make_client(page)
+    client = _no_wait(client)
     with pytest.raises(SubakouaAPIError) as exc_info:
         client._open_study(page, "peeedccg", "Chiffre d'affaires", "Année 1 - Janvier")
     msg = str(exc_info.value)
@@ -224,6 +239,7 @@ def test_probe_trouve_sans_cliquer():
 def test_probe_introuvable_structure():
     page = FakePage()
     client = make_client(page)
+    client = _no_wait(client)
     out = client.probe_purchase_target("peeedccg", "Année 1 - Janvier")
     assert out["trouvée"] is False
     assert out["via"] == ""
@@ -262,6 +278,7 @@ def test_open_study_replie_marketplace():
         period_current="Année 1 - Janvier",
     )
     client = make_client(page)
+    client = _no_wait(client)
     # Ne lève pas : les routes directes échouent, la zone Études prend le relais.
     client._open_study(page, "productionCostDetailStudy",
                        "Calcul des coûts de production", "Année 1 - Janvier")
@@ -366,6 +383,24 @@ def test_detail_ouvert_si_carte_sans_bouton():
     assert out["marche_via"] != ""
 
 
+def test_select_mois_puis_acheter():
+    page = FakePage(
+        period_current="Année 1 - Août",
+        period_options=["Année 1 - Août", "Année 1 - Janvier"],
+        buy_visible=True,
+    )
+    client = make_client(page)
+    client = _no_wait(client)
+    assert client._navigate_to_study_url_candidates(page, "peeedccg", "Année 1 - Janvier") is True
+    assert "Année 1 - Janvier" in page.clicked_texts
+
+
+def test_attente_prete_sur_specimen():
+    page = FakePage(body_text="SPECIMEN Prix : 50,00 €")
+    client = make_client(page)
+    assert client._wait_for_study_ready(page, timeout_ms=2000) is True
+
+
 def test_lien_acheter_detecte():
     page = FakePage(link_buy_visible=True)
     client = make_client(page)
@@ -407,6 +442,7 @@ def test_sections_dashboard_avant_zone():
 def test_via_texte_remonte():
     page = FakePage()
     client = make_client(page)
+    client = _no_wait(client)
     out = client.probe_purchase_target("peeedccg", "Année 1 - Janvier")
     assert "via_texte" in out
 

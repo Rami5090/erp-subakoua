@@ -563,21 +563,49 @@ class SubakouaAPIClient:
                 pass
         return False
 
-    def _navigate_to_study_url_candidates(self, page: Page, study_id: str, period: str) -> bool:
-        """Ouvre directement une route UI connue pour l'étude, puis clique Acheter.
+    def _wait_for_study_ready(self, page: Page, timeout_ms: int = 8000) -> bool:
+        """Attend que la page d'étude soit stabilisée après changement de mois.
 
-        Priorité à la table ``study_ui_routes.json`` issue de l'audit; le catalogue
-        live reste un fallback si une URL est exposée par l'API. La sélection de
-        période dans le sélecteur UI n'est volontairement plus utilisée ici.
+        Vrai quand un bouton Acheter est visible OU quand le bandeau
+        (SPECIMEN + prix) est monté : dans les deux cas on sait quoi faire.
+        """
+        deadline = time.time() + timeout_ms / 1000.0
+        while True:
+            if self._buy_button_visible(page):
+                return True
+            try:
+                low = (page.locator("body").inner_text(timeout=2000) or "").casefold()
+                if "specimen" in low or "prix :" in low:
+                    return True
+            except Exception:
+                pass
+            if time.time() >= deadline:
+                return False
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                return False
+
+    def _navigate_to_study_url_candidates(self, page: Page, study_id: str, period: str) -> bool:
+        """Ouvre la page de l'étude, sélectionne le mois, puis clique Acheter.
+
+        Le mois dans l'URL ne commute pas la page : seul le sélecteur de mois
+        en haut à droite le fait. Sans lui, on peut atterrir sur un mois déjà
+        acheté (aucun bouton) et conclure à tort que l'étude est introuvable.
         """
         for url in self._study_url_candidates(study_id, period):
             try:
                 self.logger.info(
-                    "Achat UI | route directe | étude=%s | url=%s",
+                    "Achat UI | page étude | étude=%s | url=%s",
                     study_id, url,
                 )
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
                 page.wait_for_timeout(1200)
+                try:
+                    self._select_purchase_period(page, period)
+                except Exception as exc:
+                    self.logger.debug("Sélecteur de mois indisponible %s : %s", url, exc)
+                self._wait_for_study_ready(page)
                 if self._click_buy_visible(page):
                     return True
             except Exception as exc:
@@ -950,6 +978,11 @@ class SubakouaAPIClient:
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
                 page.wait_for_timeout(1200)
+                try:
+                    self._select_purchase_period(page, period)
+                except Exception:
+                    pass
+                self._wait_for_study_ready(page)
                 if self._buy_button_visible(page):
                     via = url
                     break
