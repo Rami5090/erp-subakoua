@@ -476,10 +476,18 @@ with tab_acq:
             try:
                 pw, browser, context, page, api = api_session(cfg, log_name="subakoua_probe")
                 probe_out = []
+                probe_fn = getattr(api, "probe_purchase_target", None)
                 for per in acq_periods:
                     for sid in acq_ids:
+                        if probe_fn is None:
+                            probe_out.append({"period": per, "study_id": sid, "trouvée": False,
+                                              "via": "", "routes_testées": 0,
+                                              "recherche_globale": "?",
+                                              "page_courante": "client API obsolète : le Cloud n'a pas "
+                                                               "redéployé (reboote l'app : ⋮ → Reboot)."})
+                            continue
                         try:
-                            probe_out.append(api.probe_purchase_target(sid, per))
+                            probe_out.append(probe_fn(sid, per))
                         except Exception as exc:
                             probe_out.append({"period": per, "study_id": sid, "trouvée": False,
                                               "via": "", "routes_testées": 0,

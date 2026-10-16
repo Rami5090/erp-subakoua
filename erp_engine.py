@@ -1084,6 +1084,12 @@ else:
 
 auth_setup()  # badge de rôle + connexion utilisateur dans la barre latérale
 
+try:
+    from version_info import git_sha as _git_sha
+    st.sidebar.caption(f"🔖 build {_git_sha()}")
+except Exception:
+    pass
+
 if is_editor():
     _workspaces = ["📊 État des lieux", "📥 Données réelles", "🧠 Centre de décision"]
     _captions = ["Voir les données du mois", "Alimenter l'historique", "Piloter les leviers et simuler"]
