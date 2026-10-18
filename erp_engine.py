@@ -61,6 +61,7 @@ from period_context import (
     describe_row,
     match_period,
     merge_reference,
+    normalize_period,
     pick_reference_row,
     ref_int,
     ref_number,
@@ -904,6 +905,76 @@ def charger_modules_erp_periode(periode):
         return {}
 
 
+def signature_etudes():
+    """Empreinte légère du contenu de `erp_etudes` (sans les payloads).
+
+    Sert de clé de cache : la lecture des payloads n'est refaite que lorsqu'un
+    achat, une synchronisation ou un changement de lisibilité a réellement eu
+    lieu. Aucun délai de péremption n'est nécessaire, donc aucune donnée
+    périmée ne peut être servie juste après un achat.
+    """
+    if engine is None:
+        return ()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT id, periode, study_id, read_allowed FROM erp_etudes ORDER BY id ASC")
+            ).all()
+        return tuple((r[0], str(r[1] or ""), r[2], bool(r[3])) for r in rows)
+    except Exception as exc:
+        diag_ref.alert(f"Lecture `erp_etudes` impossible : {type(exc).__name__}.")
+        return ()
+
+
+@st.cache_data(show_spinner=False)
+def charger_toutes_etudes(_signature):
+    """Toutes les études achetées et lisibles, groupées par période normalisée.
+
+    Une seule requête par changement de contenu : le regroupement se fait en
+    mémoire, ce qui évite à la fois une requête par période et un cache qui
+    servirait des données périmées.
+    """
+    if engine is None or not _signature:
+        return {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT periode, study_id, payload FROM erp_etudes "
+                    "WHERE read_allowed = 1 ORDER BY id ASC"
+                )
+            ).mappings().all()
+    except Exception as exc:
+        diag_ref.alert(f"Lecture `erp_etudes` impossible : {type(exc).__name__}.")
+        return {}
+    groupes: dict[str, dict[str, object]] = {}
+    for r in rows:
+        cle = normalize_period(r.get("periode"))
+        if not cle:
+            continue
+        payload = _unwrap_api_payload(_json_load(r.get("payload", r.get("contenu", {}))))
+        if isinstance(payload, dict) and payload:
+            groupes.setdefault(cle, {})[f"etude_{r.get('study_id')}"] = payload
+    return groupes
+
+
+def charger_etudes_periode(periode, groupes=None):
+    """Studies achetées et lisibles d'UNE période, prêtes pour le moteur financier.
+
+    Les études Subakoua constituent le dossier comptable complet de
+    l'entreprise : elles sont injectées dans le même `period_data` que
+    `erp_donnees` (sous la clé `etude_<study_id>`) afin que
+    `finance_engine` puisse lire le compte de résultat, le bilan, le tableau de
+    trésorerie, l'extrait bancaire et l'échéancier d'emprunt sans saisie.
+
+    Le filtre de période est strict : une étude d'un autre mois n'est jamais
+    lue comme si elle appartenait à M-1.
+    """
+    if groupes is None:
+        groupes = charger_toutes_etudes(signature_etudes())
+    return dict(groupes.get(normalize_period(periode), {}))
+
+
 _TABLES_REFERENCE = {
     "Historique_Equipe", "Parc_Machines_Mensuel", "Decisions_RH_Mensuel",
     "Decisions_Marketing", "Ventes_Historique", "Finances_Mensuelles",
@@ -1012,8 +1083,12 @@ def _etat_financier_exploitable(state):
     )
 
 
-def _etat_financier_pour_periode(tour_ref, tour_cible):
-    """État financier extrait d'UNE période (BFR reconstitué via ΔBFR si besoin)."""
+def _etat_financier_pour_periode(tour_ref, tour_cible, etudes=None):
+    """État financier extrait d'UNE période (BFR reconstitué via ΔBFR si besoin).
+
+    ``etudes`` : mapping période normalisée -> études, chargé une seule fois
+    par l'appelant et réutilisé pour la période précédente.
+    """
     periode = period_for_tour(tour_ref)
     period_data = {
         "etat_actuel": {
@@ -1021,6 +1096,7 @@ def _etat_financier_pour_periode(tour_ref, tour_cible):
             "banque_assurance": charger_contenu_erp_periode(periode, "banque_assurance"),
         }
     }
+    period_data.update(charger_etudes_periode(periode, etudes))
     state = extract_financial_state(periode, period_data, target_tour_id=tour_cible)
     # Pour les périodes où Subakoua ne fournit qu'une variation du BFR via l'IFRS,
     # on reconstitue le niveau de BFR à partir de la période précédente + ΔBFR.
@@ -1032,6 +1108,7 @@ def _etat_financier_pour_periode(tour_ref, tour_cible):
                 "banque_assurance": charger_contenu_erp_periode(periode_prev, "banque_assurance"),
             }
         }
+        data_prev.update(charger_etudes_periode(periode_prev, etudes))
         state = complete_bfr_from_previous_state(state, extract_financial_state(periode_prev, data_prev))
     return state, periode
 
@@ -1039,13 +1116,17 @@ def _etat_financier_pour_periode(tour_ref, tour_cible):
 def charger_etat_financier_m1(tour_id_precedent, tour_id_cible):
     """Retourne (état financier de la période de référence, saisies manuelles, libellé, tour utilisé).
 
-    Priorités :
-      1. Banque / Expert-comptable extraits depuis erp_donnees pour la période M-1.
-      2. Si M-1 est absent ou vide : dernier tour ANTÉRIEUR exploitable (jamais le futur).
-         Le repli est signalé dans `diag_ref` : les mois intermédiaires ne sont alors pas projetés.
-      3. Finances_Mensuelles si des données réelles y ont été saisies.
+    Sources, par ordre de priorité, pour la période M-1 uniquement :
+      1. Les études achetées et lisibles (`erp_etudes`) : compte de résultat,
+         bilan, tableau de trésorerie, extrait bancaire, échéancier d'emprunt.
+         Elles constituent le dossier comptable complet de l'entreprise.
+      2. Les extraits `erp_donnees` (Expert-comptable / Banque) lorsqu'ils
+         existent : une valeur déjà présente n'est jamais écrasée par l'étude.
+      3. Si M-1 est absent ou vide : dernier tour ANTÉRIEUR exploitable
+         (jamais le futur). Le repli est signalé dans `diag_ref`.
       4. Aucune constante comptable injectée silencieusement.
     """
+    etudes = charger_toutes_etudes(signature_etudes())
     # Tour 1 : le vrai M-1 est l'ouverture d'Année 1. Le dump ne contient pas
     # une période "Année 0 - Décembre" complète, mais l'état de janvier contient
     # directement le solde bancaire d'ouverture et le détail nécessaire au BFR d'ouverture.
@@ -1054,6 +1135,7 @@ def charger_etat_financier_m1(tour_id_precedent, tour_id_cible):
         expert = charger_contenu_erp_periode(periode_ouverture, "expert_comptable")
         banque = charger_contenu_erp_periode(periode_ouverture, "banque_assurance")
         period_data = {"etat_actuel": {"expert_comptable": expert, "banque_assurance": banque}}
+        period_data.update(charger_etudes_periode(periode_ouverture, etudes))
         state = extract_financial_state(periode_ouverture, period_data, target_tour_id=1)
         bfr_ouverture = opening_bfr_from_current_state(state)
         if bfr_ouverture is not None:
@@ -1063,7 +1145,7 @@ def charger_etat_financier_m1(tour_id_precedent, tour_id_cible):
         return state, manuel, "Ouverture Année 1", 1
 
     tour_ref = int(tour_id_precedent)
-    state, periode = _etat_financier_pour_periode(tour_ref, tour_id_cible)
+    state, periode = _etat_financier_pour_periode(tour_ref, tour_id_cible, etudes)
     tour_utilise = tour_ref
 
     # Si les données de M-1 sont incomplètes, replier automatiquement sur les
@@ -1071,7 +1153,7 @@ def charger_etat_financier_m1(tour_id_precedent, tour_id_cible):
     # Les données sont TOUJOURS chargées depuis M-1 (ou M-2, etc.), JAMAIS depuis la période simulée.
     if not _etat_financier_exploitable(state):
         for tour_test in range(tour_ref - 1, 0, -1):
-            state_test, periode_test = _etat_financier_pour_periode(tour_test, tour_id_cible)
+            state_test, periode_test = _etat_financier_pour_periode(tour_test, tour_id_cible, etudes)
             if _etat_financier_exploitable(state_test):
                 state, periode, tour_utilise = state_test, periode_test, tour_test
                 break
@@ -1925,8 +2007,10 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         deprec_historique = float(etat_fin_m1.depreciations) if etat_fin_m1.depreciations is not None else None
 
         # Transparence : aucune constante de calage comptable n'est injectée.
-        for warning in etat_fin_m1.warnings:
-            st.warning(f"⚠️ Source financière : {warning}")
+        # Les alertes de source financière concernent le livrable : elles sont
+        # collectées ici et regroupées en fin de page (section « Livrable »),
+        # pour ne pas interrompre la lecture des indicateurs.
+        alertes_livrable = [f"Source financière : {w}" for w in etat_fin_m1.warnings]
         if tour_id_actif == 1:
             st.info(
                 "ℹ️ Tour 1 : le moteur utilise l'ouverture réelle de janvier pour la banque, l'épargne, la dette et le BFR ; "
@@ -1961,48 +2045,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         if not treso_ouverture_connue:
             diag_ref.alert("Solde bancaire d'ouverture introuvable (ni extrait M-1, ni extrait du mois simulé) : saisis-le ci-dessus, sinon la trésorerie part de 0 € et n'est PAS fiable.")
 
-        # ================================================================
-        # BLOC D'ACHAT DE DOCUMENTS MANQUANTS
-        # ================================================================
-        st.divider()
-        st.subheader("🛒 Achat de documents pour compléter le livrable")
-
-        st.info(
-            "👉 Pour acheter les documents manquants, allez sur la page **🕷️ Scraper** "
-            "(onglet « Acquérir »). Sélectionnez-y la période M-1 (pas la période simulée) "
-            "et les études manquantes, puis lancez l'achat. "
-            "Les données seront ensuite disponibles ici après synchronisation."
-        )
-
-        from livrable_finance import REQUIRED_STUDIES
-        import document_optimizer as doc_optimizer
-
-        profiles = doc_optimizer.load_profiles()
-        catalog = {sid: {"label": p.label, "price": p.price} for sid, p in profiles.items()}
-
-        missing = []
-        for req in REQUIRED_STUDIES:
-            sid = req["study_id"]
-            info = catalog.get(sid, {})
-            price = float(info.get("price", 0) or 0)
-            missing.append({
-                "study_id": sid,
-                "label": str(info.get("label", sid)),
-                "price": price,
-                "pourquoi": req["pourquoi"],
-            })
-
-        missing = sorted(missing, key=lambda x: x["price"])
-
-        total_missing = sum(m["price"] for m in missing)
-        col_a, col_b, col_c = st.columns(3)
-        col_a.metric("Documents requis", f"{len(missing)}")
-        col_b.metric("Coût total estimé", f"{total_missing:,.0f} €".replace(",", " "))
-        col_c.metric("Période à compléter", f"{period_for_tour(tour_id_precedent)}")
-
-        with st.expander("📋 Documents manquants et pourquoi les acheter", expanded=False):
-            for doc in missing:
-                st.write(f"• **{doc['label']}** ({doc['price']:,.0f} €) : {doc['pourquoi']}".replace(",", " "))
+        # Le récapitulatif des documents à acheter est affiché en fin de page
+        # (section « Livrable & alertes »), avec les alertes de source financière.
 
         with st.expander("📊 Portefeuille de titres", expanded=(mode_pilotage == "🔧 Expert")):
             st.caption("Saisissez uniquement les quantités achetées/vendues. Les prix unitaires restent ceux du moteur.")
@@ -2451,4 +2495,65 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.info(f"Trésorerie Fin de Mois Estimée : **{float(projection.tresorerie_finale):,.2f} €**")
         else:
             st.error(f"⚠️ DÉCOUVERT BANCAIRE ESTIMÉ : **{float(projection.tresorerie_finale):,.2f} €**")
+
+        # ================================================================
+        # SECTION LIVRABLE — placée en fin de page
+        # ------------------------------------------------------------
+        # Tout ce qui concerne la constitution du livrable (documents à
+        # acheter, sources financières manquantes) est regroupé ici, après les
+        # indicateurs et les projections, pour que la lecture des résultats
+        # ne soit jamais interrompue par des alertes de synchronisation.
+        # ================================================================
+        st.divider()
+        st.subheader("📦 Livrable — sources & documents manquants")
+
+        if alertes_livrable:
+            st.warning(
+                f"{len(alertes_livrable)} source(s) financière(s) manquante(s) pour **{period_for_tour(tour_id_precedent)}**. "
+                "Les indicateurs concernés ci-dessus sont partiels tant que ces documents ne sont pas achetés."
+            )
+            for _alerte in alertes_livrable:
+                st.warning(f"⚠️ {_alerte}")
+        else:
+            st.success(
+                f"✅ Toutes les sources financières de **{period_for_tour(tour_id_precedent)}** "
+                "sont disponibles : aucun document manquant."
+            )
+
+        from livrable_finance import REQUIRED_STUDIES
+        import document_optimizer as doc_optimizer
+
+        profiles = doc_optimizer.load_profiles()
+        catalog = {sid: {"label": p.label, "price": p.price} for sid, p in profiles.items()}
+
+        missing = []
+        for req in REQUIRED_STUDIES:
+            sid = req["study_id"]
+            info = catalog.get(sid, {})
+            price = float(info.get("price", 0) or 0)
+            missing.append({
+                "study_id": sid,
+                "label": str(info.get("label", sid)),
+                "price": price,
+                "pourquoi": req["pourquoi"],
+            })
+
+        missing = sorted(missing, key=lambda x: x["price"])
+        total_missing = sum(m["price"] for m in missing)
+
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Documents requis", f"{len(missing)}")
+        col_b.metric("Coût total estimé", f"{total_missing:,.0f} €".replace(",", " "))
+        col_c.metric("Période à compléter", f"{period_for_tour(tour_id_precedent)}")
+
+        st.info(
+            "👉 Pour acheter ces documents, allez sur la page **🕷️ Scraper** (onglet « Acquérir »). "
+            f"Sélectionnez-y la période **{period_for_tour(tour_id_precedent)}** (M-1, pas la période simulée), "
+            "cochez les études manquantes, puis lancez l'achat. Les données seront disponibles ici "
+            "après synchronisation."
+        )
+
+        with st.expander("📋 Documents du livrable et raison de l'achat", expanded=False):
+            for doc in missing:
+                st.write(f"• **{doc['label']}** ({doc['price']:,.0f} €) : {doc['pourquoi']}".replace(",", " "))
 

@@ -361,6 +361,99 @@ def _balance_value(row: Mapping[str, Any], label: str) -> Optional[Decimal]:
     return None
 
 
+# =============================================================
+# SOURCES « ÉTUDES ACHETÉES » (erp_etudes)
+# -------------------------------------------------------------
+# Les études achetées sur Subakoua sont des payloads d'API plats, indexés par
+# code PCG (« mp310 », « cl411 », « detfr401 », « po215 »…). Elles constituent
+# le dossier comptable complet de l'entreprise : elles sont donc lues ici comme
+# une source native, au même titre que le dump historique, et non comme un
+# simple complément. Chaque poste reste rattaché à la clé qui le porte dans
+# l'étude : aucune valeur n'est inventée, aucune constante n'est injectée.
+# =============================================================
+
+STUDY_BILAN_DETAILLE = "peeedsbidt"
+STUDY_BILAN_INITIAL = "initialBalanceSheet"
+STUDY_RESULTAT_DETAILLE = "peeedscrdl"
+STUDY_RESULTAT_SIMPLIFIE = "peeedscrsm"
+STUDY_TRESORERIE = "peeedsftt"
+STUDY_IFRS = "ifrsStatementOfCashFlow"
+STUDY_BANQUE = "bankStatements"
+STUDY_EMPRUNT = "pebaemecta"
+STUDY_ACHATS = "peeedcahm"
+STUDY_CHARGES_EXTERNES = "peeedcahsx"
+STUDY_DEPRECIATIONS = "pcgToIfrsDepreciation"
+STUDY_RESULTATS_ENTREPRISE = "companyResults"
+STUDY_IMPOT_SOCIETES = "peeefsisp"
+STUDY_TVA = "peeefstvp"
+
+
+def _pick_path(node: Any, path: Sequence[str]) -> Any:
+    """Valeur au chemin fourni, ou None. Les nœuds « {value, display} » sont aplatis."""
+    current = node
+    for part in path:
+        if isinstance(current, Mapping) and part in current:
+            current = current[part]
+        else:
+            return None
+    if isinstance(current, Mapping) and "value" in current and "display" in current:
+        return current["value"]
+    return current
+
+
+def study_payload(period_data: Any, *study_ids: str) -> Mapping[str, Any]:
+    """Payload brut d'une étude achetée, retrouvée par son identifiant `studyId`."""
+    if not isinstance(period_data, Mapping) or not study_ids:
+        return {}
+    for study_id in study_ids:
+        node = period_data.get(f"etude_{study_id}")
+        if isinstance(node, Mapping) and node:
+            return node
+    wanted = {s.casefold() for s in study_ids}
+    for key, node in period_data.items():
+        if not str(key).startswith("etude_") or not isinstance(node, Mapping):
+            continue
+        found = _pick_path(node, ("studyId",))
+        if isinstance(found, str) and found.casefold() in wanted:
+            return node
+    return {}
+
+
+def _study_num(node: Any, *paths: Sequence[str]) -> Optional[Decimal]:
+    """Premier montant chiffré trouvé parmi les chemins proposés."""
+    for path in paths:
+        value = _pick_path(node, path)
+        if value is None or isinstance(value, bool):
+            continue
+        parsed = to_decimal(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _study_sum(node: Any, *paths: Sequence[str]) -> Optional[Decimal]:
+    """Somme des montants trouvés ; None si aucun n'est lisible."""
+    total = Decimal("0")
+    found = False
+    for path in paths:
+        value = _study_num(node, path)
+        if value is not None:
+            total += value
+            found = True
+    return money(total) if found else None
+
+
+def _income_detail(period_data: Any) -> Mapping[str, Any]:
+    """Bloc « compte de résultat » de l'exercice courant dans les études achetées."""
+    for study_id in (STUDY_RESULTAT_DETAILLE, STUDY_RESULTAT_SIMPLIFIE):
+        node = study_payload(period_data, study_id)
+        if not node:
+            continue
+        detail = _pick_path(node, ("incomeStatementDetailed",))
+        return detail if isinstance(detail, Mapping) and detail else node
+    return {}
+
+
 def extract_bank_balances(period_data: Mapping[str, Any]) -> tuple[Optional[Decimal], Optional[Decimal]]:
     """Soldes bancaires initial / final depuis Banque et assurance → Extrait bancaire.
 
@@ -376,9 +469,18 @@ def extract_bank_balances(period_data: Mapping[str, Any]) -> tuple[Optional[Deci
         row = _find_balance_mapping(extrait) if extrait is not None else None
         if row is None and banque:
             row = _find_balance_mapping(banque)
-    if row is None:
-        return None, None
-    return _balance_value(row, "solde initial"), _balance_value(row, "solde final")
+    if row is not None:
+        initial, final = _balance_value(row, "solde initial"), _balance_value(row, "solde final")
+        if initial is not None or final is not None:
+            return initial, final
+    # Étude « Extrait bancaire » achetée : soldes d'ouverture et de clôture.
+    releve = study_payload(period_data, STUDY_BANQUE)
+    if releve:
+        return (
+            _study_num(releve, ("initialBankAmount",), ("initialBank",)),
+            _study_num(releve, ("finalBankAmount",), ("finalBank",)),
+        )
+    return None, None
 
 
 def extract_savings_balance(period_data: Mapping[str, Any]) -> Optional[Decimal]:
@@ -386,20 +488,41 @@ def extract_savings_balance(period_data: Mapping[str, Any]) -> Optional[Decimal]
     for row in rows:
         if str(row.get("Actif", "")).strip().lower() == "compte épargne":
             return to_decimal(row.get("Net exercice N", row.get("Brut")))
+    # Étude « Bilan version détaillée » : poste 215 « placements sur livret ».
+    bilan = study_payload(period_data, STUDY_BILAN_DETAILLE)
+    if bilan:
+        return _study_num(bilan, ("po215Net",), ("po215",))
+    # Bilan d'ouverture : l'épargne y porte son propre agrégat.
+    initial = study_payload(period_data, STUDY_BILAN_INITIAL)
+    if initial:
+        return _study_num(
+            initial,
+            ("otherCurrentAssets.savings.amountAfterDepreciation",),
+            ("currentAsset.savings.amountAfterDepreciation",),
+            ("po215Net",),
+            ("po215",),
+        )
     return None
 
 
 def extract_savings_opening_balance(period_data: Mapping[str, Any], final_balance: Optional[Decimal] = None) -> Optional[Decimal]:
     """Reconstruit le solde du compte épargne à l'ouverture de la période.
 
-    Le tableau de trésorerie détaille les placements/retraits en impact banque.
-    Un placement de -500000 € côté banque correspond donc à +500000 € côté épargne.
-    Les revenus financiers sont volontairement exclus de la reconstruction du
-    stock d'épargne : ils apparaissent comme produit/flux distinct dans Subakoua.
+    Le bilan acheté publie directement le poste 215 de l'exercice précédent,
+    qui est donc l'ouverture exacte. À défaut, le tableau de trésorerie
+    détaillé sert de repli : un placement de -500000 € côté banque correspond
+    donc à +500000 € côté épargne. Les revenus financiers sont volontairement
+    exclus de la reconstruction du stock d'épargne : ils apparaissent comme
+    produit/flux distinct dans Subakoua.
     """
     final_value = final_balance if final_balance is not None else extract_savings_balance(period_data)
     if final_value is None:
         return None
+    bilan = study_payload(period_data, STUDY_BILAN_DETAILLE)
+    if bilan:
+        opening = _study_num(bilan, ("po215NetPrec",), ("po215Prec",))
+        if opening is not None:
+            return money(opening)
     rows = _rows_at(period_data, ("etat_actuel", "expert_comptable", "Synthèse", "Tableau de trésorerie méthode indirecte", "Tableau_1"))
     placement_bank = Decimal("0")
     retrait_bank = Decimal("0")
@@ -417,6 +540,17 @@ def extract_savings_opening_balance(period_data: Mapping[str, Any], final_balanc
                 retrait_bank = value
                 found = True
     if not found:
+        # Mouvements d'épargne observés sur le relevé bancaire acheté.
+        releve = study_payload(period_data, STUDY_BANQUE)
+        if releve:
+            placement = _study_num(releve, ("savingsAccountInvestments",))
+            retrait = _study_num(releve, ("savingsAccountWithdrawal",))
+            if placement is not None or retrait is not None:
+                return money(
+                    final_value
+                    + (placement or Decimal("0"))
+                    - (retrait or Decimal("0"))
+                )
         return None
     return money(final_value + placement_bank - retrait_bank)
 
@@ -432,17 +566,23 @@ def extract_debt_balance(period_data: Mapping[str, Any]) -> Optional[Decimal]:
             if value is not None:
                 total += value
                 found = True
-    return money(total) if found else None
+    if found:
+        return money(total)
+    # Étude « Bilan version détaillée » : 16 « emprunts et dettes assimilées ».
+    bilan = study_payload(period_data, STUDY_BILAN_DETAILLE)
+    if bilan:
+        return _study_sum(bilan, ("empr16",), ("emprLibre",))
+    return None
 
 
 def extract_tax_liabilities(period_data: Mapping[str, Any]) -> dict[str, Optional[Decimal]]:
-    """Extrait les dettes fiscales directement du bilan détaillé.
+    """Extrait les dettes fiscales directement du bilan / de l'étude IS.
 
     Ces montants sont des passifs de clôture, distincts des flux de règlement
     observés sur le relevé bancaire.
     """
-    rows = _rows_at(period_data, ("etat_actuel", "expert_comptable", "Synthèse", "Bilan détaillé", "Tableau_1"))
     out: dict[str, Optional[Decimal]] = {"tva_collectee": None, "impot_benefices": None}
+    rows = _rows_at(period_data, ("etat_actuel", "expert_comptable", "Synthèse", "Bilan détaillé", "Tableau_1"))
     for row in rows:
         label = str(row.get("Passif", "")).strip().lower()
         value = to_decimal(row.get("Exercice N", row.get("Montant")))
@@ -450,6 +590,23 @@ def extract_tax_liabilities(period_data: Mapping[str, Any]) -> dict[str, Optiona
             out["tva_collectee"] = value
         elif label == "impôt sur les bénéfices":
             out["impot_benefices"] = value
+    if out["tva_collectee"] is None:
+        bilan = study_payload(period_data, STUDY_BILAN_DETAILLE)
+        if bilan:
+            # 4456 = TVA collectée (sortie du cash-flow Subakoua).
+            out["tva_collectee"] = _study_num(bilan, ("tva4456",))
+    if out["tva_collectee"] is None:
+        tva = study_payload(period_data, STUDY_TVA)
+        if tva:
+            out["tva_collectee"] = _study_num(tva, ("totalVatOutput",))
+    if out["impot_benefices"] is None:
+        impot = study_payload(period_data, STUDY_IMPOT_SOCIETES)
+        if impot:
+            out["impot_benefices"] = _study_num(impot, ("isdu444",), ("profitLoss",))
+    if out["impot_benefices"] is None:
+        bilan = study_payload(period_data, STUDY_BILAN_DETAILLE)
+        if bilan:
+            out["impot_benefices"] = _study_num(bilan, ("isdu444",))
     return out
 
 
@@ -526,6 +683,12 @@ def extract_capitaux_propres(period_data: Mapping[str, Any]) -> Optional[Decimal
     for row in rows:
         if str(row.get("Passif", "")).strip().lower() == "total capitaux propres":
             return to_decimal(row.get("Exercice N"))
+    bilan = study_payload(period_data, STUDY_BILAN_DETAILLE)
+    if bilan:
+        return _study_num(bilan, ("totalCapitauxPropres",))
+    resultats = study_payload(period_data, STUDY_RESULTATS_ENTREPRISE)
+    if resultats:
+        return _study_num(resultats, ("equity",), ("cumEquity",))
     return None
 
 
@@ -672,7 +835,76 @@ def extract_income_statement(period_data: Mapping[str, Any]) -> dict[str, Option
                 result[field] = value
         if label.startswith("résultat net comptable"):
             result["resultat_net"] = value
+
+    if any(value is None for value in result.values()):
+        _complete_income_statement_from_studies(period_data, result)
     return result
+
+
+def _complete_income_statement_from_studies(
+    period_data: Mapping[str, Any],
+    result: dict[str, Optional[Decimal]],
+) -> None:
+    """Complète le compte de résultat depuis les études comptables achetées.
+
+    AACE = achats de matières + achats de produits + variation des stocks de
+    matières + services extérieurs + autres charges d'exploitation. Les Studies
+    « Achats et variations de stocks » et « Autres achats et charges externes »
+    publient les mêmes postes poste par poste ; on ne les additionne donc pas
+    deux fois : le compte de résultat reste la source, les Studies détaillées
+    ne servent que de repli poste par poste.
+    """
+    detail = _income_detail(period_data)
+    if detail:
+        # Les champs « productsInStock » et « materialsStockVariation » ne sont
+        # pas des achats : seule la variation de stock entre dans les AACE.
+        if result["aace"] is None:
+            result["aace"] = _study_sum(
+                detail,
+                ("materialsPurchases",),
+                ("productsPurchases",),
+                ("materialsStockVariation",),
+                ("externalServicesCharges",),
+                ("otherExploitationCharges",),
+            )
+        if result["depreciations"] is None:
+            result["depreciations"] = _study_num(detail, ("depreciationProvision",), ("dotationAmortization",))
+        if result["dotations_amortissements"] is None:
+            result["dotations_amortissements"] = _study_num(detail, ("amortization",))
+        if result["resultat_net"] is None:
+            result["resultat_net"] = _study_num(detail, ("netResult",), ("totalNetResult",))
+
+    if result["aace"] is None:
+        achats = study_payload(period_data, STUDY_ACHATS)
+        charges = study_payload(period_data, STUDY_CHARGES_EXTERNES)
+        total_achats = _study_num(achats, ("totalTotalAchats",))
+        variation_stocks = _study_num(achats, ("totalMp603",))
+        if total_achats is None and variation_stocks is None:
+            variation_stocks = _study_num(charges, ("variationDueToProductionServiceQuality",))
+        total_externes = _study_num(charges, ("totChargesExternes",))
+        parts = [v for v in (total_achats, variation_stocks, total_externes) if v is not None]
+        if parts:
+            result["aace"] = money(sum(parts, Decimal("0")))
+
+    if result["depreciations"] is None or result["dotations_amortissements"] is None:
+        dotations = study_payload(period_data, STUDY_DEPRECIATIONS)
+        if dotations:
+            if result["depreciations"] is None:
+                result["depreciations"] = _study_num(
+                    dotations,
+                    ("pcgToIfrsAdministrationExpensesDepreciationCharges.depreciationCharges",),
+                    ("pcgToIfrsCostOfSalesDepreciationCharges.stockedMaterialsDepreciation.objectsDepreciationCharges",),
+                )
+            if result["dotations_amortissements"] is None:
+                result["dotations_amortissements"] = _study_num(
+                    dotations,
+                    ("pcgToIfrsCostOfSalesDepreciation.costOfSalesTotalDepreciation",),
+                )
+
+    if result["resultat_net"] is None:
+        resultats = study_payload(period_data, STUDY_RESULTATS_ENTREPRISE)
+        if resultats:
+            result["resultat_net"] = _study_num(resultats, ("results",))
 
 
 def extract_ratios(period_data: Mapping[str, Any]) -> dict[str, Optional[Decimal]]:
@@ -684,7 +916,31 @@ def extract_ratios(period_data: Mapping[str, Any]) -> dict[str, Optional[Decimal
         if isinstance(rows, list) and rows and isinstance(rows[0], Mapping):
             out[f"{prefix}_ca"] = to_decimal(rows[0].get("Chiffre d'affaires"))
             out[f"{prefix}_resultat_avant_impot"] = to_decimal(rows[0].get("Résultat avant impôt"))
+    if out.get("mensuel_ca") is not None and out.get("mensuel_resultat_avant_impot") is not None:
+        return out
+    out.update({k: v for k, v in _ratios_from_studies(period_data).items() if out.get(k) is None})
     return out
+
+
+def _ratios_from_studies(period_data: Mapping[str, Any]) -> dict[str, Optional[Decimal]]:
+    """CA et résultat avant impôt mensuel / cumulé depuis les études achetées.
+
+    L'étude « Résultats » (tableau de bord entreprise) publie le CA, le résultat
+    net et leurs cumulés annuels ; le compte de résultat publie le résultat avant
+    impôt. On lit chaque grandeur à sa source plutôt que de la reconstituer.
+    """
+    detail = _income_detail(period_data)
+    dashboard = study_payload(period_data, STUDY_RESULTATS_ENTREPRISE)
+    out: dict[str, Optional[Decimal]] = {}
+    if detail:
+        out["mensuel_ca"] = _study_num(detail, ("netTurnover",), ("competitiveMarketTurnover",), ("turnover",))
+        out["mensuel_resultat_avant_impot"] = _study_num(detail, ("totalResultBeforeTaxes",))
+    if dashboard:
+        if out.get("mensuel_ca") is None:
+            out["mensuel_ca"] = _study_num(dashboard, ("turnover",))
+        out["cumule_ca"] = _study_num(dashboard, ("cumTurnover",))
+        out["cumule_resultat_avant_impot"] = _study_num(dashboard, ("cumResults",))
+    return {k: v for k, v in out.items() if v is not None}
 
 
 
@@ -707,7 +963,7 @@ def extract_detailed_bfr(period_data: Mapping[str, Any]) -> dict[str, Optional[D
         ("etat_actuel", "expert_comptable", "Synthèse", "Tableau de trésorerie méthode indirecte", "Tableau_1"),
     )
     if not rows:
-        return {}
+        return _detailed_bfr_from_studies(period_data)
 
     current_assets = current_liabilities = variation_comptable = variation_cash = None
     components: dict[str, Optional[Decimal]] = {}
@@ -740,6 +996,69 @@ def extract_detailed_bfr(period_data: Mapping[str, Any]) -> dict[str, Optional[D
         "variation_comptable": money(variation_comptable) if variation_comptable is not None else None,
         "variation_cash": money(variation_cash) if variation_cash is not None else None,
         **components,
+    }
+
+
+def _detailed_bfr_from_studies(period_data: Mapping[str, Any]) -> dict[str, Optional[Decimal]]:
+    """BFR détaillé reconstruit depuis le tableau de trésorerie et le bilan achetés.
+
+    Les Studies « Expert-comptable » publient déjà les deux agrégats du BFR
+    (actifs / passifs d'exploitation circulants) et sa variation. On ne les
+    recalcule donc pas : on les lit tels quels, et on n'en dérive les postes
+    élémentaires que si le tableau ne les publie pas — auquel cas on préfère
+    le bilan détaillé, qui porte exactement les mêmes postes sous forme de
+    soldes de clôture.
+
+    Convention de signe Subakoua : les dotations d'actifs circulants sont
+    positives, les dotations de passifs circulants sont négatives.
+    """
+    tresorerie = study_payload(period_data, STUDY_TRESORERIE)
+    if not tresorerie:
+        return {}
+
+    aktifs = _study_num(tresorerie, ("sumActifsExpCirDot",))
+    passifs = _study_num(tresorerie, ("sumPassifsExploitationCirculantsDot",))
+    if aktifs is None or passifs is None:
+        return {}
+
+    bilan = study_payload(period_data, STUDY_BILAN_DETAILLE)
+    stocks_matieres = stocks_produits = clients = tva_deductible = acomptes_is = None
+    dettes_fournisseurs = dettes_fiscales = stocks_en_cours = None
+    if bilan:
+        # Nettoyage du plan de comptes Subakoua :
+        #   31/37 = stocks (matières / en-cours / produits finis)
+        #   411    = clients          416 = acomptes fournisseurs (0 ici)
+        #   444    = État, TVA (le cash-flow la range parmi les actifs du BFR)
+        #   401    = fournisseurs    4457 = TVA due aux tiers
+        stocks_matieres = _study_num(bilan, ("mp310Net",), ("mp310",))
+        stocks_produits = _study_num(bilan, ("pf355Net",), ("pf355",))
+        clients = _study_num(bilan, ("cl411",), ("cl411Net",))
+        acomptes_is = _study_num(bilan, ("aco444",), ("isdu444",))
+        tva_deductible = _study_num(bilan, ("tva4456",))
+        dettes_fournisseurs = _study_num(bilan, ("detfr401",))
+        dettes_fiscales = _study_num(bilan, ("tva4457",))
+        stocks_en_cours = money(
+            sum(
+                (v for v in (_study_num(bilan, ("encoursa",)), _study_num(bilan, ("encoursb",))) if v is not None),
+                Decimal("0"),
+            )
+        )
+
+    variation = _study_num(tresorerie, ("variationBfr",))
+    return {
+        "bfr": money(aktifs + passifs),
+        "actifs": money(aktifs),
+        "passifs": money(passifs),
+        "variation_comptable": variation,
+        "variation_cash": money(-variation) if variation is not None else None,
+        "Stocks matières": stocks_matieres,
+        "Stocks d'en-cours": stocks_en_cours,
+        "Stocks de produits": stocks_produits,
+        "Clients": clients,
+        "Acomptes sur IS": acomptes_is,
+        "Etat, TVA déductible (hors immobilisations)": tva_deductible,
+        "Fournisseurs": dettes_fournisseurs,
+        "Dettes fiscales et sociales (hors immobilisations)": dettes_fiscales,
     }
 
 
@@ -854,7 +1173,49 @@ def extract_indirect_cashflow(period_data: Mapping[str, Any]) -> dict[str, Optio
             val = to_decimal(row.get("Colonne_6"))
             if val is not None:
                 out["Flux net de trésorerie"] = val
+    if not out:
+        return _cashflow_from_studies(period_data)
+    out.update({k: v for k, v in _cashflow_from_studies(period_data).items() if k not in out or out[k] is None})
     return out
+
+
+def _cashflow_from_studies(period_data: Mapping[str, Any]) -> dict[str, Optional[Decimal]]:
+    """Flux de trésorerie depuis le tableau de trésorerie / l'IFRS achetés.
+
+    L'étude IFRS publie les trois agrégats d'activité et le flux net, dans la
+    nomenclature attendue par ``extract_financial_state``.
+    """
+    ifrs = study_payload(period_data, STUDY_IFRS)
+    tresorerie = study_payload(period_data, STUDY_TRESORERIE)
+    out: dict[str, Optional[Decimal]] = {}
+    if ifrs:
+        out["Variation du BFR"] = _study_num(ifrs, ("operatingActivities.variationsInWorkingCapital",))
+        out["Cash flow sur activités courantes"] = _study_num(ifrs, ("operatingActivities.total",))
+        out["Acquisition de machines en pleine propriété ou crédit-bail"] = _study_num(
+            ifrs, ("investingActivities.goodsPurchases.total",)
+        )
+        out["Cash flow sur activités de financement"] = _study_num(ifrs, ("financingActivities.total",))
+        out["Flux net de trésorerie"] = _study_num(ifrs, ("netFlow",), ("finalTreasury",))
+    if tresorerie:
+        if out.get("Variation du BFR") is None:
+            out["Variation du BFR"] = _study_num(tresorerie, ("variationBfr",))
+        if out.get("Cash flow sur activités courantes") is None:
+            out["Cash flow sur activités courantes"] = _study_num(
+                tresorerie,
+                ("resultatNet",),
+                ("fluxNetTresorerie",),
+            )
+        if out.get("Acquisition de machines en pleine propriété ou crédit-bail") is None:
+            out["Acquisition de machines en pleine propriété ou crédit-bail"] = _study_num(
+                tresorerie, ("fluxAcquisitionImmoCorporelles",)
+            )
+        if out.get("Cash flow sur activités de financement") is None:
+            out["Cash flow sur activités de financement"] = _study_num(
+                tresorerie, ("fluxNetTresorerieLieFinancement",)
+            )
+        if out.get("Flux net de trésorerie") is None:
+            out["Flux net de trésorerie"] = _study_num(tresorerie, ("fluxNetTresorerie",))
+    return {k: v for k, v in out.items() if v is not None}
 
 
 def complete_bfr_from_previous_state(current: FinancialState, previous: FinancialState) -> FinancialState:
@@ -874,6 +1235,7 @@ def opening_bfr_from_current_state(state: FinancialState) -> Optional[Decimal]:
 
 
 def extract_loan_schedule(period_data: Mapping[str, Any], target_tour_id: int) -> dict[str, Optional[Decimal]]:
+    vide = {"mensualite": None, "interets": None, "amortissement": None, "capital_fin": None}
     rows = _rows_at(period_data, ("etat_actuel", "banque_assurance", "Banque", "Tableau d'amortissement", "Tableau_1"))
     target_code = target_schedule_code(target_tour_id)
     for row in rows:
@@ -884,7 +1246,65 @@ def extract_loan_schedule(period_data: Mapping[str, Any], target_tour_id: int) -
                 "amortissement": to_decimal(row.get("Amortissement (€)")),
                 "capital_fin": to_decimal(row.get("Capital restant dû fin du mois (€)")),
             }
-    return {"mensualite": None, "interets": None, "amortissement": None, "capital_fin": None}
+    return _loan_schedule_from_studies(period_data, target_tour_id) or vide
+
+
+def _loan_schedule_from_studies(period_data: Mapping[str, Any], target_tour_id: int) -> dict[str, Optional[Decimal]]:
+    """Échéance du mois cible depuis l'étude « Tableau d'amortissement » achetée.
+
+    L'étude publie la grille complète des 120 échéances avec, pour chacune,
+    l'annuité, les intérêts, le capital amorti et le capital restant dû. On y
+    lit donc la ligne du mois simulé : l'échéance n'est jamais extrapolée.
+    """
+    node = study_payload(period_data, STUDY_EMPRUNT)
+    if not node:
+        return {}
+    table = _pick_path(node, ("currentMonthlyLoanAmortizationTable",))
+    if not isinstance(table, Mapping):
+        return {}
+    lignes = table.get("depreciationRows")
+    if not isinstance(lignes, list):
+        return {}
+    target_code = target_schedule_code(target_tour_id)
+    for ligne in lignes:
+        if not isinstance(ligne, Mapping):
+            continue
+        code = _loan_row_code(ligne)
+        if code is None or code != target_code:
+            continue
+        return {
+            "mensualite": _study_num(ligne, ("annuite",)),
+            "interets": _study_num(ligne, ("interet",)),
+            "amortissement": _study_num(ligne, ("ammortissement",)),
+            "capital_fin": _study_num(ligne, ("crdFin",)),
+        }
+    return {}
+
+
+def _loan_row_code(ligne: Mapping[str, Any]) -> Optional[int]:
+    """Convertit une ligne d'échéancier en code « mois / année » Subakoua.
+
+    L'étude publie « numeroMoisFormate » au format « MM / AA » où AA est
+    l'année en base 0 (00 = année 1), ce qui donne directement le même code que
+    ``target_schedule_code`` (mois * 100 + année). On retombe sur le numéro de
+    mois si le libellé formaté est absent.
+    """
+    numero = ligne.get("numeroMois")
+    if numero is None:
+        return None
+    try:
+        mois = int(numero)
+    except (TypeError, ValueError):
+        return None
+    libelle = str(ligne.get("numeroMoisFormate", "")).strip()
+    annee_txt, sep, annee0_txt = libelle.partition("/")
+    if sep:
+        try:
+            annee = int(annee_txt) * 100 + int(annee0_txt.strip()) + 1
+        except ValueError:
+            return mois * 100 + 1
+        return annee
+    return mois * 100 + 1
 
 
 def extract_financial_state(period: str, period_data: Mapping[str, Any], target_tour_id: Optional[int] = None) -> FinancialState:
