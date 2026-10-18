@@ -420,12 +420,17 @@ def extract_own_sales_history(
     all_periods = ordered_periods(set(period_data) | set(study_data))
     for period in all_periods:
         values = {}
-        payload = study_data.get(period, {}).get("ensaacvm")
-        if isinstance(payload, dict):
+        # 1. Recherche dans toutes les études achetées de la période
+        payloads = study_data.get(period, {}) or {}
+        for study_id, payload in payloads.items():
+            if not isinstance(payload, Mapping):
+                continue
             values = _extract_sales_from_api_payload(payload)
+            if values:
+                break
 
         if not values:
-            # Legacy : recherche explicite de la section "Ventes mensuelles"
+            # 2. Legacy : recherche explicite de la section "Ventes mensuelles"
             # dans tout le contenu de la période. On évite ainsi de confondre
             # une table de stocks (qui contient aussi les noms des produits)
             # avec les ventes.
@@ -435,7 +440,7 @@ def extract_own_sales_history(
                     break
 
         if not values:
-            # Dernier secours : uniquement des objets où le contexte indique réellement
+            # 3. Dernier secours : uniquement des objets où le contexte indique réellement
             # des ventes. Aucune table générique de stocks ne doit être acceptée.
             for candidate in _recursive_find_product_rows(period_data.get(period, {})):
                 mapped = {}
@@ -592,17 +597,18 @@ def _extract_company_from_api_studies(
     """Extrait les données de l'entreprise propre depuis les études achetées.
 
     Les études achetées contiennent toutes les informations de l'entreprise
-    (ventes, stocks, trésorerie, parts de marché, etc.). Cette fonction les
-    agrège depuis les modules ``etude_<study_id>`` injectés dans period_data.
+    (ventes, stocks, trésorerie, parts de marché, etc.). Cette fonction
+    parcourt récursivement le JSON de chaque étude pour trouver les données
+    pertinentes, sans dépendre d'un identifiant d'étude particulier.
     """
     period_modules = period_data.get(period, {}) if isinstance(period_data, Mapping) else {}
     if not isinstance(period_modules, Mapping):
         return None
 
-    ventes: dict[str, float] = {}
-    ca: float | None = None
-    parts_marche: float | None = None
-    stocks: dict[str, Any] | None = None
+    meilleures_ventes: dict[str, float] = {}
+    meilleure_ca: float | None = None
+    meilleure_pm: float | None = None
+    meilleurs_stocks: dict[str, Any] | None = None
 
     for module_name, payload in period_modules.items():
         if not module_name.startswith("etude_"):
@@ -611,51 +617,58 @@ def _extract_company_from_api_studies(
             continue
         payload = _unwrap_api_payload(payload)
 
-        # Étude de comptabilité/finances : ventes par produit
-        sid = module_name[len("etude_"):]
-        if sid.startswith("ensaacvm") or "ensaacvm" in sid:
-            s = _extract_sales_from_api_payload(payload)
-            if s:
-                ventes = {k: max(v, ventes.get(k, 0.0)) for k, v in s.items()}
+        # --- Ventes par produit ---
+        ventes = _extract_sales_from_api_payload(payload)
+        if ventes:
+            for k, v in ventes.items():
+                meilleures_ventes[k] = max(v, meilleures_ventes.get(k, 0.0))
 
-        # Étude de monitoring : parts de marché, CA, stocks
-        if sid.startswith("monitoring") or "monitoring" in sid:
-            ms = _num(payload.get("marketShares"))
-            if ms is not None:
-                parts_marche = ms / 100.0 if ms > 1 else ms
-            turnover = payload.get("monitoringTurnoverData") or {}
-            if isinstance(turnover, Mapping):
-                arr = turnover.get("monthlySalesTurnover")
-                if isinstance(arr, list) and arr:
-                    v = _num(arr[-1])
-                    if v is not None:
-                        ca = v
-            stks = payload.get("remainingStocks")
-            if isinstance(stks, Mapping):
-                stocks = stks
+        # --- CA (chiffre d'affaires) ---
+        ca = _num(payload.get("chiffreAffaires", payload.get("ca", payload.get("turnover"))))
+        if ca is not None:
+            meilleure_ca = ca if meilleure_ca is None else max(meilleure_ca, ca)
 
-    if not ventes and ca is None and parts_marche is None:
+        # monitoringTurnoverData (sous-forme tableau mensuel)
+        turnover = payload.get("monitoringTurnoverData") or {}
+        if isinstance(turnover, Mapping):
+            arr = turnover.get("monthlySalesTurnover")
+            if isinstance(arr, list) and arr:
+                v = _num(arr[-1])
+                if v is not None:
+                    meilleure_ca = v if meilleure_ca is None else max(meilleure_ca, v)
+
+        # --- Parts de marché ---
+        ms = _num(payload.get("marketShares", payload.get("partMarché", payload.get("part_marche"))))
+        if ms is not None:
+            meilleure_pm = ms / 100.0 if ms > 1 else ms
+
+        # --- Stocks ---
+        stks = payload.get("remainingStocks", payload.get("stocks", payload.get("inventaire")))
+        if isinstance(stks, Mapping):
+            meilleurs_stocks = stks
+
+    total_ventes = float(sum(meilleures_ventes.values())) if meilleures_ventes else 0.0
+    if meilleure_ca is None and total_ventes > 0:
+        meilleure_ca = total_ventes
+
+    if not meilleures_ventes and meilleure_ca is None and meilleure_pm is None:
         return None
-
-    total_ventes = float(sum(ventes.values())) if ventes else 0.0
-    if ca is None and total_ventes > 0:
-        ca = total_ventes
 
     return {
         "entreprise": own_company_number,
         "ventes": total_ventes,
-        "part_marche": parts_marche,
+        "part_marche": meilleure_pm,
         "part_marche_valeur": None,
         "prix": None,
         "qualite": None,
-        "chiffre_affaires": ca,
+        "chiffre_affaires": meilleure_ca,
         "publicite": None,
         "publicite_marque": None,
         "publicite_produit": None,
         "axe_1": None,
         "axe_2": None,
         "is_own": True,
-        "stocks": stocks,
+        "stocks": meilleurs_stocks,
     }
 
 
