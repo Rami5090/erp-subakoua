@@ -1527,11 +1527,14 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     ref_rh, _rh_scrape = merge_reference(ref_rh_scrape, ref_rh_sql.data, tour_id_precedent)
 
     ordres_ref = {k: int(decisions_erp["production"].get(k, volumes_ref[k])) for k in volumes_ref}
+    # Afficher les alertes de décisions uniquement en mode Expert ; en mode Pilote,
+    # on n'affiche rien car ces données peuvent être absentes sans bloquer la simulation.
     for _ligne in decisions_erp["report"]:
-        (diag_ref.alert if ("calibrer" in _ligne or "VIDE" in _ligne) else diag_ref.note)(_ligne)
-    if _mkg_scrape:
+        if mode_pilotage == "🔧 Expert":
+            (diag_ref.alert if ("calibrer" in _ligne or "VIDE" in _ligne) else diag_ref.note)(_ligne)
+    if _mkg_scrape and mode_pilotage == "🔧 Expert":
         diag_ref.note("Marketing : valeurs issues de l'état actuel d'audit (accueil Subakoua), complétées par la ligne SQL M-1 si absent.")
-    if _rh_scrape:
+    if _rh_scrape and mode_pilotage == "🔧 Expert":
         diag_ref.note("RH : valeurs issues de l'état actuel d'audit (accueil Subakoua), complétées par la ligne SQL M-1 si absent.")
 
     for _table, _ref in (
