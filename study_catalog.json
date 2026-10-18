@@ -743,9 +743,9 @@
       "strategic_only": false,
       "mapping_basis": "api_keys+label",
       "mapping_confidence": 0.95,
-      "url_template": "",
-      "ui_source": "",
-      "ui_confidence": 0
+      "url_template": "https://subakoua.arkhe.com/companies/partners/accountant/ifrs/ifrsStatementOfCashFlow/{month}/MONTHLY",
+      "ui_source": "user_provided",
+      "ui_confidence": 1.0
     },
     {
       "study_id": "ifrsStatementOfFinancialPosition",

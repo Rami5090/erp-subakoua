@@ -167,8 +167,18 @@ def _compute_pdm_scenario(
                         # build_study_data expects a specific format
                 # Build study_data dict for extract_competitive_snapshot
                 study_data = build_study_data([dict(r) for r in study_rows if r.get("read_allowed")])
-        except Exception:
+                # Diagnostic : afficher les études acquises disponibles
+                acquired_ids = sorted({r.get("study_id") for r in study_rows if r.get("read_allowed")})
+                acquired_periods = sorted({r.get("periode") for r in study_rows if r.get("read_allowed")})
+                if acquired_ids:
+                    st.info(f"📚 {len(acquired_ids)} étude(s) acquise(s) et lisible(s) dans erp_etudes : {', '.join(acquired_ids[:10])}{'...' if len(acquired_ids) > 10 else ''}")
+                    if periode_m1 not in acquired_periods:
+                        st.warning(f"⚠️ Les études acquises sont pour les périodes {', '.join(acquired_periods)}, mais le centre de décision utilise {periode_m1}. Les données acquises pour une période différente de M-1 ne sont pas prises en compte.")
+                else:
+                    st.warning("⚠️ Aucune étude lisible dans erp_etudes. Les documents achetés mais pas encore lisibles (période M+1) ne sont pas pris en compte.")
+        except Exception as exc:
             study_data = {}
+            st.warning(f"Lecture erp_etudes impossible : {type(exc).__name__}: {exc}")
 
         # 3. Extraire le snapshot concurrentiel pour la période de référence (M-1)
         competitive = extract_competitive_snapshot(

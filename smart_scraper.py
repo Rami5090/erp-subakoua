@@ -181,38 +181,64 @@ def execute_purchase_plan(
 
 
 def ensure_smart_tables(connection) -> None:
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS erp_etudes (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                periode VARCHAR(50) NOT NULL,
-                study_id VARCHAR(120) NOT NULL,
-                label VARCHAR(255) NULL,
-                module VARCHAR(80) NULL,
-                price DECIMAL(12,2) DEFAULT 0,
-                source_endpoint TEXT NULL,
-                read_allowed BOOLEAN DEFAULT FALSE,
-                payload JSON NOT NULL,
-                fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY uq_erp_etude (periode, study_id)
-            ) ENGINE=InnoDB
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS erp_scraper_runs (
-                id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                run_id VARCHAR(50) NOT NULL UNIQUE,
-                started_at DATETIME NOT NULL,
-                finished_at DATETIME NULL,
-                mode VARCHAR(50) NOT NULL,
-                selected_periods JSON NULL,
-                selected_studies JSON NULL,
-                estimated_cost DECIMAL(12,2) DEFAULT 0,
-                actual_cost DECIMAL(12,2) DEFAULT 0,
-                status VARCHAR(50) NOT NULL,
-                details JSON NULL
-            ) ENGINE=InnoDB
-        """)
-    connection.commit()
+    """Crée les tables smart si elles n'existent pas.
+
+    Sur Streamlit Cloud, l'utilisateur MySQL peut ne pas avoir le droit
+    CREATE TABLE. Dans ce cas on vérifie d'abord si les tables existent
+    déjà ; si oui, on ne fait rien (pas d'erreur). Si elles n'existent
+    pas et qu'on ne peut pas les créer, on lève une erreur claire.
+    """
+    log = logging.getLogger("subakoua_smart_scraper")
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS erp_etudes (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    periode VARCHAR(50) NOT NULL,
+                    study_id VARCHAR(120) NOT NULL,
+                    label VARCHAR(255) NULL,
+                    module VARCHAR(80) NULL,
+                    price DECIMAL(12,2) DEFAULT 0,
+                    source_endpoint TEXT NULL,
+                    read_allowed BOOLEAN DEFAULT FALSE,
+                    payload JSON NOT NULL,
+                    fetched_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_erp_etude (periode, study_id)
+                ) ENGINE=InnoDB
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS erp_scraper_runs (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    run_id VARCHAR(50) NOT NULL UNIQUE,
+                    started_at DATETIME NOT NULL,
+                    finished_at DATETIME NULL,
+                    mode VARCHAR(50) NOT NULL,
+                    selected_periods JSON NULL,
+                    selected_studies JSON NULL,
+                    estimated_cost DECIMAL(12,2) DEFAULT 0,
+                    actual_cost DECIMAL(12,2) DEFAULT 0,
+                    status VARCHAR(50) NOT NULL,
+                    details JSON NULL
+                ) ENGINE=InnoDB
+            """)
+        connection.commit()
+    except Exception as exc:
+        # Si les tables existent déjà, CREATE TABLE IF NOT EXISTS ne devrait
+        # pas échouer. Si ça échoue quand même (droits CREATE TABLE manquants
+        # mais tables déjà présentes), on vérifie leur existence avant de râler.
+        log.warning("ensure_smart_tables : %s — vérification de l'existence des tables.", exc)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 FROM erp_etudes LIMIT 1")
+                cursor.execute("SELECT 1 FROM erp_scraper_runs LIMIT 1")
+            log.info("Tables erp_etudes et erp_scraper_runs existent déjà : OK.")
+        except Exception as exc2:
+            raise RuntimeError(
+                "Les tables smart (erp_etudes, erp_scraper_runs) sont absentes et "
+                "l'utilisateur MySQL n'a pas le droit de les créer. "
+                "Créez-les manuellement ou accordez CREATE TABLE. "
+                f"Détail : {exc2}"
+            ) from exc2
 
 
 def store_fetch_result(connection, result: StudyFetchResult, *, label: str = "") -> None:

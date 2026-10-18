@@ -747,40 +747,42 @@ def extract_competitive_snapshot(
                         rec[key] = value
         return sorted(merged.values(), key=lambda r: int(r["entreprise"]))
 
-    # Ne cherche les études API que si la source legacy ne contient pas les concurrents.
-    if not has_competitor:
-        api_periods = [p for p in ordered_periods(study_data) if period_index(p) <= period_index(period)]
-        competition_section_names = [
-            "Performance commerciale", "Facteurs clés", "Décisions marketing",
-            "Évolution marketing", "Comparaison des parts de marché",
-            "Comparaison des publicités de marque",
-            "Comparaison des ventes des produits finis", "Comparaison des prix de vente",
-        ]
-        for pp in reversed(api_periods):
-            payloads = study_data.get(pp, {}) or {}
-            groups: list[list[dict[str, Any]]] = []
-            for study_id, payload in payloads.items():
-                if not isinstance(payload, Mapping):
-                    continue
-                sid = str(study_id).lower()
-                named_sections = _find_sections(payload, competition_section_names)
-                # Les identifiants pevc sont le préfixe des études comparatives du jeu.
-                # Pour les autres études, ne parse que les sections concurrentielles explicites.
-                if sid.startswith("pevc"):
-                    candidate_rows = _competition_rows_from_any(payload, own_company_number)
+    # Les études API (acquises via le scraper) sont toujours consultées pour
+    # compléter/enrichir les données concurrentielles, même si la source legacy
+    # contient déjà des concurrents. Sans cela, une étude acquise (ex. pevcvipm)
+    # n'est jamais prise en compte dans le centre de décision.
+    api_periods = [p for p in ordered_periods(study_data) if period_index(p) <= period_index(period)]
+    competition_section_names = [
+        "Performance commerciale", "Facteurs clés", "Décisions marketing",
+        "Évolution marketing", "Comparaison des parts de marché",
+        "Comparaison des publicités de marque",
+        "Comparaison des ventes des produits finis", "Comparaison des prix de vente",
+    ]
+    for pp in reversed(api_periods):
+        payloads = study_data.get(pp, {}) or {}
+        groups: list[list[dict[str, Any]]] = []
+        for study_id, payload in payloads.items():
+            if not isinstance(payload, Mapping):
+                continue
+            sid = str(study_id).lower()
+            named_sections = _find_sections(payload, competition_section_names)
+            # Les identifiants pevc sont le préfixe des études comparatives du jeu.
+            # Pour les autres études, ne parse que les sections concurrentielles explicites.
+            if sid.startswith("pevc"):
+                candidate_rows = _competition_rows_from_any(payload, own_company_number)
+                if candidate_rows:
+                    groups.append(candidate_rows)
+            elif named_sections:
+                for section in named_sections:
+                    candidate_rows = _competition_rows_from_any(section, own_company_number)
                     if candidate_rows:
                         groups.append(candidate_rows)
-                elif named_sections:
-                    for section in named_sections:
-                        candidate_rows = _competition_rows_from_any(section, own_company_number)
-                        if candidate_rows:
-                            groups.append(candidate_rows)
-            api_rows = merge_company_rows(*groups) if groups else []
-            api_has_competitors = any(int(r.get("entreprise", -1)) != own_company_number for r in api_rows)
-            if api_has_competitors:
-                rows = merge_company_rows(rows, api_rows)
-                period = pp
-                break
+        api_rows = merge_company_rows(*groups) if groups else []
+        api_has_competitors = any(int(r.get("entreprise", -1)) != own_company_number for r in api_rows)
+        if api_has_competitors:
+            rows = merge_company_rows(rows, api_rows)
+            period = pp
+            break
 
     def _has_other_company(group: Sequence[Mapping[str, Any]]) -> bool:
         for r in group or []:

@@ -306,19 +306,26 @@ class SubakouaAPIClient:
     def _select_purchase_period(self, page: Page, period: str) -> None:
         selector = "okw-select-period span[role='combobox']"
         loc = page.locator(selector).first
-        # Sélecteur best-effort : 5 s max, sinon on continue sans (le contexte
-        # de période est généralement conservé entre sections du portail).
-        loc.wait_for(state="visible", timeout=5000)
-        current = " ".join(loc.inner_text().split())
-        wanted = self.period_label(period)
-        if wanted in current:
+        # Sélecteur best-effort : 2 s max, sinon on continue sans (le contexte
+        # de période est généralement conservé entre sections du portail, et
+        # certaines pages intègrent déjà la période dans l'URL).
+        try:
+            loc.wait_for(state="visible", timeout=2000)
+        except Exception:
             return
-        loc.click()
-        page.wait_for_timeout(250)
-        option = page.locator("div.p-select-option-label").filter(has_text=wanted).last
-        option.wait_for(state="visible", timeout=5000)
-        option.click()
-        page.wait_for_timeout(1200)
+        try:
+            current = " ".join(loc.inner_text().split())
+            wanted = self.period_label(period)
+            if wanted in current:
+                return
+            loc.click()
+            page.wait_for_timeout(250)
+            option = page.locator("div.p-select-option-label").filter(has_text=wanted).last
+            option.wait_for(state="visible", timeout=2000)
+            option.click()
+            page.wait_for_timeout(1200)
+        except Exception:
+            pass
 
     @staticmethod
     def _click_first_visible(locator, timeout: int = 5000) -> bool:
@@ -617,6 +624,23 @@ class SubakouaAPIClient:
                     urls.append(url)
         except Exception as exc:
             self.logger.debug("Extraction routes catalogue %s : %s", study_id, exc)
+
+        # Cas spécial : pevcvipm (Comparaison des parts de marché) a 4 documents
+        # distincts dans la zone veille concurrentielle. On génère les 4 URLs
+        # pour ne pas rester bloqué sur l'URL de base.
+        if study_id == "pevcvipm" and period:
+            try:
+                mid = self.month_id(self.period_label(period))
+                team = (self.player.team_name or "").strip().upper().replace(" ", "_")
+                if team:
+                    base = "https://subakoua.arkhe.com/companies/partners/concurrency/commercialComparison"
+                    for doc in ("productSalesComparison", "turnoverComparison",
+                                "marketShares", "salesToMarketAverageComparison"):
+                        url = f"{base}/{doc}/{mid}/MONTHLY/{team}"
+                        if url not in urls:
+                            urls.append(url)
+            except Exception as exc:
+                self.logger.debug("URLs pevcvipm non générées : %s", exc)
         return urls
 
     def _buy_button_visible(self, page: Page, scope=None) -> bool:
@@ -1000,10 +1024,12 @@ class SubakouaAPIClient:
         Ordre : routes directes (rapide) → zone Études du portail avec période
         (chemin d'achat normal) → recherche globale → DOM courant.
         """
-        if period and self._navigate_to_study_url_candidates(page, study_id, period):
-            return
+        # Priorité au bouton d'achat (zone Études + période + carte) plutôt qu'à la
+        # navigation par URL, qui ne déclenche pas toujours le dialogue d'achat.
         market_ok, market_detail = self._buy_from_marketplace(page, study_id, label, period)
         if market_ok:
+            return
+        if period and self._navigate_to_study_url_candidates(page, study_id, period):
             return
         if self._search_global_study(page, study_id, label):
             return
