@@ -182,10 +182,22 @@ def _compute_pdm_scenario(
             warnings.append("Aucune donnée concurrentielle trouvée pour l'ancrage")
             return result
 
-        # 4. Construire l'historique de calibration
+        # 4. Construire l'historique de calibration à partir des données d'audit (état actuel)
+        #    Pas de dépendance aux décisions précédentes (M-1) qui sont grisées/figées : on lit
+        #    directement l'état actuel observé dans erp_donnees et erp_etudes.
+        def snap_for_period(p):
+            return extract_competitive_snapshot(
+                period_data,
+                own_company_number=own_company,
+                study_data=study_data,
+                anchor_period=p,
+            )
+
         hist = build_competitive_history(
-            {p: {"monitoring": period_data.get(p, {}).get("monitoring", {})} for p in period_data},
+            period_data,
             own_company,
+            snap_for_period,
+            periods=list(period_data.keys()),
         )
 
         # 5. Calibrer la réponse descriptive
@@ -1494,17 +1506,36 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     ref_mkg = charger_ligne_reference("Decisions_Marketing", tour_id_precedent)
     volumes_ref, ref_ventes = charger_volumes_reference(tour_id_precedent)
 
-    # Décisions scrapées (accueil Subakoua) : comblent les mois non saisis dans les tables SQL.
+    # Décisions scrapées (accueil Subakoua / état actuel d'audit) : prioritaires sur les
+    # décisions précédentes (M-1) car les pages de décisions sont grisées/figées dans le
+    # centre de décision. Les tables SQL M-1 ne servent que de complément pour les champs
+    # absents de l'état actuel.
     decisions_erp = charger_decisions_erp(period_for_tour(tour_id_precedent))
-    ref_mkg, _mkg_scrape = merge_reference(ref_mkg, decisions_erp["marketing"], tour_id_precedent)
-    ref_rh, _rh_scrape = merge_reference(ref_rh, decisions_erp["rh"], tour_id_precedent)
+    ref_mkg_sql = charger_ligne_reference("Decisions_Marketing", tour_id_precedent)
+    ref_rh_sql = charger_ligne_reference("Decisions_RH_Mensuel", tour_id_precedent)
+
+    # Le scrapé (état actuel) est le ref principal ; le SQL M-1 ne complète que les trous.
+    ref_mkg_scrape = ReferenceRow(
+        data=decisions_erp["marketing"] or {},
+        tour_demande=tour_id_precedent,
+        tour_utilise=tour_id_precedent if decisions_erp["marketing"] else None,
+    )
+    ref_rh_scrape = ReferenceRow(
+        data=decisions_erp["rh"] or {},
+        tour_demande=tour_id_precedent,
+        tour_utilise=tour_id_precedent if decisions_erp["rh"] else None,
+    )
+
+    ref_mkg, _mkg_scrape = merge_reference(ref_mkg_scrape, ref_mkg_sql.data, tour_id_precedent)
+    ref_rh, _rh_scrape = merge_reference(ref_rh_scrape, ref_rh_sql.data, tour_id_precedent)
+
     ordres_ref = {k: int(decisions_erp["production"].get(k, volumes_ref[k])) for k in volumes_ref}
     for _ligne in decisions_erp["report"]:
         (diag_ref.alert if ("calibrer" in _ligne or "VIDE" in _ligne) else diag_ref.note)(_ligne)
     if _mkg_scrape:
-        diag_ref.note("Marketing M-1 : valeurs issues des décisions scrapées (accueil Subakoua), complétées par la ligne SQL antérieure.")
+        diag_ref.note("Marketing : valeurs issues de l'état actuel d'audit (accueil Subakoua), complétées par la ligne SQL M-1 si absent.")
     if _rh_scrape:
-        diag_ref.note("RH M-1 : valeurs issues des décisions scrapées (accueil Subakoua), complétées par la ligne SQL antérieure.")
+        diag_ref.note("RH : valeurs issues de l'état actuel d'audit (accueil Subakoua), complétées par la ligne SQL M-1 si absent.")
 
     for _table, _ref in (
         ("Historique_Equipe", ref_hist), ("Parc_Machines_Mensuel", ref_machines),
