@@ -583,6 +583,82 @@ def _extract_api_monitoring(period: str, study_data: Mapping[str, Mapping[str, M
             }
     return None
 
+
+def _extract_company_from_api_studies(
+    period_data: Mapping[str, Mapping[str, Any]],
+    period: str,
+    own_company_number: int,
+) -> dict[str, Any] | None:
+    """Extrait les données de l'entreprise propre depuis les études achetées.
+
+    Les études achetées contiennent toutes les informations de l'entreprise
+    (ventes, stocks, trésorerie, parts de marché, etc.). Cette fonction les
+    agrège depuis les modules ``etude_<study_id>`` injectés dans period_data.
+    """
+    period_modules = period_data.get(period, {}) if isinstance(period_data, Mapping) else {}
+    if not isinstance(period_modules, Mapping):
+        return None
+
+    ventes: dict[str, float] = {}
+    ca: float | None = None
+    parts_marche: float | None = None
+    stocks: dict[str, Any] | None = None
+
+    for module_name, payload in period_modules.items():
+        if not module_name.startswith("etude_"):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        payload = _unwrap_api_payload(payload)
+
+        # Étude de comptabilité/finances : ventes par produit
+        sid = module_name[len("etude_"):]
+        if sid.startswith("ensaacvm") or "ensaacvm" in sid:
+            s = _extract_sales_from_api_payload(payload)
+            if s:
+                ventes = {k: max(v, ventes.get(k, 0.0)) for k, v in s.items()}
+
+        # Étude de monitoring : parts de marché, CA, stocks
+        if sid.startswith("monitoring") or "monitoring" in sid:
+            ms = _num(payload.get("marketShares"))
+            if ms is not None:
+                parts_marche = ms / 100.0 if ms > 1 else ms
+            turnover = payload.get("monitoringTurnoverData") or {}
+            if isinstance(turnover, Mapping):
+                arr = turnover.get("monthlySalesTurnover")
+                if isinstance(arr, list) and arr:
+                    v = _num(arr[-1])
+                    if v is not None:
+                        ca = v
+            stks = payload.get("remainingStocks")
+            if isinstance(stks, Mapping):
+                stocks = stks
+
+    if not ventes and ca is None and parts_marche is None:
+        return None
+
+    total_ventes = float(sum(ventes.values())) if ventes else 0.0
+    if ca is None and total_ventes > 0:
+        ca = total_ventes
+
+    return {
+        "entreprise": own_company_number,
+        "ventes": total_ventes,
+        "part_marche": parts_marche,
+        "part_marche_valeur": None,
+        "prix": None,
+        "qualite": None,
+        "chiffre_affaires": ca,
+        "publicite": None,
+        "publicite_marque": None,
+        "publicite_produit": None,
+        "axe_1": None,
+        "axe_2": None,
+        "is_own": True,
+        "stocks": stocks,
+    }
+
+
 def _latest_available_period(study_data: Mapping[str, Any], anchor_period: str | None = None) -> str | None:
     periods = ordered_periods(study_data.keys())
     if not periods:
@@ -805,6 +881,14 @@ def extract_competitive_snapshot(
 
     own = next((r for r in rows if r.get("is_own") or _num(r.get("entreprise")) == own_company_number), None)
     own_synthetic = False
+
+    # Extraire les données de l'entreprise depuis les études achetées
+    # quand period_data (legacy) ne contient rien pour cette période.
+    if own is None:
+        company_from_studies = _extract_company_from_api_studies(period_data, period, own_company_number)
+        if company_from_studies:
+            rows = merge_company_rows(rows, [company_from_studies])
+            own = company_from_studies
     total_market = None
     share = None
     if rows:

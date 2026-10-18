@@ -33,6 +33,8 @@ from forecast_engine import (
     extract_own_sales_history,
     extract_structural_seasonality,
     rolling_forecast_12m,
+    _unwrap_api_payload,
+    _json_load,
 )
 from optimizer_engine import (
     build_competitive_history,
@@ -154,7 +156,11 @@ def _compute_pdm_scenario(
 
         period_data = build_period_data(legacy_data)
 
-        # 2. Charger les données API (erp_etudes) si disponibles
+        # 2. Charger les données API (erp_etudes) si disponibles.
+        # Les études achetées contiennent TOUTES les informations de l'entreprise
+        # (ventes, stocks, trésorerie, production, parts de marché, etc.).
+        # Elles sont injectées dans period_data pour que le centre de décision
+        # puisse fonctionner SANS données legacy (erp_donnees).
         study_data = {}
         try:
             with engine.connect() as conn:
@@ -163,9 +169,11 @@ def _compute_pdm_scenario(
                 ).mappings().all()
                 for r in study_rows:
                     if r.get("read_allowed"):
-                        period_data.setdefault(r["periode"], {})
-                        # build_study_data expects a specific format
-                # Build study_data dict for extract_competitive_snapshot
+                        pid = r["periode"]
+                        sid = r["study_id"]
+                        payload = _unwrap_api_payload(_json_load(r.get("payload", r.get("contenu", {}))))
+                        # Injecter l'étude dans period_data sous forme de module
+                        period_data.setdefault(pid, {})[f"etude_{sid}"] = payload
                 study_data = build_study_data([dict(r) for r in study_rows if r.get("read_allowed")])
                 # Diagnostic : afficher les études acquises disponibles
                 acquired_ids = sorted({r.get("study_id") for r in study_rows if r.get("read_allowed")})
