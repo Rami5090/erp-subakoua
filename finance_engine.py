@@ -39,6 +39,8 @@ class FinancialState:
     solde_epargne: Optional[Decimal] = None
     solde_epargne_ouverture: Optional[Decimal] = None
     aace: Optional[Decimal] = None
+    achats_matieres: Optional[Decimal] = None
+    aace_inclut_achats: bool = False
     depreciations: Optional[Decimal] = None
     dotations_amortissements: Optional[Decimal] = None
     resultat_net: Optional[Decimal] = None
@@ -817,6 +819,7 @@ def extract_income_statement(period_data: Mapping[str, Any]) -> dict[str, Option
 
     result: dict[str, Optional[Decimal]] = {
         "aace": None,
+        "achats_matieres": None,
         "depreciations": None,
         "dotations_amortissements": None,
         "resultat_net": None,
@@ -838,7 +841,25 @@ def extract_income_statement(period_data: Mapping[str, Any]) -> dict[str, Option
 
     if any(value is None for value in result.values()):
         _complete_income_statement_from_studies(period_data, result)
+    # Les AACE du compte de résultat Subakoua englobent les achats de matières
+    # (classes 60/61) ; le libellé du dump historique, lui, ne couvre que les
+    # charges externes. On le mémorise pour que la projection puisse trancher.
+    result["aace_inclut_achats"] = _aace_inclut_achats(period_data, result)
     return result
+
+
+def _aace_inclut_achats(period_data: Mapping[str, Any], result: Mapping[str, Any]) -> bool:
+    """Les AACE lues contiennent-elles déjà les achats de matières ?
+
+    Vrai si elles viennent du compte de résultat des études achetées (où le
+    total des charges d'exploitation additionne achats, variation de stocks et
+    services extérieurs). Faux si elles viennent du libellé « autres achats et
+    charges externes » du dump, qui ne porte que la classe 62.
+    """
+    detail = _income_detail(period_data)
+    if not detail:
+        return False
+    return _study_sum(detail, ("materialsPurchases",), ("productsPurchases",)) is not None
 
 
 def _complete_income_statement_from_studies(
@@ -869,6 +890,10 @@ def _complete_income_statement_from_studies(
             )
         if result["depreciations"] is None:
             result["depreciations"] = _study_num(detail, ("depreciationProvision",), ("dotationAmortization",))
+        if result["achats_matieres"] is None:
+            # Achats de matières (classes 60/61) : à distinguer des services
+            # extérieurs, qui ne relèvent pas du plan d'approvisionnement.
+            result["achats_matieres"] = _study_sum(detail, ("materialsPurchases",), ("productsPurchases",))
         if result["dotations_amortissements"] is None:
             result["dotations_amortissements"] = _study_num(detail, ("amortization",))
         if result["resultat_net"] is None:
@@ -885,6 +910,12 @@ def _complete_income_statement_from_studies(
         parts = [v for v in (total_achats, variation_stocks, total_externes) if v is not None]
         if parts:
             result["aace"] = money(sum(parts, Decimal("0")))
+
+    # Repli poste par poste : l'etude « Achats et variations de stocks »
+    # publie le total d'achats meme quand le compte de resultat est absent.
+    if result["achats_matieres"] is None:
+        achats = study_payload(period_data, STUDY_ACHATS)
+        result["achats_matieres"] = _study_num(achats, ("totalTotalAchats",))
 
     if result["depreciations"] is None or result["dotations_amortissements"] is None:
         dotations = study_payload(period_data, STUDY_DEPRECIATIONS)
@@ -1352,6 +1383,8 @@ def extract_financial_state(period: str, period_data: Mapping[str, Any], target_
         solde_epargne=savings,
         solde_epargne_ouverture=savings_opening,
         aace=income["aace"],
+        achats_matieres=income.get("achats_matieres"),
+        aace_inclut_achats=bool(income.get("aace_inclut_achats")),
         depreciations=income["depreciations"],
         dotations_amortissements=income["dotations_amortissements"],
         resultat_net=income["resultat_net"],
@@ -1520,6 +1553,8 @@ def calculate_projection(
     credit_fournisseur: bool,
     bfr_mois: Optional[Any],
     bfr_m1: Optional[Any],
+    achats_matieres_historique: Optional[Any] = None,
+    aace_inclut_achats: Optional[bool] = None,
     achats_titres: Any = 0,
     ventes_titres: Any = 0,
     placement: Any = 0,
@@ -1566,9 +1601,48 @@ def calculate_projection(
 
     dotations_totales = dot_base + invest.cout_ht / DUREE_AMORTISSEMENT_MOIS
     maintenance_nouvelles_machines = invest.cout_ht * Decimal("0.005")
+
+    # Les AACE de M-1 peuvent déjà englober les achats de matières (définition
+    # large du compte de résultat Subakoua : classes 60 + 61 + 62) ou au
+    # contraire ne porter que les charges externes (définition étroite du dump
+    # historique, libellé « autres achats et charges externes »). Le montant
+    # d'AACE de M-1 n'est donc comparable aux achats du MRP que si l'on sait
+    # laquelle des deux définitions s'applique — c'est le rôle du paramètre
+    # `aace_inclut_achats` :
+    #   * large  -> on ne garde que la part hors achats et on substitue le MRP ;
+    #   * étroite -> les deux montants sont disjoints, on les additionne ;
+    #   * inconnu -> on additionne et on le signale, plutôt que de supprimer
+    #               silencieusement la décision d'achat du joueur.
+    achats_m1 = to_decimal(achats_matieres_historique)
+    if achats_m1 is None:
+        aace_hors_achats = aace
+        warnings.append(
+            "Achats de matières M-1 non identifiés : impossible de savoir si les AACE les "
+            "contiennent déjà. Les achats du mois sont additionnés aux AACE ; vérifiez "
+            "qu'il n'y a pas de double compte."
+        )
+    elif aace_inclut_achats:
+        if achats_m1 > aace:
+            warnings.append(
+                "Achats de matières M-1 supérieurs aux AACE : le solde des AACE a été ramené à zéro."
+            )
+        aace_hors_achats = max(Decimal("0"), aace - achats_m1)
+    elif aace_inclut_achats is False:
+        aace_hors_achats = aace
+        warnings.append(
+            "AACE M-1 restreintes aux charges externes : les achats du mois sont "
+            "additionnés séparément, sans double compte."
+        )
+    else:
+        aace_hors_achats = aace
+        warnings.append(
+            "Définition des AACE M-1 inconnue : les achats du mois sont additionnés aux AACE. "
+            "Vérifiez qu'il n'y a pas de double compte."
+        )
+
     total_charges = (
-        achats_d + sal + sociales + mkg + dotations_totales + assurances_d +
-        maintenance_nouvelles_machines + aace + deprec
+        achats_d + aace_hors_achats + sal + sociales + mkg + dotations_totales +
+        assurances_d + maintenance_nouvelles_machines + deprec
     )
 
     if interets_emprunt is None:

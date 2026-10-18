@@ -4,7 +4,7 @@ import pandas as pd
 import json
 import hashlib
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import URL
 from finance_engine import (
     TOURS_PERIODES,
@@ -54,6 +54,7 @@ from optimizer_engine import (
 from auth import setup as auth_setup, is_editor, require_editor, readonly_notice
 from db_utils import get_readonly_engine_if_configured
 from decisions_parser import parse_decisions
+import study_ops
 from period_context import (
     ReferenceDiagnostic,
     ReferenceRow,
@@ -608,17 +609,49 @@ def charger_norme_ms(table_name, activite_actuelle):
     return 27971.0
 
 @st.cache_data
-def optimiser_fournisseur_matiere(matiere, qualite_visee, critere="prix"):
-    if engine is None: return None
-    try:
-        col_qualite = f"qualite_{qualite_visee}"
-        query = f"SELECT fournisseur, {col_qualite} as prix, delai_mois FROM Parametres_TarifsFournisseurs WHERE matiere = '{matiere}' AND {col_qualite} IS NOT NULL"
-        df_tarifs = pd.read_sql(query, engine)
-        if df_tarifs.empty: return None
-        if critere == "prix": df_tarifs = df_tarifs.sort_values(by=["prix", "delai_mois"], ascending=[True, True])
-        elif critere == "delai": df_tarifs = df_tarifs.sort_values(by=["delai_mois", "prix"], ascending=[True, True])
-        return df_tarifs.iloc[0].to_dict()
-    except Exception: return None
+def optimiser_fournisseur_matiere(matiere, qualite_visee, critere="prix", reference=None, prix_reference=None):
+    """Meilleur fournisseur pour une matière, selon le critère choisi.
+
+    Le tarifaire `Parametres_TarifsFournisseurs` reste la source du choix
+    (prix par niveau de qualité, délai contractualisé) : c'est un paramètre de
+    décision, pas une donnée d'entreprise. Deux garde-fous ont été ajoutés :
+
+    * la matière est cherchée sous ses deux identifiants — le libellé
+      historique (`Néoprène 3`) et l'`objectRef` Subakoua (`NEOPRENE_3`) — car
+      le tarifaire a pu être saisi avec l'un ou l'autre ;
+    * à défaut de tarif, on retombe sur le prix d'achat moyen réellement payé
+      (étude « Achats et variations de stocks »). Sans ce repli, une matière
+      absente du tarifaire disparaissait silencieusement du plan
+      d'approvisionnement et le MRP affichait « aucun achat » à tort.
+    """
+    col_qualite = f"qualite_{qualite_visee}"
+    if engine is not None:
+        try:
+            noms = [m for m in {matiere, reference} if m]
+            requete = text(
+                f"SELECT fournisseur, matiere, {col_qualite} as prix, delai_mois "
+                "FROM Parametres_TarifsFournisseurs "
+                "WHERE matiere IN :noms AND " + col_qualite + " IS NOT NULL"
+            ).bindparams(bindparam("noms", expanding=True))
+            df_tarifs = pd.read_sql(requete, engine, params={"noms": noms})
+            if not df_tarifs.empty:
+                if critere == "delai":
+                    df_tarifs = df_tarifs.sort_values(by=["delai_mois", "prix"], ascending=[True, True])
+                else:
+                    df_tarifs = df_tarifs.sort_values(by=["prix", "delai_mois"], ascending=[True, True])
+                ligne = df_tarifs.iloc[0].to_dict()
+                ligne["tarifaire"] = True
+                return ligne
+        except Exception:
+            pass
+    if prix_reference:
+        return {
+            "fournisseur": "Prix d'achat moyen M-1",
+            "prix": float(prix_reference),
+            "delai_mois": 1,
+            "tarifaire": False,
+        }
+    return None
 
 def charger_donnees_rh_bdd(tour_id):
     if engine is None: return {}
@@ -1010,11 +1043,25 @@ VOLUMES_PAR_DEFAUT = {"s3": 50, "i3": 500, "s5": 100, "i5": 1500, "i7": 2500}
 _PRODUITS_VOLUMES = {"s3": "Shorty 3", "i3": "Integral 3", "s5": "Shorty 5", "i5": "Integral 5", "i7": "Integral 7"}
 
 
-def charger_volumes_reference(tour_precedent):
-    """Volumes vendus de M-1 : `Ventes_Historique`, puis `erp_donnees` (ventes mensuelles).
+def charger_volumes_reference(tour_precedent, etudes_m1=None):
+    """Volumes de M-1 servant de point de départ à la simulation.
 
-    Retourne (volumes, source). `source` vaut None si seules les valeurs par défaut servent.
+    Ordre de priorité :
+      1. l'étude « Ventes mensuelles » achetée pour M-1 — elle publie les
+         volumes réellement vendus, produit par produit ;
+      2. `Ventes_Historique` ;
+      3. les ventes extraites du dump `erp_donnees` ;
+      4. les valeurs par défaut du simulateur.
+
+    Retourne (volumes, source). `source` vaut None si seules les valeurs par
+    défaut servent.
     """
+    if etudes_m1 is None:
+        etudes_m1 = charger_etudes_periode(period_for_tour(tour_precedent))
+    ventes = study_ops.ventes_par_libelle(etudes_m1)
+    if ventes:
+        vols = {k: int(round(float(ventes.get(label, VOLUMES_PAR_DEFAUT[k])))) for k, label in _PRODUITS_VOLUMES.items()}
+        return vols, ReferenceRow({}, int(tour_precedent), int(tour_precedent))
     ref = charger_ligne_reference("Ventes_Historique", tour_precedent)
     if ref.found:
         vols = {k: ref_int(ref.data, f"Ventes_{k.upper()}", VOLUMES_PAR_DEFAUT[k]) for k in VOLUMES_PAR_DEFAUT}
@@ -1617,7 +1664,29 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     ref_machines = charger_ligne_reference("Parc_Machines_Mensuel", tour_id_precedent)
     ref_rh = charger_ligne_reference("Decisions_RH_Mensuel", tour_id_precedent)
     ref_mkg = charger_ligne_reference("Decisions_Marketing", tour_id_precedent)
-    volumes_ref, ref_ventes = charger_volumes_reference(tour_id_precedent)
+
+    # Études achetées de M-1 : BOM, stocks, prix d'achat, volumes, scores RH.
+    # Ces documents portent l'état réel de l'entreprise ; ils priment sur les
+    # coefficients estimés et sur les tables de décision, qui ne servent plus
+    # que de repli poste par poste.
+    etudes_m1 = charger_etudes_periode(period_for_tour(tour_id_precedent))
+    _bom_etudes = study_ops.bom_par_libelle(etudes_m1)
+    _stocks_etudes = study_ops.stocks_cloture(etudes_m1)
+    _prix_etudes = study_ops.prix_achat_unitaire(etudes_m1)
+    _sources_prix = study_ops.sources_prix(etudes_m1)
+    # `stocks_cloture` et `prix_achat_unitaire` sont indexés par `objectRef`
+    # Subakoua ; le MRP raisonne en libellés du simulateur. On aligne les deux
+    # espaces de clés ici, sinon la recherche de stock ne trouve jamais rien et
+    # le besoin net retombe sur le besoin brut.
+    _stocks_etudes = {study_ops.MATERIAL_ID_TO_NAME.get(r, r): v for r, v in _stocks_etudes.items()}
+    _prix_etudes = {study_ops.MATERIAL_ID_TO_NAME.get(r, r): v for r, v in _prix_etudes.items()}
+    _sources_prix = {study_ops.MATERIAL_ID_TO_NAME.get(r, r): v for r, v in _sources_prix.items()}
+    _stocks_incoherents = [
+        study_ops.MATERIAL_ID_TO_NAME.get(r, r) for r in study_ops.stocks_incoherentes(etudes_m1)
+    ]
+    _audits_rh = study_ops.audits_rh(etudes_m1)
+
+    volumes_ref, ref_ventes = charger_volumes_reference(tour_id_precedent, etudes_m1)
 
     # Décisions scrapées (accueil Subakoua / état actuel d'audit) : prioritaires sur les
     # décisions précédentes (M-1) car les pages de décisions sont grisées/figées dans le
@@ -1810,31 +1879,68 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         pct_vente_couvert = sim_slider("Part de la prod dédiée à la couverture (%)", 0, 100, "slider_pct_vente", 100, step=5)
         coeff_stock_secu = sim_slider("Coefficient stock de sécurité", 0.0, 2.0, "slider_coeff_secu", 1.0, step=0.1)
 
-        stocks_initiaux = {
-            'Néoprène 3': get_h('Stock_Neo3', 2.36), 'Néoprène 5': get_h('Stock_Neo5', 1.33),
-            'Néoprène 7': get_h('Stock_Neo7', 0.80), 'Renforts': get_h('Stock_Renforts', 1458.00),
-            'Manchons': get_h('Stock_Manchons', 113.00), 'Fermetures': get_h('Stock_Fermetures', 539.00),
-        }
+        # Nomenclature : bornes réelles du jeu si l'étude « Processus de
+        # production » est disponible, sinon coefficients estimés en base.
+        _bom_regime, _origine_bom = study_ops.bom_effective_par_libelle(etudes_m1, regime_matiere)
+        _source_nomenclature = _origine_bom or "Parametres_Nomenclature (estimée)"
+        if not _bom_regime:
+            _bom_regime = {
+                prod: {mat: coeffs.get(regime_matiere, 0.0) for mat, coeffs in mats.items()}
+                for prod, mats in nomenclature_dynamique.items()
+            }
 
-        besoins_bruts = {mat: 0.0 for mat in stocks_initiaux.keys()}
+        # Stock d'ouverture du mois simulé : clôture de M-1 publiée par le jeu.
+        _stocks_m1 = dict(_stocks_etudes)
+        _source_stocks = "Besoins théoriques (étude achetée)"
+        if not _stocks_m1:
+            _stocks_m1 = {
+                label: get_h(study_ops.MATERIAL_REF_TO_STOCK_COL.get(ref, ""), 0.0)
+                for ref, label in study_ops.MATERIAL_ID_TO_NAME.items()
+            }
+            _stocks_m1 = {k: v for k, v in _stocks_m1.items() if v}
+            _source_stocks = "Historique_Equipe (saisie manuelle)"
+
+        materiaux = sorted({mat for mats in _bom_regime.values() for mat in mats})
+        # Un stock manquant n'est pas un stock nul : sans alerte, le besoin net
+        # vaudrait le besoin brut et le plan d'achat serait doublé.
+        _stocks_inconnus = [mat for mat in materiaux if mat not in _stocks_m1]
+        for _mat in _stocks_inconnus:
+            if _mat in _stocks_incoherents:
+                _source_stocks = "Besoins théoriques (partiellement incohérents)"
+        besoins_bruts = {mat: 0.0 for mat in materiaux}
         for prod, qte_p in ordres_prod_dict.items():
-            nom_p = nomenclature_dynamique.get(prod, {})
+            nom_p = _bom_regime.get(prod, {})
             qte_effective = qte_p * (pct_vente_couvert / 100.0)
-            for mat, coeffs in nom_p.items():
-                match = next((m for m in besoins_bruts.keys() if m.lower() in mat.lower() or mat.lower() in m.lower()), None)
-                if match:
-                    besoins_bruts[match] += qte_effective * coeffs.get(regime_matiere, 0.0)
+            for mat, coeff in nom_p.items():
+                if mat in besoins_bruts:
+                    besoins_bruts[mat] += qte_effective * float(coeff)
 
         critere_arbitrage = sim_radio("Critère :", ["prix", "delai"], "radio_critere_mrp", "prix", horizontal=True)
         cout_achats_total_sim = 0.0
         achats_fournisseurs_par_echeance = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}
         achats_fournisseurs_detail = []
+        mrp_detail = []
+        matieres_sans_tarif = []
         for mat, b_brut in besoins_bruts.items():
-            s_ini = stocks_initiaux[mat]
+            s_ini = float(_stocks_m1.get(mat, 0.0))
             secu = b_brut * (coeff_stock_secu / 10.0)
             b_net = max(0.0, (b_brut + secu) - s_ini)
+            ligne_mrp = {
+                'matiere': mat,
+                'besoin_brut': b_brut,
+                'stock_ouverture': s_ini,
+                'besoin_net': b_net,
+            }
             if b_net > 0:
-                opt = optimiser_fournisseur_matiere(mat, qualite_visee=qualite_strategique, critere=critere_arbitrage)
+                ref = study_ops.NAME_TO_MATERIAL_ID.get(mat, mat)
+                opt = optimiser_fournisseur_matiere(
+                    mat, qualite_visee=qualite_strategique, critere=critere_arbitrage,
+                    reference=ref, prix_reference=_prix_etudes.get(ref),
+                )
+                source_prix = (
+                    "Parametres_TarifsFournisseurs" if opt and opt.get("tarifaire")
+                    else _sources_prix.get(ref, "estimation")
+                )
                 if opt:
                     cout_ht = b_net * float(opt['prix'])
                     cout_achats_total_sim += cout_ht
@@ -1850,9 +1956,36 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                         'delai_mois': delai,
                         'montant_ht': cout_ht,
                     })
+                    ligne_mrp.update({
+                        'fournisseur': opt.get('fournisseur', 'N/D'),
+                        'prix_unitaire': float(opt['prix']),
+                        'delai_mois': delai,
+                        'montant_ht': cout_ht,
+                        'tarifaire': source_prix,
+                    })
+                else:
+                    matieres_sans_tarif.append(mat)
+            mrp_detail.append(ligne_mrp)
 
         with st.container(border=True):
             st.markdown("**🧾 Plan d'approvisionnement calculé**")
+            st.caption(
+                f"Nomenclature : {_source_nomenclature} · Stock d'ouverture : {_source_stocks} "
+                f"(clôture {period_for_tour(tour_id_precedent)})."
+            )
+            if mrp_detail:
+                mrp_view = pd.DataFrame(mrp_detail)
+                for colonne in ("besoin_brut", "stock_ouverture", "besoin_net", "prix_unitaire", "montant_ht"):
+                    if colonne in mrp_view.columns:
+                        mrp_view[colonne] = mrp_view[colonne].map(lambda x: round(float(x), 2))
+                mrp_view = mrp_view.rename(columns={
+                    'matiere': 'Matière', 'besoin_brut': 'Besoin brut',
+                    'stock_ouverture': 'Stock ouverture', 'besoin_net': 'Besoin net',
+                    'fournisseur': 'Fournisseur', 'prix_unitaire': 'Prix unitaire',
+                    'delai_mois': 'Délai (mois)', 'montant_ht': 'Montant HT (€)',
+                    'tarifaire': 'Origine du prix',
+                })
+                st.dataframe(mrp_view, width="stretch", hide_index=True)
             if achats_fournisseurs_detail:
                 achats_view = pd.DataFrame(achats_fournisseurs_detail)
                 achats_view['montant_ht'] = achats_view['montant_ht'].map(lambda x: round(float(x), 2))
@@ -1861,8 +1994,29 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     'delai_mois': 'Délai (mois)', 'montant_ht': 'Montant HT (€)'
                 })
                 st.dataframe(achats_view, width="stretch", hide_index=True)
+            elif not mrp_detail:
+                st.info("Aucune nomenclature disponible : impossible de calculer un besoin.")
             else:
-                st.info("Aucun achat net à déclencher avec les paramètres actuels.")
+                total_brut = sum(float(l['besoin_brut']) for l in mrp_detail)
+                total_stock = sum(float(l['stock_ouverture']) for l in mrp_detail)
+                st.info(
+                    "Aucun besoin net : le stock d'ouverture couvre la production décidée "
+                    f"(besoins bruts {total_brut:,.0f} contre {total_stock:,.0f} en stock, toutes matières confondues). "
+                    "Augmentez les quantités à produire ou baissez le stock de sécurité pour déclencher un achat."
+                )
+            if matieres_sans_tarif:
+                st.warning(
+                    "Aucune matière n'a pu être chiffrée (ni tarifaire, ni prix d'achat moyen publié) : "
+                    + ", ".join(matieres_sans_tarif)
+                    + ". Renseignez `Parametres_TarifsFournisseurs` pour ces matières."
+                )
+            if _stocks_inconnus:
+                st.warning(
+                    "Stock d'ouverture inconnu pour : " + ", ".join(_stocks_inconnus)
+                    + ". Ces matières sont traitées comme sans stock, ce qui surévalue le besoin net "
+                    "et le montant du plan d'achat. Achetez l'étude « Matières : disponibilités et "
+                    "besoins théoriques » pour M-1, ou renseignez `Historique_Equipage`."
+                )
             c_ach1, c_ach2 = st.columns(2)
             c_ach1.metric("Achats matières HT", fmt_eur(cout_achats_total_sim))
             c_ach2.metric("Achats immédiats (délai 0)", fmt_eur(achats_fournisseurs_par_echeance[0]))
@@ -1908,10 +2062,51 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
         total_effectif_sim = int(sim_ep_eff + sim_cp_eff + sim_dp_eff + sim_ea_eff + sim_ca_eff + sim_da_eff + sim_ef_eff + sim_cf_eff + sim_df_eff)
         total_masse_sim = float(tot_p + tot_a + tot_f)
-        c_rh_k1, c_rh_k2, c_rh_k3 = st.columns(3)
+        c_rh_k1, c_rh_k2 = st.columns(2)
         c_rh_k1.metric("Effectif simulé", f"{total_effectif_sim} personnes")
         c_rh_k2.metric("Masse salariale brute", fmt_eur(total_masse_sim))
-        c_rh_k3.metric("Score RH Production", f"{score_rh_prod:.1f} / 100")
+
+        # Scores RH : un score par pôle, comme dans le jeu.
+        # L'étude « Audit du service » publie pour chacun des trois pôles un
+        # score de qualité du personnel et sa décomposition. Le score affiché
+        # est celui du mois de référence ; l'écart avec la masse salariale
+        # saisie ci-dessus est montré pour qu'une décision d'effectifs puisse
+        # être comparée à la norme du pôle.
+        masse_par_pole = {"Production": tot_p, "Approvisionnement": tot_a, "Administration": tot_f}
+        if _audits_rh:
+            lignes_rh = []
+            for pole in ("Production", "Approvisionnement", "Administration"):
+                audit = _audits_rh.get(pole)
+                if not audit:
+                    continue
+                masse = float(masse_par_pole.get(pole, 0.0))
+                norme = audit.get("masse_salariale_norme") or 0.0
+                lignes_rh.append({
+                    "Pôle": pole,
+                    "Score qualité M-1": round(audit["score"], 2),
+                    "Masse salariale M-1 (€)": audit["masse_salariale"],
+                    "Masse salariale simulée (€)": round(masse, 2),
+                    "Norme du pôle (€)": norme,
+                    "Écart vs norme (%)": round((masse / norme - 1.0) * 100.0, 2) if norme > 0 else None,
+                })
+            if lignes_rh:
+                st.markdown("**📊 Scores RH par pôle**")
+                st.caption(
+                    "Score = qualité du personnel tel que publié par le jeu pour le mois de référence. "
+                    "La masse salariale simulée est comparée à la norme du pôle pour juger l'effet de la décision."
+                )
+                st.dataframe(pd.DataFrame(lignes_rh), width="stretch", hide_index=True)
+                c_rh_s1, c_rh_s2, c_rh_s3 = st.columns(3)
+                for colonne, (pole, _sid) in zip((c_rh_s1, c_rh_s2, c_rh_s3), study_ops.POLES_RH):
+                    audit = _audits_rh.get(pole)
+                    colonne.metric(f"Score RH {pole}", f"{audit['score']:.1f} / 100" if audit else "—")
+        else:
+            st.info(
+                "Aucun audit RH acheté pour "
+                f"{period_for_tour(tour_id_precedent)} : seul le score de production simulé est disponible."
+            )
+            c_rh_s1 = st.columns(1)[0]
+            c_rh_s1.metric("Score RH Production (simulé)", f"{score_rh_prod:.1f} / 100")
 
     with tab_sim_fin:
         st.subheader("5. Finance & trésorerie")
@@ -2004,6 +2199,10 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         res_avant_impot_cumule_historique = float(etat_fin_m1.resultat_avant_impot_cumule or 0.0)
 
         aace_historique = float(etat_fin_m1.aace) if etat_fin_m1.aace is not None else None
+        achats_matieres_historique = (
+            float(etat_fin_m1.achats_matieres) if etat_fin_m1.achats_matieres is not None else None
+        )
+        aace_inclut_achats = bool(etat_fin_m1.aace_inclut_achats)
         deprec_historique = float(etat_fin_m1.depreciations) if etat_fin_m1.depreciations is not None else None
 
         # Transparence : aucune constante de calage comptable n'est injectée.
@@ -2285,6 +2484,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             solde_epargne_initial=solde_epargne_initial, dette_bancaire=dette_bancaire,
             investissement_ht=cout_invest_machines, credit_fournisseur=credit_fournisseur,
             bfr_mois=float(bfr_projection_pre.bfr), bfr_m1=bfr_precedent_m1,
+            achats_matieres_historique=achats_matieres_historique,
+            aace_inclut_achats=aace_inclut_achats,
             achats_titres=achats_titres, ventes_titres=ventes_titres, placement=placement_ep,
             retrait=retrait_ep, dividendes=total_div, nouvelles_entrees_dette_cash=nouvel_emprunt,
             autres_flux_financement=0.0, taux_is=0.25, report_a_nouveau=0.0,
@@ -2329,6 +2530,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             solde_epargne_initial=solde_epargne_initial, dette_bancaire=dette_bancaire,
             investissement_ht=cout_invest_machines, credit_fournisseur=credit_fournisseur,
             bfr_mois=bfr_simule, bfr_m1=bfr_precedent_m1,
+            achats_matieres_historique=achats_matieres_historique,
+            aace_inclut_achats=aace_inclut_achats,
             achats_titres=achats_titres, ventes_titres=ventes_titres, placement=placement_ep,
             retrait=retrait_ep, dividendes=total_div, nouvelles_entrees_dette_cash=nouvel_emprunt,
             autres_flux_financement=0.0, taux_is=0.25, report_a_nouveau=0.0,
