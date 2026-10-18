@@ -980,9 +980,16 @@ def charger_solde_initial_mois(tour_id):
 
 
 def _etat_financier_exploitable(state):
+    """Un état est exploitable dès qu'il a une donnée bancaire ou de résultat.
+    
+    On n'exige plus le BFR complet : si seule la banque est présente, on peut
+    quand même simuler (le BFR sera calculé à partir des composantes disponibles).
+    """
     return any(
         v is not None for v in (
-            state.solde_bancaire_final, state.resultat_net, state.bfr_reel, state.dette_bancaire,
+            state.solde_bancaire_final,
+            state.resultat_net,
+            state.dette_bancaire,
         )
     )
 
@@ -1040,23 +1047,13 @@ def charger_etat_financier_m1(tour_id_precedent, tour_id_cible):
     tour_ref = int(tour_id_precedent)
     state, periode = _etat_financier_pour_periode(tour_ref, tour_id_cible)
     tour_utilise = tour_ref
-    if not _etat_financier_exploitable(state):
-        for tour_test in range(tour_ref - 1, 0, -1):
-            state_test, periode_test = _etat_financier_pour_periode(tour_test, tour_id_cible)
-            if _etat_financier_exploitable(state_test):
-                state, periode, tour_utilise = state_test, periode_test, tour_test
-                break
 
     if not _etat_financier_exploitable(state):
         diag_ref.alert(
-            f"Aucun état financier (Banque / Expert-comptable) trouvé en base pour {period_for_tour(tour_ref)} "
-            "ni pour les périodes antérieures : trésorerie, dette et BFR d'ouverture sont inconnus."
-        )
-    elif tour_utilise != tour_ref:
-        ecart = tour_ref - tour_utilise
-        diag_ref.alert(
-            f"État financier de {period_for_tour(tour_ref)} absent en base : ouverture reprise de {periode} "
-            f"(−{ecart} mois). Les {ecart} mois intermédiaires ne sont pas projetés — saisir/extraire M-1 pour corriger."
+            f"État financier incomplet pour {period_for_tour(tour_ref)} : "
+            "trésorerie, dette et/ou BFR d'ouverture introuvables en base. "
+            "Les documents d'achat nécessaires sont manquants (SPECIMEN). "
+            "Utilisez le bloc « Achat de documents » ci-dessous pour les acquérir."
         )
     else:
         diag_ref.note(f"État financier d'ouverture : {periode}.")
@@ -1924,6 +1921,66 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         treso_ouverture_connue = treso_initiale_source is not None
         if not treso_ouverture_connue:
             diag_ref.alert("Solde bancaire d'ouverture introuvable (ni extrait M-1, ni extrait du mois simulé) : saisis-le ci-dessus, sinon la trésorerie part de 0 € et n'est PAS fiable.")
+
+        # ================================================================
+        # BLOC D'ACHAT DE DOCUMENTS MANQUANTS
+        # ================================================================
+        st.divider()
+        st.subheader("🛒 Achat de documents pour compléter le livrable")
+
+        from livrable_finance import REQUIRED_STUDIES
+        import document_optimizer as doc_optimizer
+
+        profiles = doc_optimizer.load_profiles()
+        catalog = {sid: {"label": p.label, "price": p.price} for sid, p in profiles.items()}
+
+        missing = []
+        for req in REQUIRED_STUDIES:
+            sid = req["study_id"]
+            info = catalog.get(sid, {})
+            price = float(info.get("price", 0) or 0)
+            missing.append({
+                "study_id": sid,
+                "label": str(info.get("label", sid)),
+                "price": price,
+                "pourquoi": req["pourquoi"],
+            })
+
+        missing = sorted(missing, key=lambda x: x["price"])
+
+        total_missing = sum(m["price"] for m in missing)
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Documents requis", f"{len(missing)}")
+        col_b.metric("Coût total estimé", f"{total_missing:,.0f} €".replace(",", " "))
+        col_c.metric("Période cible", f"{periode_db}")
+
+        st.markdown("**Sélectionnez les documents à acheter :**")
+
+        selected_studies = []
+        for i in range(0, len(missing), 3):
+            cols = st.columns(3)
+            for j, doc in enumerate(missing[i:i+3]):
+                with cols[j]:
+                    checked = st.checkbox(
+                        f"{doc['label']}",
+                        key=f"buy_doc_{doc['study_id']}",
+                        help=f"{doc['pourquoi']} — {doc['price']:,.0f} €".replace(",", " ")
+                    )
+                    if checked:
+                        selected_studies.append(doc["study_id"])
+
+        if selected_studies:
+            sel_price = sum(m["price"] for m in missing if m["study_id"] in selected_studies)
+            st.metric("Coût de la sélection", f"{sel_price:,.0f} €".replace(",", " "))
+
+        st.info(
+            "👉 Pour acheter ces documents, allez sur la page **🕷️ Scraper** (onglet « Achat de documents »). "
+            "Sélectionnez-y les mêmes documents et lancez l'achat. Les données seront ensuite disponibles ici."
+        )
+
+        with st.expander("📋 Documents manquants et pourquoi les acheter", expanded=False):
+            for doc in missing:
+                st.write(f"• **{doc['label']}** ({doc['price']:,.0f} €) : {doc['pourquoi']}".replace(",", " "))
 
         with st.expander("📊 Portefeuille de titres", expanded=(mode_pilotage == "🔧 Expert")):
             st.caption("Saisissez uniquement les quantités achetées/vendues. Les prix unitaires restent ceux du moteur.")
