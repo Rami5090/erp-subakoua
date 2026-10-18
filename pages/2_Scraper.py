@@ -253,7 +253,7 @@ if isinstance(_liv_req, dict) and _liv_req.get("study_ids"):
 # ---------------------------------------------------------------------------
 # ONGLET 1 : PLAN DOCUMENTAIRE
 # ---------------------------------------------------------------------------
-tab_plan, tab_acq, tab_sync, tab_legacy = st.tabs(["🎯 Plan documentaire", "🔁 Acquérir", "📥 Synchroniser", "🧱 Secours DOM"])
+tab_plan, tab_acq, tab_legacy = st.tabs(["🎯 Plan documentaire", "🔁 Acquérir et synchroniser", "🧱 Secours DOM"])
 
 with tab_plan:
     st.subheader("🎯 Construire le plan d'achat documentaire")
@@ -381,16 +381,16 @@ with tab_plan:
             st.dataframe(pd.DataFrame(st.session_state["smart_purchase_results"]), width="stretch", hide_index=True)
 
 with tab_acq:
-    st.subheader("🔁 Acquérir : acheter si besoin, puis synchroniser")
+    st.subheader("🔁 Acquérir et synchroniser")
     st.caption(
         "Un seul passage par période cible : lecture → achat (seulement si autorisé, sous budget, "
-        "hors 5 000 € sans opt-in, prix live vérifié) → relecture. Un achat pour la période X donne "
-        "les données de la période X, sans décalage. "
+        "hors 5 000 € sans opt-in, prix live vérifié) → relecture → stockage Aiven. "
+        "Un achat pour la période X donne les données de la période X, sans décalage. "
         "Chaque exécution est enregistrée dans `erp_scraper_runs`."
     )
     st.info(
         "Règle conservée : sans la case d'autorisation ci-dessous, **aucun achat réel** n'est déclenché "
-        "(les études à acheter sont listées en `A_ACHETER`)."
+        "(les études à acheter sont listées en `A_ACHETER` et rien n'est stocké)."
     )
 
     _acq_req = st.session_state.get("livrable_buy_request")
@@ -426,7 +426,7 @@ with tab_acq:
         help="Indispensable : sans elle, le bouton liste seulement ce qui serait acheté.",
     )
 
-    if st.button("🔁 Lancer l'acquisition", type="primary", width="stretch",
+    if st.button("🔁 Lancer l'acquisition et la synchronisation", type="primary", width="stretch",
                  disabled=(not acq_periods or not acq_ids)):
         if not sub_user or not sub_pass:
             st.error("Identifiants Subakoua manquants.")
@@ -439,14 +439,24 @@ with tab_acq:
             try:
                 conn = legacy.connect_mysql(cfg)
                 pw, browser, context, page, api = api_session(cfg, log_name="subakoua_acquire")
+                total_steps = len(acq_periods) * len(acq_ids)
+                progress = st.progress(0, text="Préparation…")
+                done_counter = [0]
                 results = []
-                with st.status("🔁 Acquisition en cours…", expanded=True) as status:
+                with st.status("🔁 Acquisition et synchronisation en cours…", expanded=True) as status:
                     try:
+                        def _progress(msg):
+                            status.write(msg)
+                            done_counter[0] += 1
+                            progress.progress(min(1.0, done_counter[0] / max(1, total_steps)), text=msg)
                         results = smart_scraper.acquire_studies(
                             api, conn, target_periods=acq_periods, study_ids=acq_ids,
                             budget=float(acq_budget),
                             allow_real_purchases=bool(acq_authorize), allow_5000=bool(acq_allow_5000),
-                            progress=status.write)
+                            progress=_progress,
+                        )
+                        # Update progress after each result
+                        progress.progress(1.0, text=f"Terminé : {len(results)} étude(s) traitée(s)")
                     except Exception as exc:
                         st.error(f"Acquisition interrompue : {exc}")
                         results = []
@@ -455,7 +465,7 @@ with tab_acq:
                     counts: dict[str, int] = {}
                     for r in results:
                         counts[r.get("status", "?")] = counts.get(r.get("status", "?"), 0) + 1
-                    st.success("Acquisition terminée — " + " · ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+                    st.success("Acquisition et synchronisation terminées — " + " · ".join(f"{k}={v}" for k, v in sorted(counts.items())))
             except Exception as exc:
                 st.error(f"Acquisition interrompue : {exc}")
             finally:
@@ -486,12 +496,15 @@ with tab_acq:
                 probe_out = []
                 probe_fn = getattr(api, "probe_purchase_target", None)
                 total = len(acq_periods) * len(acq_ids)
+                progress = st.progress(0, text="Sonde en cours…")
                 with st.status("🧪 Sonde en cours…", expanded=True) as status:
                     done = 0
                     for per in acq_periods:
                         for sid in acq_ids:
                             done += 1
-                            status.write(f"🔎 {sid} / {per} ({done}/{total}) …")
+                            msg = f"🔎 {sid} / {per} ({done}/{total}) …"
+                            status.write(msg)
+                            progress.progress(min(1.0, done / max(1, total)), text=msg)
                             if probe_fn is None:
                                 probe_out.append({"period": per, "study_id": sid, "trouvée": False,
                                                   "via": "", "routes_testées": 0,
@@ -509,6 +522,7 @@ with tab_acq:
                             st.session_state["acq_probe"] = list(probe_out)
                     status.update(label=f"🧪 Sonde terminée : {len(probe_out)} résultat(s)",
                                   state="complete", expanded=False)
+                    progress.progress(1.0, text=f"Sonde terminée : {len(probe_out)} résultat(s)")
             except Exception as exc:
                 st.error(f"Sonde interrompue : {exc}")
             finally:
@@ -530,73 +544,6 @@ with tab_acq:
         if _bought_only:
             st.info("Statut `ACHETEE` (sans synchronisation) : l'étude a été payée mais reste illisible — "
                     "anomalie à vérifier sur le portail, puis resynchronise.")
-
-with tab_sync:
-    st.subheader("📥 Lire les études accessibles et synchroniser Aiven")
-    st.caption("Cette étape ne déclenche aucun achat. Une étude n'est acceptée que si son API retourne `readAllowed=true` et le bon `studyId`.")
-
-    target_periods = st.multiselect(
-        "Périodes à synchroniser",
-        options=available,
-        default=st.session_state.get("smart_target_periods", available[:1]),
-        key="smart_sync_periods",
-    )
-    profiles = optimizer.load_profiles()
-    known_profiles = [p for p in profiles.values() if p.endpoint_known]
-    options = {p.study_id: f"{p.label} · {p.price:g} € · API" for p in known_profiles}
-    saved_plan_ids = [r["study_id"] for r in st.session_state.get("smart_plan", []) if r.get("endpoint_known")]
-    default_ids = [sid for sid in saved_plan_ids if sid in options]
-    # Demande du Livrable Finance : présélection prioritaire (une seule fois).
-    _liv_req2 = st.session_state.get("livrable_buy_request")
-    if _liv_req2 and "smart_sync_study_ids" not in st.session_state:
-        _want = [str(s) for s in _liv_req2.get("study_ids", []) if str(s) in options]
-        if _want:
-            st.session_state["smart_sync_study_ids"] = _want
-    selected_ids = st.multiselect("Études API à lire", list(options), default=default_ids or list(options)[:8], format_func=lambda sid: options[sid], key="smart_sync_study_ids")
-
-    if st.button("📥 Synchroniser les études sélectionnées", type="primary", width="stretch", disabled=(not target_periods or not selected_ids)):
-        if not sub_user or not sub_pass:
-            st.error("Identifiants Subakoua manquants.")
-        elif not db_host or not db_name or not db_user or not db_pass:
-            st.error("Configuration Aiven incomplète.")
-        else:
-            cfg = make_config(sub_user, sub_pass)
-            conn = None
-            pw = browser = context = None
-            try:
-                conn = legacy.connect_mysql(cfg)
-                pw, browser, context, page, api = api_session(cfg, log_name="subakoua_sync")
-                results = smart_scraper.fetch_and_store(api, conn, target_periods, selected_ids)
-                st.session_state["smart_sync_results"] = results
-                ok = sum(1 for r in results if r.get("status") == "OK")
-                refused = sum(1 for r in results if r.get("status") == "REFUSE")
-                errors = sum(1 for r in results if r.get("status") == "ERREUR")
-                st.success(f"Synchronisation terminée — OK={ok} · refus={refused} · erreurs={errors}")
-            except Exception as exc:
-                st.error(f"Synchronisation interrompue : {exc}")
-            finally:
-                try:
-                    if conn:
-                        conn.close()
-                finally:
-                    try:
-                        if context:
-                            context.close()
-                    finally:
-                        if browser:
-                            browser.close()
-                        if pw:
-                            pw.stop()
-
-    if st.session_state.get("smart_sync_results"):
-        st.dataframe(pd.DataFrame(st.session_state["smart_sync_results"]), width="stretch", hide_index=True)
-        _refused = [r for r in st.session_state["smart_sync_results"] if r.get("status") == "REFUSE"]
-        if _refused:
-            st.info(
-                "ℹ️ REFUSE = étude **non achetée** sur cette période (`readAllowed=false` côté portail) : "
-                "il n'y a rien à synchroniser. Pour l'obtenir, achète-la pour cette période "
-                "(onglet « 🔁 Acquérir »), puis synchronise."
-            )
 
 with tab_legacy:
     st.warning("Mode de secours conservé pour les études dont aucun endpoint API n'a encore été cartographié. Il ne doit pas être privilégié lorsqu'une API connue existe.")
