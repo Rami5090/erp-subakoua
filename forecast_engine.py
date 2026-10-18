@@ -309,34 +309,102 @@ def _num(value: Any) -> float | None:
 
 
 def _extract_sales_from_api_payload(payload: Mapping[str, Any]) -> dict[str, float]:
+    """Extrait les ventes par produit depuis n'importe quel payload d'étude.
+
+    Cherche les ventes dans :
+    1. Format Subakoua standard : payload["sales"][].monthlySalesByProducts[].sales
+    2. Clés génériques contenant vente/sales/ca/chiffre avec valeur numérique
+    3. Tableaux de lignes produits (clés produit/quantité/prix/chiffre d'affaires)
+    """
     payload = _unwrap_api_payload(payload)
     out: dict[str, float] = {}
+
+    # --- Approche 1 : format Subakoua standard (ensaacvm) ---
     sales = payload.get("sales")
-    if not isinstance(sales, list):
-        nested = _find_nested_by_key(payload, lambda x: isinstance(x.get("sales"), list) or isinstance(x.get("listEnsaacvmProd"), list))
-        if nested:
-            payload = nested
-            sales = payload.get("sales")
-    if isinstance(sales, list) and sales:
-        item = sales[-1] if isinstance(sales[-1], dict) else {}
-        for p in item.get("monthlySalesByProducts", []) if isinstance(item.get("monthlySalesByProducts"), list) else []:
-            if not isinstance(p, dict):
+    if isinstance(sales, list):
+        for item in sales:
+            if not isinstance(item, Mapping):
                 continue
-            name = PRODUCT_ID_TO_NAME.get(str(p.get("productId", "")), str(p.get("productId", "")))
-            if name in PRODUCTS:
-                v = _num(p.get("sales"))
-                if v is not None:
-                    out[name] = max(0.0, v)
-    if not out and isinstance(payload.get("listEnsaacvmProd"), list):
-        for p in payload["listEnsaacvmProd"]:
-            if not isinstance(p, dict):
-                continue
-            name = PRODUCT_ID_TO_NAME.get(str(p.get("name", "")), str(p.get("name", "")))
-            if name in PRODUCTS:
-                v = _num(p.get("totalVentes", p.get("sales")))
-                if v is not None:
-                    out[name] = max(0.0, v)
+            monthly = item.get("monthlySalesByProducts")
+            if isinstance(monthly, list):
+                for p in monthly:
+                    if not isinstance(p, Mapping):
+                        continue
+                    pid = p.get("productId", p.get("name", p.get("id", "")))
+                    nom = PRODUCT_ID_TO_NAME.get(str(pid), str(pid)) if pid else None
+                    if not nom:
+                        continue
+                    v = _num(p.get("sales"))
+                    if v is not None and v > 0:
+                        for prod in PRODUCTS:
+                            if prod.lower() in str(nom).lower() or str(nom).lower() in prod.lower():
+                                out[prod] = max(0.0, out.get(prod, 0.0) + v)
+                                break
+                        else:
+                            out[str(nom)] = max(0.0, out.get(str(nom), 0.0) + v)
+            if out:
+                return out
+
+    # --- Approche 2 : parcours récursif générique ---
+    ventes_kws = {"vente", "sales", "revenue", "turnover", "chiffre", "affaires", "business", "montant", "total", "ca"}
+    produit_kws = {"produit", "product", "item", "article", "ref", "reference", "code"}
+    quantite_kws = {"quantite", "quantity", "qty", "qte", "units", "unités"}
+    prix_kws = {"prix", "price", "prix ht", "prix unitaire", "unit price"}
+    ca_kws = {"chiffre d'affaires", "ca", "turnover", "revenue", "montant", "total", "ventes"}
+
+    def _walk(node: Any) -> None:
+        nonlocal out
+
+        if isinstance(node, Mapping):
+            keys_norm = {_norm_key(k) for k in node.keys()}
+            has_produit = any(kw in keys_norm for kw in produit_kws)
+            has_quantite = any(kw in keys_norm for kw in quantite_kws)
+            has_prix = any(kw in keys_norm for kw in prix_kws)
+            has_ca = any(kw in keys_norm for kw in ca_kws)
+
+            if has_produit and (has_quantite or has_prix or has_ca):
+                nom = None
+                for k, v in node.items():
+                    kn = _norm_key(k)
+                    if any(kw in kn for kw in produit_kws) and nom is None:
+                        nom = str(v) if not isinstance(v, (int, float)) else nom
+                if nom is None:
+                    pid = node.get("productId", node.get("name", node.get("id", "")))
+                    if pid:
+                        nom = PRODUCT_ID_TO_NAME.get(str(pid), str(pid))
+
+                val = None
+                for k, v in node.items():
+                    kn = _norm_key(k)
+                    if any(kw in kn for kw in ventes_kws) and isinstance(v, (int, float)) and not isinstance(v, bool):
+                        val = float(v)
+                        break
+                    if any(kw in kn for kw in ca_kws) and isinstance(v, (int, float)) and not isinstance(v, bool):
+                        val = float(v)
+                        break
+
+                if nom and val is not None and val > 0:
+                    nom_norm = nom.strip()
+                    for prod in PRODUCTS:
+                        if prod.lower() in nom_norm.lower() or nom_norm.lower() in prod.lower():
+                            out[prod] = max(0.0, out.get(prod, 0.0) + val)
+                            break
+                    else:
+                        out[nom_norm] = max(0.0, out.get(nom_norm, 0.0) + val)
+
+            for value in node.values():
+                if isinstance(value, (Mapping, list)):
+                    _walk(value)
+
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(payload)
     return out
+
+
+
 
 
 def _recursive_find_product_rows(obj: Any) -> list[dict[str, Any]]:
@@ -596,10 +664,11 @@ def _extract_company_from_api_studies(
 ) -> dict[str, Any] | None:
     """Extrait les données de l'entreprise propre depuis les études achetées.
 
-    Les études achetées contiennent toutes les informations de l'entreprise
-    (ventes, stocks, trésorerie, parts de marché, etc.). Cette fonction
-    parcourt récursivement le JSON de chaque étude pour trouver les données
-    pertinentes, sans dépendre d'un identifiant d'étude particulier.
+    Parcourt récursivement le JSON de chaque étude pour trouver :
+    - Ventes par produit (clés contenant vente/sales/ca/chiffre/turnover)
+    - Chiffre d'affaires global (clés contenant ca/chiffre d'affaires/turnover/revenue)
+    - Parts de marché (clés contenant part/market/share/pdm/pourcentage)
+    - Stocks (clés contenant stock/inventaire)
     """
     period_modules = period_data.get(period, {}) if isinstance(period_data, Mapping) else {}
     if not isinstance(period_modules, Mapping):
@@ -610,42 +679,48 @@ def _extract_company_from_api_studies(
     meilleure_pm: float | None = None
     meilleurs_stocks: dict[str, Any] | None = None
 
+    # Mots-clés pour détecter les données de l'entreprise dans les clés JSON
+    ventes_kws = {"vente", "sales", "revenue", "turnover", "chiffre", "affaires", "business", "montant", "total", "ca"}
+    ca_kws = {"ca", "chiffre", "affaires", "turnover", "revenue", "business", "total", "montant", "fourniture", "production"}
+    pm_kws = {"part", "market", "share", "pdm", "pourcentage", "marche", "marche", "part de marche"}
+    stock_kws = {"stock", "stocks", "inventaire", "inventory", "entrepot", "entrepot"}
+
+    def _walk_and_extract(node: Any) -> None:
+        nonlocal meilleures_ventes, meilleure_ca, meilleure_pm, meilleurs_stocks
+
+        if isinstance(node, Mapping):
+            for key, value in node.items():
+                key_norm = _norm_key(key)
+                is_vente = any(kw in key_norm for kw in ventes_kws)
+                is_ca = any(kw in key_norm for kw in ca_kws)
+                is_pm = any(kw in key_norm for kw in pm_kws)
+                is_stock = any(kw in key_norm for kw in stock_kws)
+
+                # Valeur numérique directe sur une clé pertinente
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    if is_ca or is_vente:
+                        if meilleure_ca is None or float(value) > meilleure_ca:
+                            meilleure_ca = float(value)
+                    if is_pm:
+                        pm_val = float(value) / 100.0 if float(value) > 1 else float(value)
+                        if meilleure_pm is None or pm_val > meilleure_pm:
+                            meilleure_pm = pm_val
+
+                # Récursivité dans les sous-objets
+                if isinstance(value, (Mapping, list)):
+                    _walk_and_extract(value)
+
+        elif isinstance(node, list):
+            for item in node:
+                _walk_and_extract(item)
+
     for module_name, payload in period_modules.items():
         if not module_name.startswith("etude_"):
             continue
         if not isinstance(payload, Mapping):
             continue
         payload = _unwrap_api_payload(payload)
-
-        # --- Ventes par produit ---
-        ventes = _extract_sales_from_api_payload(payload)
-        if ventes:
-            for k, v in ventes.items():
-                meilleures_ventes[k] = max(v, meilleures_ventes.get(k, 0.0))
-
-        # --- CA (chiffre d'affaires) ---
-        ca = _num(payload.get("chiffreAffaires", payload.get("ca", payload.get("turnover"))))
-        if ca is not None:
-            meilleure_ca = ca if meilleure_ca is None else max(meilleure_ca, ca)
-
-        # monitoringTurnoverData (sous-forme tableau mensuel)
-        turnover = payload.get("monitoringTurnoverData") or {}
-        if isinstance(turnover, Mapping):
-            arr = turnover.get("monthlySalesTurnover")
-            if isinstance(arr, list) and arr:
-                v = _num(arr[-1])
-                if v is not None:
-                    meilleure_ca = v if meilleure_ca is None else max(meilleure_ca, v)
-
-        # --- Parts de marché ---
-        ms = _num(payload.get("marketShares", payload.get("partMarché", payload.get("part_marche"))))
-        if ms is not None:
-            meilleure_pm = ms / 100.0 if ms > 1 else ms
-
-        # --- Stocks ---
-        stks = payload.get("remainingStocks", payload.get("stocks", payload.get("inventaire")))
-        if isinstance(stks, Mapping):
-            meilleurs_stocks = stks
+        _walk_and_extract(payload)
 
     total_ventes = float(sum(meilleures_ventes.values())) if meilleures_ventes else 0.0
     if meilleure_ca is None and total_ventes > 0:
@@ -670,8 +745,6 @@ def _extract_company_from_api_studies(
         "is_own": True,
         "stocks": meilleurs_stocks,
     }
-
-
 def _latest_available_period(study_data: Mapping[str, Any], anchor_period: str | None = None) -> str | None:
     periods = ordered_periods(study_data.keys())
     if not periods:
