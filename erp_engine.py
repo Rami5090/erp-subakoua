@@ -1928,6 +1928,12 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         st.divider()
         st.subheader("🛒 Achat de documents pour compléter le livrable")
 
+        st.info(
+            "👉 Pour acheter les documents manquants, allez sur la page **🕷️ Scraper** "
+            "(onglet « Acquérir »). Sélectionnez-y les études manquantes et lancez l'achat. "
+            "Les données seront ensuite disponibles ici après synchronisation."
+        )
+
         from livrable_finance import REQUIRED_STUDIES
         import document_optimizer as doc_optimizer
 
@@ -1953,30 +1959,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         col_a.metric("Documents requis", f"{len(missing)}")
         col_b.metric("Coût total estimé", f"{total_missing:,.0f} €".replace(",", " "))
         col_c.metric("Période cible", f"{periode_db}")
-
-        st.markdown("**Sélectionnez les documents à acheter :**")
-
-        selected_studies = []
-        for i in range(0, len(missing), 3):
-            cols = st.columns(3)
-            for j, doc in enumerate(missing[i:i+3]):
-                with cols[j]:
-                    checked = st.checkbox(
-                        f"{doc['label']}",
-                        key=f"buy_doc_{doc['study_id']}",
-                        help=f"{doc['pourquoi']} — {doc['price']:,.0f} €".replace(",", " ")
-                    )
-                    if checked:
-                        selected_studies.append(doc["study_id"])
-
-        if selected_studies:
-            sel_price = sum(m["price"] for m in missing if m["study_id"] in selected_studies)
-            st.metric("Coût de la sélection", f"{sel_price:,.0f} €".replace(",", " "))
-
-        st.info(
-            "👉 Pour acheter ces documents, allez sur la page **🕷️ Scraper** (onglet « Achat de documents »). "
-            "Sélectionnez-y les mêmes documents et lancez l'achat. Les données seront ensuite disponibles ici."
-        )
 
         with st.expander("📋 Documents manquants et pourquoi les acheter", expanded=False):
             for doc in missing:
