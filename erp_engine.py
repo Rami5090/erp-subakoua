@@ -1048,12 +1048,28 @@ def charger_etat_financier_m1(tour_id_precedent, tour_id_cible):
     state, periode = _etat_financier_pour_periode(tour_ref, tour_id_cible)
     tour_utilise = tour_ref
 
+    # Si les données de M-1 sont incomplètes, replier automatiquement sur les
+    # périodes antérieures (M-2, M-3, ...) pour ne pas bloquer la simulation.
+    # Les données sont TOUJOURS chargées depuis M-1 (ou M-2, etc.), JAMAIS depuis la période simulée.
+    if not _etat_financier_exploitable(state):
+        for tour_test in range(tour_ref - 1, 0, -1):
+            state_test, periode_test = _etat_financier_pour_periode(tour_test, tour_id_cible)
+            if _etat_financier_exploitable(state_test):
+                state, periode, tour_utilise = state_test, periode_test, tour_test
+                break
+
     if not _etat_financier_exploitable(state):
         diag_ref.alert(
-            f"État financier incomplet pour {period_for_tour(tour_ref)} : "
-            "trésorerie, dette et/ou BFR d'ouverture introuvables en base. "
-            "Les documents d'achat nécessaires sont manquants (SPECIMEN). "
-            "Utilisez le bloc « Achat de documents » ci-dessous pour les acquérir."
+            f"Aucun état financier exploitable trouvé pour M-1 ({period_for_tour(tour_ref)}) "
+            "ni pour les périodes antérieures : trésorerie, dette et BFR d'ouverture sont inconnus. "
+            "Achetez les documents manquants pour la période M-1 (pas pour la période simulée)."
+        )
+    elif tour_utilise != tour_ref:
+        ecart = tour_ref - tour_utilise
+        diag_ref.alert(
+            f"État financier de {period_for_tour(tour_ref)} incomplet : ouverture reprise de {periode} "
+            f"(−{ecart} mois). Les {ecart} mois intermédiaires ne sont pas projetés — achetez/synchronisez "
+            "les documents manquants pour corriger."
         )
     else:
         diag_ref.note(f"État financier d'ouverture : {periode}.")
@@ -1862,11 +1878,13 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             if treso_initiale_source is not None:
                 treso_source_label = "Finances_Mensuelles (saisie manuelle)"
         if treso_initiale_source is None and tour_id_actif > 1:
-            _solde_initial_mois = charger_solde_initial_mois(tour_id_actif)
-            if _solde_initial_mois is not None:
-                treso_initiale_source = _solde_initial_mois
-                treso_source_label = f"Extrait bancaire de {periode_db} (solde initial)"
-                diag_ref.note(f"Trésorerie d'ouverture lue dans l'extrait bancaire de {periode_db} (solde initial).")
+            # Le solde initial de septembre est dans l'extrait d'août (M-1), pas de septembre.
+            # On ne lit JAMAIS les documents de la période simulée.
+            diag_ref.alert(
+                f"Trésorerie d'ouverture introuvable pour {period_for_tour(tour_id_precedent)} (M-1). "
+                "Les documents bancaires de M-1 ne sont pas encore achetés/synchronisés. "
+                "Achetez le « Relevé bancaire » pour la période M-1 dans le Scraper."
+            )
         if treso_source_label:
             diag_ref.note(f"Trésorerie d'ouverture : {treso_source_label}.")
 
@@ -1933,7 +1951,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
         st.info(
             "👉 Pour acheter les documents manquants, allez sur la page **🕷️ Scraper** "
-            "(onglet « Acquérir »). Sélectionnez-y les études manquantes et lancez l'achat. "
+            "(onglet « Acquérir »). Sélectionnez-y la période M-1 (pas la période simulée) "
+            "et les études manquantes, puis lancez l'achat. "
             "Les données seront ensuite disponibles ici après synchronisation."
         )
 
@@ -1961,7 +1980,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         col_a, col_b, col_c = st.columns(3)
         col_a.metric("Documents requis", f"{len(missing)}")
         col_b.metric("Coût total estimé", f"{total_missing:,.0f} €".replace(",", " "))
-        col_c.metric("Période cible", f"{periode_db}")
+        col_c.metric("Période à compléter", f"{period_for_tour(tour_id_precedent)}")
 
         with st.expander("📋 Documents manquants et pourquoi les acheter", expanded=False):
             for doc in missing:
