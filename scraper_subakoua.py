@@ -60,7 +60,7 @@ load_dotenv()
 URL_CONNEXION = os.getenv("SUBAKOUA_LOGIN_URL", "https://login.arkhe.com/")
 URL_DASHBOARD = os.getenv("SUBAKOUA_DASHBOARD_URL", "https://subakoua.arkhe.com/companies")
 DOMAINE_BASE = f"{urlparse(URL_DASHBOARD).scheme}://{urlparse(URL_DASHBOARD).netloc}"
-EXTRACTOR_VERSION = "2.4.1"
+EXTRACTOR_VERSION = "2.5.0"
 
 MODULES_A_VISITER = [
     ("Marketing", "marketing"),
@@ -1087,8 +1087,180 @@ def create_context(browser, config: ScraperConfig, logger: logging.Logger) -> Br
     return browser.new_context(**kwargs)
 
 
+JS_RECHERCHE_GLOBALE = r"""
+() => {
+    const clean = v => String(v ?? '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const results = [];
+    document.querySelectorAll('[class*="search-result"], [class*="autocomplete"], [class*="dropdown"], .p-autocomplete-panel, .p-autocomplete-items').forEach(el => {
+        const t = clean(el.innerText);
+        if (t && t.length > 3 && t.length < 300) {
+            results.push({
+                texte: t,
+                classes: String(el.className || '').slice(0, 150),
+                tag: el.tagName.toLowerCase(),
+                href: el.getAttribute('href') || el.closest('a')?.getAttribute('href') || '',
+            });
+        }
+    });
+    return results.slice(0, 20);
+}
+"""
+
+JS_CLIQUE_RESULTAT_RECHERCHE = r"""
+(searchText) => {
+    const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const target = norm(searchText);
+    const containers = document.querySelectorAll(
+        '[class*="search-result"], [class*="autocomplete"], [class*="dropdown-menu"], .p-autocomplete-panel, .p-autocomplete-items'
+    );
+    let bestMatch = null;
+    for (const container of containers) {
+        const items = container.querySelectorAll('li, a, [class*="item"], [class*="option"]');
+        for (const item of items) {
+            const t = norm(item.innerText);
+            if (t && (t.includes(target) || target.includes(t))) {
+                const rect = item.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    bestMatch = item;
+                    break;
+                }
+            }
+        }
+        if (bestMatch) break;
+    }
+    if (!bestMatch) {
+        const all = document.querySelectorAll('a, button, [role="button"], li, [class*="item"]');
+        for (const el of all) {
+            const t = norm(el.innerText);
+            if (t.includes(target) && t.length < 200) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0 && rect.y > 0 && rect.y < 400) {
+                    bestMatch = el;
+                    break;
+                }
+            }
+        }
+    }
+    if (bestMatch) {
+        const clickable = bestMatch.closest('a, button, [role="button"]') || bestMatch;
+        clickable.click();
+        return { clicked: true, texte: clickable.innerText.slice(0, 100) };
+    }
+    return { clicked: false };
+}
+"""
+
+JS_EFFACE_RECHERCHE = r"""
+() => {
+    const inputs = document.querySelectorAll(
+        'header input[type="search"], header input[placeholder*="recherche" i], ' +
+        'header input[placeholder*="appro" i], .p-autocomplete-input, .p-autocomplete input'
+    );
+    if (inputs.length > 0) {
+        const input = inputs[0];
+        input.value = '';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+    }
+    return false;
+}
+"""
+
+
+def ouvrir_via_recherche(page: Page, label: str, config: ScraperConfig, logger: logging.Logger) -> bool:
+    """Navigation via la barre de recherche globale (nouveauté Subakoua).
+
+    Tape le libellé dans la barre de recherche, attend les résultats,
+    puis clique sur le premier résultat correspondant.
+    Retourne True si la navigation a réussi, False sinon.
+    """
+    try:
+        search_selectors = [
+            'header input[type="search"]',
+            'header input[placeholder*="recherche" i]',
+            'header input[placeholder*="appro" i]',
+            '.p-autocomplete-input',
+            '.p-autocomplete input',
+            'input[aria-label*="recherche" i]',
+            'input[placeholder*="recherche" i]',
+            'input[placeholder*="appro" i]',
+        ]
+        search_input = None
+        for sel in search_selectors:
+            try:
+                loc = page.locator(sel).first
+                if loc.is_visible(timeout=2000):
+                    search_input = loc
+                    break
+            except Exception:
+                continue
+
+        if search_input is None:
+            logger.debug("Barre de recherche introuvable pour %s", label)
+            return False
+
+        search_input.click(timeout=3000)
+        search_input.fill("")
+        search_input.type(label, delay=50)
+        page.wait_for_timeout(1200)
+
+        try:
+            result = page.evaluate(JS_CLIQUE_RESULTAT_RECHERCHE, label)
+            if result and result.get("clicked"):
+                wait_page_stable(page, config.timeout_ms)
+                logger.info("Recherche '%s' | résultat cliqué : %s", label, result.get("texte", "")[:60])
+                return True
+        except Exception as exc:
+            logger.debug("Recherche JS pour '%s' en échec : %s", label, exc)
+
+        result_selectors = [
+            '.p-autocomplete-items li',
+            '.p-autocomplete-item',
+            '[class*="search-result"]',
+            '[class*="result"] li',
+            '[class*="dropdown"] li',
+        ]
+        for sel in result_selectors:
+            try:
+                items = page.locator(sel).all()
+                for item in items:
+                    try:
+                        text = item.inner_text(timeout=1000)
+                        norm_label = label.lower().normalize('NFD')
+                        norm_label = ''.join(c for c in norm_label if ord(c) < 0x300 or ord(c) > 0x36F)
+                        if text and norm_label in text.lower():
+                            item.click(timeout=3000)
+                            wait_page_stable(page, config.timeout_ms)
+                            logger.info("Recherche '%s' | résultat cliqué via %s", label, sel)
+                            return True
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        try:
+            search_input.press("Enter")
+            wait_page_stable(page, config.timeout_ms)
+            page.wait_for_timeout(600)
+            logger.info("Recherche '%s' | soumis via Entrée", label)
+            return True
+        except Exception:
+            pass
+
+        return False
+
+    except Exception as exc:
+        logger.debug("ouvrir_via_recherche('%s') en échec : %s", label, exc)
+        return False
+
+
 def ouvrir_module(page: Page, label: str, config: ScraperConfig, logger: logging.Logger) -> None:
-    # Première stratégie : texte visible.
+    # Stratégie prioritaire : barre de recherche globale (rapide, fiable)
+    if ouvrir_via_recherche(page, label, config, logger):
+        return
+
+    # Deuxième stratégie : texte visible.
     try:
         loc = page.get_by_text(label, exact=False).first
         loc.wait_for(state="visible", timeout=5000)
@@ -1098,7 +1270,7 @@ def ouvrir_module(page: Page, label: str, config: ScraperConfig, logger: logging
     except Exception:
         pass
 
-    # Deuxième stratégie : lien dont le texte contient le libellé.
+    # Troisième stratégie : lien dont le texte contient le libellé.
     href = page.evaluate(
         """(label) => {
             const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
@@ -1207,6 +1379,7 @@ def ouvrir_decision(
     url_depart = page.url
     contexte = page.context
     strategies = [
+        ("recherche_globale", lambda: ouvrir_via_recherche(page, labels[0].capitalize(), config, logger)),
         ("clic_js_tuile", lambda: page.evaluate(JS_CLIQUER_TUILE_DECISION, labels)),
         ("clic_souris_tuile", lambda: _clic_playwright_tuile(page, labels)),
         ("clic_texte_module", lambda: ouvrir_module(page, labels[0].capitalize(), config, logger)),
