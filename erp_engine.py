@@ -2122,11 +2122,127 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             ordres_prod_dict = {'Shorty 3': ord_s3, 'Integral 3': ord_i3, 'Shorty 5': ord_s5, 'Integral 5': ord_i5, 'Integral 7': ord_i7}
             st.metric("Volume total à produire", f"{sum(ordres_prod_dict.values()):,.0f} unités".replace(",", " "))
 
+        # Jauge de stock de sécurité connectée à l'onglet Achats & MRP
+        # L'utilisateur ajuste ce curseur pour voir l'impact sur les coûts d'achat/rupture
+        with st.container(border=True):
+            st.markdown("**📊 Jauge de production & stock de sécurité**")
+            st.caption("Connectée à l'onglet « Achats & MRP ». Ajustez pour voir l'impact sur les coûts.")
+
+            # Slider synchronisé avec le coefficient de stock de sécurité du MRP
+            # On utilise la même valeur que coeff_stock_secu mais avec un wording orienté production
+            coeff_secu_prod = st.slider(
+                "Stock de sécurité (%) — identique à Achats & MRP",
+                min_value=0.0,
+                max_value=200.0,
+                value=st.session_state.get("coeff_stock_secu", 100.0),
+                step=5.0,
+                key="slider_coeff_secu_prod",
+                help="Définit le stock de sécurité comme un pourcentage du besoin brut. "
+                     "0% = production au plus juste (risque de rupture), 100% = stock de sécurité standard, "
+                     "200% = stock maximal (coût d'achat élevé, rupture impossible)."
+            )
+            # Synchronisation bidirectionnelle avec l'onglet Achats & MRP
+            st.session_state["coeff_stock_secu"] = coeff_secu_prod
+
+            # Calcul des deux scénarios pour comparer les coûts
+            # Scénario A : production au plus juste (sans stock de sécurité)
+            # Scénario B : production avec le stock de sécurité choisi
+
+            # On utilise les données du MRP (qui sont calculées dans l'onglet Achats & MRP)
+            # mais on recalcule ici pour l'affichage dans Production
+            prod_totale = sum(ordres_prod_dict.values())
+            coeff_secu_pct = coeff_secu_prod / 100.0
+
+            # Calcul rapide des coûts pour la comparaison
+            # On reprend la logique du MRP mais simplifiée pour l'affichage
+            _bom_regime, _ = study_ops.bom_effective_par_libelle(etudes_m1, regime_matiere)
+            if not _bom_regime:
+                _bom_regime = {
+                    prod: {mat: coeffs.get(regime_matiere, 0.0) for mat, coeffs in mats.items()}
+                    for prod, mats in nomenclature_dynamique.items()
+                }
+
+            # Calcul des besoins bruts et nets pour les deux scénarios
+            _stocks_m1_prod = dict(_stocks_etudes) if _stocks_etudes else {}
+            if not _stocks_m1_prod:
+                _stocks_m1_prod = {
+                    label: get_h(study_ops.MATERIAL_REF_TO_STOCK_COL.get(ref, ""), 0.0)
+                    for ref, label in study_ops.MATERIAL_ID_TO_NAME.items()
+                }
+                _stocks_m1_prod = {k: v for k, v in _stocks_m1_prod.items() if v}
+
+            materiaux = sorted({mat for mats in _bom_regime.values() for mat in mats})
+            besoins_bruts = {mat: 0.0 for mat in materiaux}
+            for prod, qte_p in ordres_prod_dict.items():
+                nom_p = _bom_regime.get(prod, {})
+                for mat, coeff in nom_p.items():
+                    if mat in besoins_bruts:
+                        besoins_bruts[mat] += qte_p * float(coeff)
+
+            # Scénario A : sans stock de sécurité (besoin net = besoin brut - stock)
+            cout_sans_secu = 0.0
+            # Scénario B : avec stock de sécurité (besoin net = besoin brut * (1 + secu) - stock)
+            cout_avec_secu = 0.0
+
+            for mat, b_brut in besoins_bruts.items():
+                s_ini = float(_stocks_m1_prod.get(mat, 0.0))
+                # Sans stock de sécurité
+                b_net_a = max(0.0, b_brut - s_ini)
+                # Avec stock de sécurité
+                secu = b_brut * coeff_secu_pct
+                b_net_b = max(0.0, (b_brut + secu) - s_ini)
+
+                # Estimation du coût (prix unitaire approximatif)
+                ref = study_ops.NAME_TO_MATERIAL_ID.get(mat, mat)
+                prix = _prix_etudes.get(ref, 10.0)  # prix par défaut si non trouvé
+                cout_sans_secu += b_net_a * prix
+                cout_avec_secu += b_net_b * prix
+
+            # Affichage comparatif
+            c_opt1, c_opt2, c_opt3 = st.columns(3)
+            with c_opt1:
+                st.metric(
+                    "Coût sans stock de sécurité",
+                    fmt_eur(cout_sans_secu),
+                    help="Production au plus juste. Risque de rupture si la demande dépasse les prévisions."
+                )
+            with c_opt2:
+                st.metric(
+                    "Coût avec stock de sécurité",
+                    fmt_eur(cout_avec_secu),
+                    help=f"Production + stock de sécurité ({coeff_secu_prod:.0f}% du besoin brut)."
+                )
+            with c_opt3:
+                delta = cout_avec_secu - cout_sans_secu
+                st.metric(
+                    "Écart de coût",
+                    fmt_eur(delta),
+                    delta=f"{delta:+,.2f} €",
+                    help="Différence entre les deux scénarios. Négatif = le stock de sécurité réduit les coûts."
+                )
+
+            # Recommandation automatique
+            if cout_avec_secu < cout_sans_secu:
+                st.success(f"✅ Le stock de sécurité réduit les coûts de {fmt_eur(abs(delta))}. Gardez ce niveau.")
+            elif cout_avec_secu > cout_sans_secu:
+                st.info(f"ℹ️ Le stock de sécurité augmente les coûts de {fmt_eur(delta)}. Vérifiez si le risque de rupture justifie ce surcoût.")
+            else:
+                st.info("ℹ️ Les deux scénarios ont le même coût.")
+
     with tab_sim_appro:
         st.subheader("3. MRP2 & Achats")
         st.caption("Le moteur transforme les volumes de production en besoins nets puis en propositions fournisseurs.")
         pct_vente_couvert = sim_slider("Part de la prod dédiée à la couverture (%)", 0, 100, "slider_pct_vente", 100, step=5)
-        coeff_stock_secu = sim_slider("Coefficient stock de sécurité", 0.0, 2.0, "slider_coeff_secu", 1.0, step=0.1)
+        coeff_stock_secu = st.slider(
+            "Coefficient stock de sécurité (%) — synchronisé avec Production",
+            min_value=0.0,
+            max_value=200.0,
+            value=st.session_state.get("coeff_stock_secu", 100.0),
+            step=5.0,
+            key="slider_coeff_secu",
+            help="Valeur synchronisée avec la jauge de l'onglet Production. "
+                 "0% = production au plus juste, 100% = stock standard, 200% = stock maximal."
+        )
 
         # Nomenclature : bornes réelles du jeu si l'étude « Processus de
         # production » est disponible, sinon coefficients estimés en base.
@@ -2172,7 +2288,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         matieres_sans_tarif = []
         for mat, b_brut in besoins_bruts.items():
             s_ini = float(_stocks_m1.get(mat, 0.0))
-            secu = b_brut * (coeff_stock_secu / 10.0)
+            secu = b_brut * (coeff_stock_secu / 100.0)
             b_net = max(0.0, (b_brut + secu) - s_ini)
             ligne_mrp = {
                 'matiere': mat,
