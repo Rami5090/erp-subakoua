@@ -215,6 +215,13 @@ def parse_rh(contenu: Any) -> dict[str, Any]:
 # Production : quantités à produire par produit
 # ---------------------------------------------------------------------------
 def parse_production(contenu: Any) -> dict[str, int]:
+    """Quantités à produire par produit, issues de la page de décisions.
+
+    Une quantité NULLE est ignorée : sur la page de décisions, un champ vide
+    ou non encore saisi vaut 0. Injecter ce 0 écrasait les volumes de
+    référence (ventes M-1) et vidait le MRP (« Besoin brut » à 0 pour toutes
+    les matières), au lieu de laisser le simulateur partir des volumes réels.
+    """
     out: dict[str, int] = {}
     for section, ligne, values in collect_rows(contenu):
         text = norm(f"{section} {ligne}")
@@ -225,8 +232,9 @@ def parse_production(contenu: Any) -> dict[str, int]:
         if any(w in text for w in ("quantit", "produire", "ordre", "lancement", "fabrication")) and not any(
             w in text for w in ("stock", "cout", "prix", "qualite", "capacite")
         ):
-            if 0 <= nums[0] <= 1e6:
-                out[product] = int(round(nums[0]))
+            quantite = int(round(nums[0]))
+            if quantite > 0 and quantite <= 1e6:
+                out[product] = quantite
     return out
 
 

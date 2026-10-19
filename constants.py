@@ -95,6 +95,12 @@ TAUX_RENDEMENT_EPARGNE_ANNUEL = 0.012
 NOMBRE_PARTS = 40000
 TAUX_CHARGES_SOCIALES = 0.50
 
+# Coût de possession du stock (%/an).
+# Un stock de sécurité plus élevé immobilise du capital : ce taux permet de
+# comparer le coût d'achat supplémentaire au coût de détention, au lieu de
+# comparer des montants d'achat seuls (ce qui favorise toujours le stock nul).
+TAUX_POSSESSION_STOCK_ANNUEL = 0.08
+
 # Volumes par défaut (pour initialisation)
 VOLUMES_PAR_DEFAUT = {"s3": 50, "i3": 500, "s5": 100, "i5": 1500, "i7": 2500}
 

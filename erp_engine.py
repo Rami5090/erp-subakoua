@@ -58,6 +58,8 @@ from auth import setup as auth_setup, is_editor, require_editor, readonly_notice
 from db_utils import get_readonly_engine_if_configured
 from decisions_parser import parse_decisions
 import study_ops
+import mrp_engine
+from typing import Any
 from period_context import (
     ReferenceDiagnostic,
     ReferenceRow,
@@ -71,7 +73,7 @@ from period_context import (
     ref_number,
     stale_keys,
 )
-from constants import PRIX_CESSION_MACHINES, TVA_STANDARD
+from constants import PRIX_CESSION_MACHINES, TVA_STANDARD, TAUX_POSSESSION_STOCK_ANNUEL
 from db_schema import (
     COLONNES_CESSION_FINANCES,
     COLONNES_CESSION_PARC,
@@ -457,6 +459,90 @@ if not is_editor():
     if _ro_engine is not None:
         engine = _ro_engine
 
+
+# ---------------------------------------------------------------------------
+# NOMS RÉELS DES TABLES (insensibles à la casse)
+# ---------------------------------------------------------------------------
+# MySQL sous Linux (Aiven) distingue la casse des noms de tables : une requête
+# sur « Parametres_Nomenclature » échouait en silence (erreur 1146) alors que
+# la table réelle s'appelle « parametres_nomenclature ». Le MRP retombait alors
+# sur des constantes codées en dur : nomenclature, tarifs fournisseurs et temps
+# d'atelier fictifs, donc des coûts faux.
+#
+# `resoudre_table` interroge information_schema et renvoie le nom exact.
+# Si la table est introuvable, le nom demandé est rendu tel quel : l'erreur SQL
+# reste visible dans les logs plutôt que d'être masquée.
+
+
+@st.cache_data(show_spinner=False)
+def resoudre_table(nom: str) -> str:
+    """Retourne le nom réel d'une table, quelle que soit la casse demandée.
+
+    MySQL sous Linux distingue la casse : sans cette résolution, une requête
+    sur « Normes_MS_Prod » échouait en silence (1146) et le simulateur
+    retombait sur des constantes codées en dur.
+    """
+    if engine is None:
+        return nom
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = DATABASE() AND LOWER(table_name) = :nom LIMIT 1"
+                ),
+                {"nom": str(nom).lower()},
+            ).fetchone()
+        if row:
+            return str(row[0])
+    except Exception:
+        pass
+    return nom
+
+
+def charger_stocks_securite_bdd() -> dict[str, float]:
+    """Stock de sécurité cible PAR MATIÈRE (table `parametres_stockssecurite`).
+
+    C'est la cible de l'ERP pour chaque matière. Elle est utilisée comme
+    plancher du stock de sécurité dans le MRP : le coefficient de la jauge
+    s'ajoute par-dessus, mais on ne descend jamais sous la cible du jeu.
+    """
+    if engine is None:
+        return {}
+    try:
+        query = f"SELECT matiere, stock_securite FROM {resoudre_table('Parametres_StocksSecurite')}"
+        df = pd.read_sql(query, engine)
+        if df.empty:
+            return {}
+        return {
+            str(row["matiere"]): float(row["stock_securite"] or 0.0)
+            for _, row in df.iterrows()
+        }
+    except Exception:
+        return {}
+
+
+def charger_taux_vieillissement_bdd() -> dict[str, float]:
+    """Durée de vie d'une matière en mois (`parametres_matieres`).
+
+    Sert à chiffrer la part du stock qui ne sera pas consommée avant
+    péremption : au-delà, le stock est une perte sèche, pas une réserve.
+    """
+    if engine is None:
+        return {}
+    try:
+        query = f"SELECT matiere, taux_vieillissement_mois FROM {resoudre_table('Parametres_Matieres')}"
+        df = pd.read_sql(query, engine)
+        if df.empty:
+            return {}
+        return {
+            str(row["matiere"]): float(row["taux_vieillissement_mois"] or 0.0)
+            for _, row in df.iterrows()
+        }
+    except Exception:
+        return {}
+
+
 def init_db_simu():
     if engine is None: return
     try:
@@ -559,7 +645,7 @@ def charger_nomenclature_bdd():
     }
     if engine is None: return nom_secours
     try:
-        query = "SELECT produit, matiere, coeff_min, coeff_normal, coeff_max FROM Parametres_Nomenclature"
+        query = f"SELECT produit, matiere, coeff_min, coeff_normal, coeff_max FROM {resoudre_table('Parametres_Nomenclature')}"
         df = pd.read_sql(query, engine)
         if df.empty: return nom_secours
         nom_dict = {}
@@ -585,7 +671,7 @@ def charger_temps_ateliers_bdd():
     }
     if engine is None: return temps_secours
     try:
-        query = "SELECT produit, atelier, temps_min, temps_normal, temps_max FROM Parametres_TempsAteliers"
+        query = f"SELECT produit, atelier, temps_min, temps_normal, temps_max FROM {resoudre_table('Parametres_TempsAteliers')}"
         df = pd.read_sql(query, engine)
         if df.empty: return temps_secours
         temps_dict = {}
@@ -604,7 +690,7 @@ def charger_temps_ateliers_bdd():
 def charger_parametre_global(nom_param, defaut=0.0):
     if engine is None: return float(defaut)
     try:
-        query = text("SELECT valeur FROM Parametres_Globaux WHERE parametre = :parametre")
+        query = text(f"SELECT valeur FROM {resoudre_table('Parametres_Globaux')} WHERE parametre = :parametre")
         df = pd.read_sql(query, engine, params={"parametre": nom_param})
         if not df.empty: return float(df['valeur'].iloc[0])
     except Exception: pass
@@ -614,7 +700,7 @@ def charger_parametre_global(nom_param, defaut=0.0):
 def charger_norme_ms(table_name, activite_actuelle):
     if engine is None: return 27971.0
     try:
-        query = f"SELECT activite_seuil, ms_satisfaisante FROM {table_name} ORDER BY activite_seuil ASC"
+        query = f"SELECT activite_seuil, ms_satisfaisante FROM {resoudre_table(table_name)} ORDER BY activite_seuil ASC"
         df = pd.read_sql(query, engine)
         if df.empty: return 25000.0
         seuils = df['activite_seuil'].tolist()
@@ -652,7 +738,7 @@ def optimiser_fournisseur_matiere(matiere, qualite_visee, critere="prix", refere
             noms = [m for m in {matiere, reference} if m]
             requete = text(
                 f"SELECT fournisseur, matiere, {col_qualite} as prix, delai_mois "
-                "FROM Parametres_TarifsFournisseurs "
+                f"FROM {resoudre_table('Parametres_TarifsFournisseurs')} "
                 "WHERE matiere IN :noms AND " + col_qualite + " IS NOT NULL"
             ).bindparams(bindparam("noms", expanding=True))
             df_tarifs = pd.read_sql(requete, engine, params={"noms": noms})
@@ -1950,6 +2036,22 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     ref_rh, _rh_scrape = merge_reference(ref_rh_scrape, ref_rh_sql.data, tour_id_precedent)
 
     ordres_ref = {k: int(decisions_erp["production"].get(k, volumes_ref[k])) for k in volumes_ref}
+
+    # -------------------------------------------------------------------
+    # Données MRP partagées (onglet Production ↔ onglet Achats & MRP)
+    # -------------------------------------------------------------------
+    # Le stock de sécurité cible par matière (`parametres_stockssecurite`) et
+    # le taux de vieillissement (`parametres_matieres`) étaient ignorés : le
+    # MRP n'appliquait qu'un coefficient global, sans cible ERP ni coût de
+    # détention. Ils sont désormais lus et partagés par les deux onglets.
+    _stocks_securite_base = charger_stocks_securite_bdd()
+    _taux_vieillissement = charger_taux_vieillissement_bdd()
+    _taux_possession_annuel = float(
+        charger_parametre_global("taux_possession_stock_annuel", TAUX_POSSESSION_STOCK_ANNUEL * 100.0)
+    ) / 100.0
+    _sources_stocks_securite = (
+        "parametres_stockssecurite" if _stocks_securite_base else "aucune cible ERP (coefficient seul)"
+    )
     # Afficher les alertes de décisions uniquement en mode Expert ; en mode Pilote,
     # on n'affiche rien car ces données peuvent être absentes sans bloquer la simulation.
     for _ligne in decisions_erp["report"]:
@@ -1989,6 +2091,94 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
     def get_h(col, def_v=0.0): return ref_number(ref_hist.data, col, def_v)
     def get_m(col, def_v=0): return ref_int(ref_machines.data, col, def_v)
+
+    def _construire_parametres_mrp(
+        volumes: dict,
+        regime: str,
+        qualite: int,
+        critere: str,
+        part_couverture_pct: float,
+        coeff_stock_secu_pct: float,
+    ):
+        """ Assemble les entrées du MRP depuis les données réelles du jeu.
+
+        Utilisé par l'onglet Production (comparaison de scénarios) ET par
+        l'onglet Achats & MRP (plan d'approvisionnement) : les deux partagent
+        donc exactement la même nomenclature, les mêmes stocks et les mêmes
+        tarifs. Les deux onglets ne peuvent pas s'alimenter l'un l'autre
+        (Streamlit les exécute dans l'ordre du script), d'où ce point unique.
+        """
+        bom, origine_bom = study_ops.bom_effective_par_libelle(etudes_m1, regime)
+        if not bom:
+            bom = {
+                prod: {mat: coeffs.get(regime, 0.0) for mat, coeffs in mats.items()}
+                for prod, mats in nomenclature_dynamique.items()
+            }
+        source_nomenclature = origine_bom or "parametres_nomenclature (estimée)"
+
+        stocks = dict(_stocks_etudes)
+        source_stocks = "Besoins théoriques (étude achetée)"
+        if not stocks:
+            stocks = {
+                label: get_h(study_ops.MATERIAL_REF_TO_STOCK_COL.get(ref, ""), 0.0)
+                for ref, label in study_ops.MATERIAL_ID_TO_NAME.items()
+            }
+            stocks = {k: v for k, v in stocks.items() if v}
+            source_stocks = "Historique_Equipe (saisie manuelle)"
+
+        materiaux = sorted({mat for mats in bom.values() for mat in mats})
+        stocks_inconnus = [mat for mat in materiaux if mat not in stocks]
+        for _mat in stocks_inconnus:
+            if _mat in _stocks_incoherents:
+                source_stocks = "Besoins théoriques (partiellement incohérents)"
+
+        # Tarifs fournisseurs : le tarifaire réel est la source du prix.
+        # La table était lue avec une casse inexistante (échec silencieux) :
+        # les prix retombaient sur une estimation, d'où des coûts faux.
+        tarifs: dict[str, dict[str, Any]] = {}
+        for mat in materiaux:
+            ref = study_ops.NAME_TO_MATERIAL_ID.get(mat, mat)
+            opt = optimiser_fournisseur_matiere(
+                mat, qualite_visee=qualite, critere=critere,
+                reference=ref, prix_reference=_prix_etudes.get(ref),
+            )
+            if opt:
+                try:
+                    delai = int(float(opt.get("delai_mois", 1) or 1))
+                except (TypeError, ValueError):
+                    delai = 1
+                tarifs[mat] = {
+                    "fournisseur": opt.get("fournisseur", "N/D"),
+                    "prix": float(opt.get("prix") or 0.0),
+                    "delai_mois": max(0, min(3, delai)),
+                    "tarifaire": bool(opt.get("tarifaire")),
+                    "origine": (
+                        "parametres_tarifsfournisseurs" if opt.get("tarifaire")
+                        else _sources_prix.get(ref, "estimation")
+                    ),
+                }
+
+        params = mrp_engine.ParametresMRP(
+            nomenclature=bom,
+            stocks_ouverture=stocks,
+            stocks_securite_base=_stocks_securite_base,
+            tarifs=tarifs,
+            taux_vieillissement_mois=_taux_vieillissement,
+            volumes=volumes,
+            part_couverture_pct=part_couverture_pct,
+            coeff_stock_secu_pct=coeff_stock_secu_pct,
+            taux_possession_annuel_pct=_taux_possession_annuel * 100.0,
+        )
+        meta = {
+            "nomenclature": bom,
+            "source_nomenclature": source_nomenclature,
+            "stocks": stocks,
+            "source_stocks": source_stocks,
+            "stocks_inconnus": stocks_inconnus,
+            "materiaux": materiaux,
+            "tarifs": tarifs,
+        }
+        return params, meta
 
     score_rh_prod = calculer_score_rh_prod_dynamique(donnees_rh, ratio_optimum_rh)
 
@@ -2055,6 +2245,27 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 }
                 sauvegarder_scenario_seed(token_seed, tour_id_actif, nom, parametres_sim)
                 st.success("Scénario enregistré.")
+
+    # -------------------------------------------------------------------
+    # Jauge de stock de sécurité : valeur canonique partagée par Production
+    # et Achats & MRP.
+    # -------------------------------------------------------------------
+    # Les deux curseurs (un par onglet) sont reflétés par un callback : le
+    # callback s'exécute AVANT le rerun du script, donc la synchronisation
+    # ne provoque jamais « cannot be modified after the widget is instantiated ».
+    def _sync_coeff_stock_securu(source: str, cible: str):
+        def _callback():
+            valeur = float(st.session_state.get(source, 100.0))
+            st.session_state["coeff_stock_secu"] = valeur
+            st.session_state[cible] = valeur
+        return _callback
+
+    _canonique = float(st.session_state.get("coeff_stock_secu", 100.0))
+    st.session_state.setdefault("slider_coeff_secu_prod", _canonique)
+    st.session_state.setdefault("slider_coeff_secu", _canonique)
+    # Réglages du MRP utilisés par la comparaison de scénarios de Production.
+    st.session_state.setdefault("slider_pct_vente", 100)
+    st.session_state.setdefault("radio_critere_mrp", "prix")
 
     tab_sim_marche, tab_sim_prod, tab_sim_appro, tab_sim_rh, tab_sim_fin = st.tabs([
         "🎯 1. Marché & Ventes", "🏭 2. Production", "📦 3. Achats & MRP", "👥 4. RH", "💶 5. Finance & Cash"
@@ -2126,108 +2337,80 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         # L'utilisateur ajuste ce curseur pour voir l'impact sur les coûts d'achat/rupture
         with st.container(border=True):
             st.markdown("**📊 Jauge de production & stock de sécurité**")
-            st.caption("Connectée à l'onglet « Achats & MRP ». Ajustez pour voir l'impact sur les coûts.")
+            st.caption(
+                "Connectée à l'onglet « Achats & MRP ». Ajustez pour comparer le coût total "
+                "(achat + possession du stock) de plusieurs scénarios."
+            )
 
-            # Slider synchronisé avec le coefficient de stock de sécurité du MRP
-            # On utilise la même valeur que coeff_stock_secu mais avec un wording orienté production
             coeff_secu_prod = st.slider(
                 "Stock de sécurité (%) — identique à Achats & MRP",
                 min_value=0.0,
                 max_value=200.0,
-                value=st.session_state.get("coeff_stock_secu", 100.0),
                 step=5.0,
                 key="slider_coeff_secu_prod",
-                help="Définit le stock de sécurité comme un pourcentage du besoin brut. "
-                     "0% = production au plus juste (risque de rupture), 100% = stock de sécurité standard, "
-                     "200% = stock maximal (coût d'achat élevé, rupture impossible)."
+                on_change=_sync_coeff_stock_securu("slider_coeff_secu_prod", "slider_coeff_secu"),
+                help="Tampon de sécurité ajouté au besoin brut, en pourcentage. "
+                     "0% = production au plus juste (risque de rupture), 100% = stock standard, "
+                     "200% = stock maximal (coût d'achat élevé, rupture impossible). "
+                     "La cible ERP par matière (parametres_stockssecurite) reste un plancher."
             )
-            # Synchronisation bidirectionnelle avec l'onglet Achats & MRP
+            # Synchronisation avec l'onglet Achats & MRP (source de vérité : cette jauge).
             st.session_state["coeff_stock_secu"] = coeff_secu_prod
 
-            # Calcul des deux scénarios pour comparer les coûts
-            # Scénario A : production au plus juste (sans stock de sécurité)
-            # Scénario B : production avec le stock de sécurité choisi
+            # Scénarios comparés : le plus rentable est mis en évidence.
+            _parametres_mrp_base, _meta_mrp_base = _construire_parametres_mrp(
+                volumes=ordres_prod_dict,
+                regime=regime_matiere,
+                qualite=qualite_strategique,
+                critere=st.session_state.get("radio_critere_mrp", "prix"),
+                part_couverture_pct=float(st.session_state.get("slider_pct_vente", 100)),
+                coeff_stock_secu_pct=coeff_secu_prod,
+            )
+            _scenarios = [
+                mrp_engine.Scenario("Au plus juste (0 %)", 0.0, float(st.session_state.get("slider_pct_vente", 100))),
+                mrp_engine.Scenario("Choix en cours", coeff_secu_prod, float(st.session_state.get("slider_pct_vente", 100))),
+                mrp_engine.Scenario("Stock renforcé (+50 %)", min(200.0, coeff_secu_prod + 50.0), float(st.session_state.get("slider_pct_vente", 100))),
+                mrp_engine.Scenario("Stock maximal (200 %)", 200.0, float(st.session_state.get("slider_pct_vente", 100))),
+            ]
+            _comparaison = mrp_engine.comparer_scenarios(_parametres_mrp_base, _scenarios)
 
-            # On utilise les données du MRP (qui sont calculées dans l'onglet Achats & MRP)
-            # mais on recalcule ici pour l'affichage dans Production
-            prod_totale = sum(ordres_prod_dict.values())
-            coeff_secu_pct = coeff_secu_prod / 100.0
-
-            # Calcul rapide des coûts pour la comparaison
-            # On reprend la logique du MRP mais simplifiée pour l'affichage
-            _bom_regime, _ = study_ops.bom_effective_par_libelle(etudes_m1, regime_matiere)
-            if not _bom_regime:
-                _bom_regime = {
-                    prod: {mat: coeffs.get(regime_matiere, 0.0) for mat, coeffs in mats.items()}
-                    for prod, mats in nomenclature_dynamique.items()
-                }
-
-            # Calcul des besoins bruts et nets pour les deux scénarios
-            _stocks_m1_prod = dict(_stocks_etudes) if _stocks_etudes else {}
-            if not _stocks_m1_prod:
-                _stocks_m1_prod = {
-                    label: get_h(study_ops.MATERIAL_REF_TO_STOCK_COL.get(ref, ""), 0.0)
-                    for ref, label in study_ops.MATERIAL_ID_TO_NAME.items()
-                }
-                _stocks_m1_prod = {k: v for k, v in _stocks_m1_prod.items() if v}
-
-            materiaux = sorted({mat for mats in _bom_regime.values() for mat in mats})
-            besoins_bruts = {mat: 0.0 for mat in materiaux}
-            for prod, qte_p in ordres_prod_dict.items():
-                nom_p = _bom_regime.get(prod, {})
-                for mat, coeff in nom_p.items():
-                    if mat in besoins_bruts:
-                        besoins_bruts[mat] += qte_p * float(coeff)
-
-            # Scénario A : sans stock de sécurité (besoin net = besoin brut - stock)
-            cout_sans_secu = 0.0
-            # Scénario B : avec stock de sécurité (besoin net = besoin brut * (1 + secu) - stock)
-            cout_avec_secu = 0.0
-
-            for mat, b_brut in besoins_bruts.items():
-                s_ini = float(_stocks_m1_prod.get(mat, 0.0))
-                # Sans stock de sécurité
-                b_net_a = max(0.0, b_brut - s_ini)
-                # Avec stock de sécurité
-                secu = b_brut * coeff_secu_pct
-                b_net_b = max(0.0, (b_brut + secu) - s_ini)
-
-                # Estimation du coût (prix unitaire approximatif)
-                ref = study_ops.NAME_TO_MATERIAL_ID.get(mat, mat)
-                prix = _prix_etudes.get(ref, 10.0)  # prix par défaut si non trouvé
-                cout_sans_secu += b_net_a * prix
-                cout_avec_secu += b_net_b * prix
-
-            # Affichage comparatif
-            c_opt1, c_opt2, c_opt3 = st.columns(3)
-            with c_opt1:
-                st.metric(
-                    "Coût sans stock de sécurité",
-                    fmt_eur(cout_sans_secu),
-                    help="Production au plus juste. Risque de rupture si la demande dépasse les prévisions."
+            _vue = pd.DataFrame(_comparaison)
+            _vue = _vue.rename(columns={
+                "libelle": "Scénario",
+                "volume_produit": "Volume produit (u)",
+                "cout_achat_ht": "Coût achats HT (€)",
+                "cout_possession": "Coût possession / mois (€)",
+                "valeur_stock_final": "Valeur stock final (€)",
+                "valeur_a_risque": "Valeur à risque (€)",
+                "cout_total": "Coût total / mois (€)",
+            })
+            _colonnes = [
+                "Scénario", "Volume produit (u)", "Coût achats HT (€)",
+                "Coût possession / mois (€)", "Valeur stock final (€)",
+                "Valeur à risque (€)", "Coût total / mois (€)",
+            ]
+            _colonnes = [c for c in _colonnes if c in _vue.columns]
+            st.dataframe(
+                _vue[_colonnes].style.format(
+                    {c: "{:,.0f}".format for c in _colonnes if c != "Scénario"},
+                    na_rep="—",
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+            _reco = next((r for r in _comparaison if r.get("recommandé")), None)
+            if _reco:
+                st.success(
+                    f"✅ Scénario le moins coûteux : **{_reco['libelle']}** "
+                    f"({fmt_eur(_reco['cout_total'])} / mois, dont {fmt_eur(_reco['cout_possession'])} "
+                    "de possession du stock)."
                 )
-            with c_opt2:
-                st.metric(
-                    "Coût avec stock de sécurité",
-                    fmt_eur(cout_avec_secu),
-                    help=f"Production + stock de sécurité ({coeff_secu_prod:.0f}% du besoin brut)."
+            if any(r.get("valeur_a_risque", 0.0) > 0 for r in _comparaison):
+                st.info(
+                    "ℹ️ « Valeur à risque » = part du stock qui ne sera pas consommée avant la "
+                    "péremption de la matière (taux de vieillissement publié par le jeu). "
+                    "C'est du capital perdu, pas une réserve."
                 )
-            with c_opt3:
-                delta = cout_avec_secu - cout_sans_secu
-                st.metric(
-                    "Écart de coût",
-                    fmt_eur(delta),
-                    delta=f"{delta:+,.2f} €",
-                    help="Différence entre les deux scénarios. Négatif = le stock de sécurité réduit les coûts."
-                )
-
-            # Recommandation automatique
-            if cout_avec_secu < cout_sans_secu:
-                st.success(f"✅ Le stock de sécurité réduit les coûts de {fmt_eur(abs(delta))}. Gardez ce niveau.")
-            elif cout_avec_secu > cout_sans_secu:
-                st.info(f"ℹ️ Le stock de sécurité augmente les coûts de {fmt_eur(delta)}. Vérifiez si le risque de rupture justifie ce surcoût.")
-            else:
-                st.info("ℹ️ Les deux scénarios ont le même coût.")
 
     with tab_sim_appro:
         st.subheader("3. MRP2 & Achats")
@@ -2237,118 +2420,95 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             "Coefficient stock de sécurité (%) — synchronisé avec Production",
             min_value=0.0,
             max_value=200.0,
-            value=st.session_state.get("coeff_stock_secu", 100.0),
             step=5.0,
             key="slider_coeff_secu",
+            on_change=_sync_coeff_stock_securu("slider_coeff_secu", "slider_coeff_secu_prod"),
             help="Valeur synchronisée avec la jauge de l'onglet Production. "
                  "0% = production au plus juste, 100% = stock standard, 200% = stock maximal."
         )
-
-        # Nomenclature : bornes réelles du jeu si l'étude « Processus de
-        # production » est disponible, sinon coefficients estimés en base.
-        _bom_regime, _origine_bom = study_ops.bom_effective_par_libelle(etudes_m1, regime_matiere)
-        _source_nomenclature = _origine_bom or "Parametres_Nomenclature (estimée)"
-        if not _bom_regime:
-            _bom_regime = {
-                prod: {mat: coeffs.get(regime_matiere, 0.0) for mat, coeffs in mats.items()}
-                for prod, mats in nomenclature_dynamique.items()
-            }
-
-        # Stock d'ouverture du mois simulé : clôture de M-1 publiée par le jeu.
-        _stocks_m1 = dict(_stocks_etudes)
-        _source_stocks = "Besoins théoriques (étude achetée)"
-        if not _stocks_m1:
-            _stocks_m1 = {
-                label: get_h(study_ops.MATERIAL_REF_TO_STOCK_COL.get(ref, ""), 0.0)
-                for ref, label in study_ops.MATERIAL_ID_TO_NAME.items()
-            }
-            _stocks_m1 = {k: v for k, v in _stocks_m1.items() if v}
-            _source_stocks = "Historique_Equipe (saisie manuelle)"
-
-        materiaux = sorted({mat for mats in _bom_regime.values() for mat in mats})
-        # Un stock manquant n'est pas un stock nul : sans alerte, le besoin net
-        # vaudrait le besoin brut et le plan d'achat serait doublé.
-        _stocks_inconnus = [mat for mat in materiaux if mat not in _stocks_m1]
-        for _mat in _stocks_inconnus:
-            if _mat in _stocks_incoherents:
-                _source_stocks = "Besoins théoriques (partiellement incohérents)"
-        besoins_bruts = {mat: 0.0 for mat in materiaux}
-        for prod, qte_p in ordres_prod_dict.items():
-            nom_p = _bom_regime.get(prod, {})
-            qte_effective = qte_p * (pct_vente_couvert / 100.0)
-            for mat, coeff in nom_p.items():
-                if mat in besoins_bruts:
-                    besoins_bruts[mat] += qte_effective * float(coeff)
+        # Valeur canonique partagée : les deux onglets lisent le même nombre.
+        coeff_stock_secu = float(st.session_state.get("coeff_stock_secu", coeff_stock_secu))
 
         critere_arbitrage = sim_radio("Critère :", ["prix", "delai"], "radio_critere_mrp", "prix", horizontal=True)
-        cout_achats_total_sim = 0.0
+
+        # Paramètres MRP construits depuis les données réelles du jeu.
+        # Même source que la jauge de Production : nomenclature, stocks et
+        # tarifs identiques dans les deux onglets.
+        _parametres_mrp, _meta_mrp = _construire_parametres_mrp(
+            volumes=ordres_prod_dict,
+            regime=regime_matiere,
+            qualite=qualite_strategique,
+            critere=critere_arbitrage,
+            part_couverture_pct=pct_vente_couvert,
+            coeff_stock_secu_pct=coeff_stock_secu,
+        )
+        _bom_regime = _meta_mrp["nomenclature"]
+        _source_nomenclature = _meta_mrp["source_nomenclature"]
+        _stocks_m1 = _meta_mrp["stocks"]
+        _source_stocks = _meta_mrp["source_stocks"]
+        materiaux = _meta_mrp["materiaux"]
+        _stocks_inconnus = _meta_mrp["stocks_inconnus"]
+
+        _resultat_mrp = mrp_engine.calculer_mrp(_parametres_mrp)
+
+        cout_achats_total_sim = _resultat_mrp.cout_achat_ht
         achats_fournisseurs_par_echeance = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}
         achats_fournisseurs_detail = []
         mrp_detail = []
         matieres_sans_tarif = []
-        for mat, b_brut in besoins_bruts.items():
-            s_ini = float(_stocks_m1.get(mat, 0.0))
-            secu = b_brut * (coeff_stock_secu / 100.0)
-            b_net = max(0.0, (b_brut + secu) - s_ini)
-            ligne_mrp = {
-                'matiere': mat,
-                'besoin_brut': b_brut,
-                'stock_ouverture': s_ini,
-                'besoin_net': b_net,
-            }
-            if b_net > 0:
-                ref = study_ops.NAME_TO_MATERIAL_ID.get(mat, mat)
-                opt = optimiser_fournisseur_matiere(
-                    mat, qualite_visee=qualite_strategique, critere=critere_arbitrage,
-                    reference=ref, prix_reference=_prix_etudes.get(ref),
-                )
-                source_prix = (
-                    "Parametres_TarifsFournisseurs" if opt and opt.get("tarifaire")
-                    else _sources_prix.get(ref, "estimation")
-                )
-                if opt:
-                    cout_ht = b_net * float(opt['prix'])
-                    cout_achats_total_sim += cout_ht
-                    try:
-                        delai = int(float(opt.get('delai_mois', 1)))
-                    except (TypeError, ValueError):
-                        delai = 1
-                    delai = max(0, min(3, delai))
-                    achats_fournisseurs_par_echeance[delai] += cout_ht
+        for _ligne in _resultat_mrp.lignes:
+            mrp_detail.append({
+                'matiere': _ligne.matiere,
+                'besoin_brut': _ligne.besoin_brut,
+                'stock_ouverture': _ligne.stock_ouverture,
+                'stock_securite': _ligne.stock_securite,
+                'besoin_net': _ligne.besoin_net,
+                'stock_final': _ligne.stock_final,
+                'couverture_mois': _ligne.couverture_mois,
+                'fournisseur': _ligne.fournisseur,
+                'prix_unitaire': _ligne.prix_unitaire,
+                'delai_mois': _ligne.delai_mois,
+                'montant_ht': _ligne.montant_ht,
+                'tarifaire': _ligne.origine_prix,
+                'valeur_a_risque': _ligne.valeur_a_risque,
+            })
+            if _ligne.besoin_net > 0:
+                if _ligne.prix_unitaire > 0:
+                    achats_fournisseurs_par_echeance[_ligne.delai_mois] += _ligne.montant_ht
                     achats_fournisseurs_detail.append({
-                        'matiere': mat,
-                        'fournisseur': opt.get('fournisseur', 'N/D'),
-                        'delai_mois': delai,
-                        'montant_ht': cout_ht,
-                    })
-                    ligne_mrp.update({
-                        'fournisseur': opt.get('fournisseur', 'N/D'),
-                        'prix_unitaire': float(opt['prix']),
-                        'delai_mois': delai,
-                        'montant_ht': cout_ht,
-                        'tarifaire': source_prix,
+                        'matiere': _ligne.matiere,
+                        'fournisseur': _ligne.fournisseur,
+                        'delai_mois': _ligne.delai_mois,
+                        'montant_ht': _ligne.montant_ht,
                     })
                 else:
-                    matieres_sans_tarif.append(mat)
-            mrp_detail.append(ligne_mrp)
+                    matieres_sans_tarif.append(_ligne.matiere)
 
         with st.container(border=True):
             st.markdown("**🧾 Plan d'approvisionnement calculé**")
             st.caption(
                 f"Nomenclature : {_source_nomenclature} · Stock d'ouverture : {_source_stocks} "
-                f"(clôture {period_for_tour(tour_id_precedent)})."
+                f"(clôture {period_for_tour(tour_id_precedent)}) · "
+                f"Stock de sécurité : cible ERP ({_sources_stocks_securite}) + "
+                f"{coeff_stock_secu:.0f} % du besoin brut."
             )
             if mrp_detail:
                 mrp_view = pd.DataFrame(mrp_detail)
-                for colonne in ("besoin_brut", "stock_ouverture", "besoin_net", "prix_unitaire", "montant_ht"):
+                for colonne in ("besoin_brut", "stock_ouverture", "stock_securite", "besoin_net",
+                                "stock_final", "couverture_mois", "prix_unitaire", "montant_ht",
+                                "valeur_a_risque"):
                     if colonne in mrp_view.columns:
-                        mrp_view[colonne] = mrp_view[colonne].map(lambda x: round(float(x), 2))
+                        mrp_view[colonne] = mrp_view[colonne].map(
+                            lambda x: round(float(x), 2) if pd.notna(x) else None
+                        )
                 mrp_view = mrp_view.rename(columns={
                     'matiere': 'Matière', 'besoin_brut': 'Besoin brut',
-                    'stock_ouverture': 'Stock ouverture', 'besoin_net': 'Besoin net',
+                    'stock_ouverture': 'Stock ouverture', 'stock_securite': 'Stock sécurité',
+                    'besoin_net': 'Besoin net', 'stock_final': 'Stock final',
+                    'couverture_mois': 'Couverture (mois)',
                     'fournisseur': 'Fournisseur', 'prix_unitaire': 'Prix unitaire',
                     'delai_mois': 'Délai (mois)', 'montant_ht': 'Montant HT (€)',
-                    'tarifaire': 'Origine du prix',
+                    'tarifaire': 'Origine du prix', 'valeur_a_risque': 'Valeur à risque (€)',
                 })
                 st.dataframe(mrp_view, width="stretch", hide_index=True)
             if achats_fournisseurs_detail:
@@ -2373,7 +2533,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 st.warning(
                     "Aucune matière n'a pu être chiffrée (ni tarifaire, ni prix d'achat moyen publié) : "
                     + ", ".join(matieres_sans_tarif)
-                    + ". Renseignez `Parametres_TarifsFournisseurs` pour ces matières."
+                    + ". Renseignez `parametres_tarifsfournisseurs` pour ces matières."
                 )
             if _stocks_inconnus:
                 st.warning(
@@ -2382,9 +2542,71 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                     "et le montant du plan d'achat. Achetez l'étude « Matières : disponibilités et "
                     "besoins théoriques » pour M-1, ou renseignez `Historique_Equipage`."
                 )
-            c_ach1, c_ach2 = st.columns(2)
+            # Économie du stock : le MRP ne s'arrête pas au coût d'achat.
+            c_ach1, c_ach2, c_ach3, c_ach4 = st.columns(4)
             c_ach1.metric("Achats matières HT", fmt_eur(cout_achats_total_sim))
             c_ach2.metric("Achats immédiats (délai 0)", fmt_eur(achats_fournisseurs_par_echeance[0]))
+            c_ach3.metric(
+                "Coût possession / mois",
+                fmt_eur(_resultat_mrp.cout_possession_mensuel),
+                help=f"Valeur du stock final × taux de possession {_taux_possession_annuel * 100:.0f} %/an ÷ 12.",
+            )
+            c_ach4.metric(
+                "Valeur du stock à risque",
+                fmt_eur(_resultat_mrp.valeur_a_risque),
+                help="Part du stock qui ne sera pas consommée avant la péremption de la matière.",
+                delta=None if _resultat_mrp.valeur_a_risque == 0 else None,
+            )
+            if _resultat_mrp.alertes:
+                for _alerte in _resultat_mrp.alertes:
+                    st.warning(_alerte)
+
+        # Comparaison de scénarios : le même tableau que dans l'onglet
+        # Production, recalculé avec le plan d'approvisionnement courant.
+        with st.container(border=True):
+            st.markdown("**⚖️ Quel niveau de stock est le plus rentable ?**")
+            st.caption(
+                "Le coût total additionne l'achat de matières et la possession du stock "
+                f"(taux {_taux_possession_annuel * 100:.0f} %/an). Un stock plus élevé coûte "
+                "doublement : à l'achat et en immobilisation."
+            )
+            _scenarios_mrp = [
+                mrp_engine.Scenario("Au plus juste (0 %)", 0.0, pct_vente_couvert),
+                mrp_engine.Scenario("Choix en cours", coeff_stock_secu, pct_vente_couvert),
+                mrp_engine.Scenario("Stock renforcé (+50 %)", min(200.0, coeff_stock_secu + 50.0), pct_vente_couvert),
+                mrp_engine.Scenario("Stock maximal (200 %)", 200.0, pct_vente_couvert),
+            ]
+            _comparaison_mrp = mrp_engine.comparer_scenarios(_parametres_mrp, _scenarios_mrp)
+            _vue_mrp = pd.DataFrame(_comparaison_mrp).rename(columns={
+                "libelle": "Scénario",
+                "volume_produit": "Volume produit (u)",
+                "cout_achat_ht": "Coût achats HT (€)",
+                "cout_possession": "Coût possession / mois (€)",
+                "valeur_stock_final": "Valeur stock final (€)",
+                "valeur_a_risque": "Valeur à risque (€)",
+                "cout_total": "Coût total / mois (€)",
+            })
+            _cols_mrp = [
+                "Scénario", "Volume produit (u)", "Coût achats HT (€)",
+                "Coût possession / mois (€)", "Valeur stock final (€)",
+                "Valeur à risque (€)", "Coût total / mois (€)",
+            ]
+            _cols_mrp = [c for c in _cols_mrp if c in _vue_mrp.columns]
+            st.dataframe(
+                _vue_mrp[_cols_mrp].style.format(
+                    {c: "{:,.0f}".format for c in _cols_mrp if c != "Scénario"},
+                    na_rep="—",
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+            _reco_mrp = next((r for r in _comparaison_mrp if r.get("recommandé")), None)
+            if _reco_mrp:
+                st.success(
+                    f"✅ Scénario le moins coûteux : **{_reco_mrp['libelle']}** "
+                    f"({fmt_eur(_reco_mrp['cout_total'])} / mois, dont "
+                    f"{fmt_eur(_reco_mrp['cout_possession'])} de possession du stock)."
+                )
 
     with tab_sim_rh:
         st.subheader("4. RH : effectifs, masse salariale & score")
