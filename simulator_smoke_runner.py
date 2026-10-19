@@ -22,6 +22,12 @@ sys.path.insert(0, str(ROOT))
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "aout_sans_juillet"
 LOG: dict = {"metrics": [], "warnings": [], "errors": [], "success": [], "captions": [], "inputs": {}}
 
+#: Leviers du simulateur à surcharger (clé session_state -> valeur), ex.
+#: SIM_DECISIONS='{"sim_ced_dec": 2}'. S'applique comme valeur par défaut des
+#: widgets : le simulateur purge ses leviers au changement de contexte, une
+#: valeur injectée dans session_state serait donc effacée avant d'être lue.
+OVERRIDES: dict = {}
+
 
 # --------------------------------------------------------------------------- Streamlit factice
 class Stub:
@@ -53,6 +59,10 @@ class Stub:
     def _key_val(self, k, default):
         key = k.get("key")
         if key is not None:
+            override = OVERRIDES.get(key)
+            if override is not None:
+                self._state[key] = override
+                return override
             if key not in self._state:
                 self._state[key] = default
             return self._state[key]
@@ -192,14 +202,19 @@ def seed(db, scenario):
 
 
 def main():
+    # La synthèse contient des € et des emojis : cp1252 ne sait pas les encoder.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     db = build_db()
     seed(db, SCENARIO)
 
     fake = FakeStreamlit()
+    OVERRIDES.update(json.loads(os.environ.get("SIM_DECISIONS", "{}")))
     sys.modules["streamlit"] = fake
     sa = types.ModuleType("sqlalchemy")
     sa.create_engine = lambda *a, **k: db
     sa.text = lambda s: s
+    sa.bindparam = lambda *a, **k: None
     sa_engine = types.ModuleType("sqlalchemy.engine")
     sa_engine.URL = types.SimpleNamespace(create=lambda *a, **k: "url")
     sys.modules.update({"sqlalchemy": sa, "sqlalchemy.engine": sa_engine})
