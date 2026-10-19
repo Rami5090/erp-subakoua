@@ -23,6 +23,8 @@ from finance_engine import (
     calculate_vat_projection,
     calculate_fiscal_social_projection,
     project_bank_debt,
+    calculate_disposal_product,
+    calculate_machine_disposal_impact,
 )
 from forecast_engine import (
     extract_competitive_snapshot,
@@ -70,6 +72,11 @@ from period_context import (
     stale_keys,
 )
 from constants import PRIX_CESSION_MACHINES, TVA_STANDARD
+from db_schema import (
+    COLONNES_CESSION_FINANCES,
+    COLONNES_CESSION_PARC,
+    ajouter_colonnes_manquantes,
+)
 
 load_dotenv()
 
@@ -475,7 +482,9 @@ def init_db_simu():
             CREATE TABLE IF NOT EXISTS Parc_Machines_Mensuel (
                 Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
                 Nb_Machines_Decoupe INT, Nb_Machines_Assemblage INT, Nb_Machines_Cond INT,
-                Acquisition_Faite INT, Acq_Decoupe INT, Acq_Assemblage INT, Acq_Cond INT
+                Acquisition_Faite INT, Acq_Decoupe INT, Acq_Assemblage INT, Acq_Cond INT,
+                Cession_Faite INT, Ced_Decoupe INT, Ced_Assemblage INT, Ced_Cond INT,
+                Px_Cession_Decoupe FLOAT, Px_Cession_Assemblage FLOAT, Px_Cession_Cond FLOAT
             )
             """))
             conn.execute(text("""
@@ -505,7 +514,8 @@ def init_db_simu():
                 Tour_ID INT PRIMARY KEY, Mois VARCHAR(50),
                 CA_Net FLOAT, Achats_Matieres FLOAT, Autres_Charges_Externes FLOAT, Remuneration_Personnel FLOAT, Charges_Sociales FLOAT, 
                 Dotations_Amortissements FLOAT, Resultat_Net FLOAT, Total_Actif_Immobilise FLOAT, Total_Actif_Circulant FLOAT, 
-                Total_Capitaux_Propres FLOAT, Emprunts_Bancaires FLOAT, Disponibilites_Banque FLOAT
+                Total_Capitaux_Propres FLOAT, Emprunts_Bancaires FLOAT, Disponibilites_Banque FLOAT,
+                VNC_Cession_HT FLOAT, TVA_Cession FLOAT, PMV_Cession FLOAT
             )
             """))
             conn.execute(text("""
@@ -517,6 +527,10 @@ def init_db_simu():
                 contenu JSON
             )
             """))
+            # `CREATE TABLE IF NOT EXISTS` n'ajoute rien à une table déjà créée :
+            # les bases antérieures à la cession de machines sont complétées ici.
+            ajouter_colonnes_manquantes(conn, "Parc_Machines_Mensuel", COLONNES_CESSION_PARC)
+            ajouter_colonnes_manquantes(conn, "Finances_Mensuelles", COLONNES_CESSION_FINANCES)
     except Exception:
         pass
 
@@ -665,7 +679,11 @@ def charger_donnees_rh_bdd(tour_id):
     if engine is None: return {}
     try:
         df = pd.read_sql(text("SELECT * FROM Decisions_RH_Mensuel WHERE Tour_ID = :tour_id"), engine, params={"tour_id": int(tour_id)})
-        if not df.empty: return df.iloc[0].to_dict()
+        if not df.empty:
+            # Une ligne ancienne peut porter des NULL sur des colonnes ajoutées
+            # après coup : on les remplace par 0 plutôt que de faire échouer
+            # la lecture des effectifs.
+            return {k: (0 if v is None or pd.isna(v) else v) for k, v in df.iloc[0].to_dict().items()}
     except Exception: pass
     return {}
 
@@ -843,13 +861,25 @@ def afficher_etoiles(note):
     etoiles += "☆" * max(0, nb_vides)
     return etoiles
 
+def _valeur_rh(donnees, cle, defaut, cast):
+    """Valeur RH lue en base : une ligne ancienne peut porter des NULL."""
+    val = (donnees or {}).get(cle, None)
+    if val is None:
+        return defaut
+    try:
+        if pd.isna(val):
+            return defaut
+        return cast(val)
+    except (TypeError, ValueError):
+        return defaut
+
 def calculer_score_rh_prod_dynamique(donnees_rh_defaut, ratio_opt):
-    e_p = st.session_state.get('sp_e', int(donnees_rh_defaut.get('Eff_Employes_Prod', 15)))
-    s_ep = st.session_state.get('sp_es', float(donnees_rh_defaut.get('Sal_Employes_Prod', 2000.0)))
-    c_p = st.session_state.get('sp_c', int(donnees_rh_defaut.get('Eff_Cadres_Prod', 3)))
-    s_cp = st.session_state.get('sp_cs', float(donnees_rh_defaut.get('Sal_Cadres_Prod', 3333.33)))
-    d_p = st.session_state.get('sp_d', int(donnees_rh_defaut.get('Eff_Directeurs_Prod', 1)))
-    s_dp = st.session_state.get('sp_ds', float(donnees_rh_defaut.get('Sal_Directeurs_Prod', 4500.0)))
+    e_p = st.session_state.get('sp_e', _valeur_rh(donnees_rh_defaut, 'Eff_Employes_Prod', 15, int))
+    s_ep = st.session_state.get('sp_es', _valeur_rh(donnees_rh_defaut, 'Sal_Employes_Prod', 2000.0, float))
+    c_p = st.session_state.get('sp_c', _valeur_rh(donnees_rh_defaut, 'Eff_Cadres_Prod', 3, int))
+    s_cp = st.session_state.get('sp_cs', _valeur_rh(donnees_rh_defaut, 'Sal_Cadres_Prod', 3333.33, float))
+    d_p = st.session_state.get('sp_d', _valeur_rh(donnees_rh_defaut, 'Eff_Directeurs_Prod', 1, int))
+    s_dp = st.session_state.get('sp_ds', _valeur_rh(donnees_rh_defaut, 'Sal_Directeurs_Prod', 4500.0, float))
 
     ms_ep = e_p * s_ep
     ms_cp = c_p * s_cp
@@ -1367,9 +1397,21 @@ elif module_principal == "📥 Saisie des Données Réelles":
             + ". Les onglets concernés afficheront les valeurs par défaut ; les autres restent utilisables."
         )
 
-    def get_h(col, def_v): return float(df_h[col].iloc[0]) if not df_h.empty and col in df_h.columns else def_v
-    def get_m(col, def_v=0): return int(df_m[col].iloc[0]) if not df_m.empty and col in df_m.columns else def_v
-    def get_v(col, def_v=0): return int(df_ventes[col].iloc[0]) if not df_ventes.empty and col in df_ventes.columns else def_v
+    def _valeur(df, col, def_v, cast):
+        """Valeur d'une colonne, NULL comprise : une ligne ancienne peut avoir des NULL."""
+        try:
+            if df is None or df.empty or col not in df.columns:
+                return def_v
+            val = df[col].iloc[0]
+            if val is None or pd.isna(val):
+                return def_v
+            return cast(val)
+        except (TypeError, ValueError):
+            return def_v
+
+    def get_h(col, def_v): return _valeur(df_h, col, def_v, float)
+    def get_m(col, def_v=0): return _valeur(df_m, col, def_v, int)
+    def get_v(col, def_v=0): return _valeur(df_ventes, col, def_v, int)
     def get_mk(col, def_v=0.0):
         val = d_mkg.get(col, def_v) if isinstance(d_mkg, dict) else def_v
         try:
@@ -1379,7 +1421,7 @@ elif module_principal == "📥 Saisie des Données Réelles":
     def get_mk_str(col, def_v=""):
         val = d_mkg.get(col, def_v) if isinstance(d_mkg, dict) else def_v
         return str(val) if val not in (None, "") else str(def_v)
-    def get_fin(col, def_v=0.0): return float(dfin[col].iloc[0]) if not dfin.empty and col in dfin.columns else def_v
+    def get_fin(col, def_v=0.0): return _valeur(dfin, col, def_v, float)
 
     tab_r1, tab_r2, tab_r3, tab_r4, tab_r5, tab_r6 = st.tabs(["📦 Stocks", "🏭 Machines", "👥 RH", "🎯 Marketing", "📈 Ventes Réelles", "💶 Finance"])
     
@@ -1409,12 +1451,104 @@ elif module_principal == "📥 Saisie des Données Réelles":
             acq_dec = st.number_input("Nombre de machines Découpe acquises", value=get_m('Acq_Decoupe', 0), step=1)
             acq_ass = st.number_input("Nombre de machines Assemblage acquises", value=get_m('Acq_Assemblage', 0), step=1)
             acq_cond = st.number_input("Nombre de machines Conditionnement acquises", value=get_m('Acq_Cond', 0), step=1)
-            if st.form_submit_button("Enregistrer les Machines et Acquisitions"):
+
+            # ---- Cession de machines (mois réel) -------------------------------
+            st.divider()
+            cession_check = st.checkbox(
+                "Des machines ont été cédées ce mois-ci ?",
+                value=bool(get_m('Cession_Faite', 0)),
+            )
+            st.caption(
+                "La cession sort la machine du parc : les totaux saisis ci-dessus doivent déjà "
+                "tenir compte des machines cédées. Le produit de cession alimente l'onglet "
+                "« Finance » (trésorerie, TVA, résultat)."
+            )
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                ced_dec = st.number_input(
+                    "Machines Découpe cédées", value=get_m('Ced_Decoupe', 0), step=1, min_value=0,
+                    disabled=not cession_check,
+                )
+                px_ced_dec_saisie = st.number_input(
+                    "Prix HT / machine cédée Découpe (€)",
+                    value=float(get_m('Px_Cession_Decoupe', PRIX_CESSION_MACHINES["Decoupe"])),
+                    step=1000.0, disabled=not cession_check,
+                )
+            with cc2:
+                ced_ass = st.number_input(
+                    "Machines Assemblage cédées", value=get_m('Ced_Assemblage', 0), step=1, min_value=0,
+                    disabled=not cession_check,
+                )
+                px_ced_ass_saisie = st.number_input(
+                    "Prix HT / machine cédée Assemblage (€)",
+                    value=float(get_m('Px_Cession_Assemblage', PRIX_CESSION_MACHINES["Assemblage"])),
+                    step=1000.0, disabled=not cession_check,
+                )
+            with cc3:
+                ced_cond = st.number_input(
+                    "Machines Conditionnement cédées", value=get_m('Ced_Cond', 0), step=1, min_value=0,
+                    disabled=not cession_check,
+                )
+                px_ced_cond_saisie = st.number_input(
+                    "Prix HT / machine cédée Conditionnement (€)",
+                    value=float(get_m('Px_Cession_Cond', PRIX_CESSION_MACHINES["Conditionnement"])),
+                    step=1000.0, disabled=not cession_check,
+                )
+
+            produit_cession_saisie = calculate_disposal_product(
+                {"Decoupe": ced_dec, "Assemblage": ced_ass, "Conditionnement": ced_cond},
+                {
+                    "Decoupe": px_ced_dec_saisie,
+                    "Assemblage": px_ced_ass_saisie,
+                    "Conditionnement": px_ced_cond_saisie,
+                },
+            )
+            if cession_check:
+                cm1, cm2, cm3 = st.columns(3)
+                cm1.metric("Produit de cession HT", fmt_eur(produit_cession_saisie))
+                cm2.metric("TVA collectée (20 %)", fmt_eur(float(produit_cession_saisie) * float(TVA_STANDARD)))
+                cm3.metric("Encaissement TTC du mois", fmt_eur(float(produit_cession_saisie) * (1.0 + float(TVA_STANDARD))))
+            if st.form_submit_button("Enregistrer les Machines, Acquisitions et Cessions"):
                 acquis_val = 1 if acquis_check else 0
+                cession_val = 1 if cession_check else 0
                 if engine:
-                    with engine.begin() as conn:
-                        conn.execute(text(f"INSERT INTO Parc_Machines_Mensuel (Tour_ID, Mois, Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond, Acquisition_Faite, Acq_Decoupe, Acq_Assemblage, Acq_Cond) VALUES ({tour_saisie}, '{mois_saisie}', {m_dec}, {m_ass}, {m_cond}, {acquis_val}, {acq_dec}, {acq_ass}, {acq_cond}) ON DUPLICATE KEY UPDATE Nb_Machines_Decoupe={m_dec}, Nb_Machines_Assemblage={m_ass}, Nb_Machines_Cond={m_cond}, Acquisition_Faite={acquis_val}, Acq_Decoupe={acq_dec}, Acq_Assemblage={acq_ass}, Acq_Cond={acq_cond};"))
-                    st.success("✅ Parc machines et acquisitions enregistrés !")
+                    try:
+                        with engine.begin() as conn:
+                            conn.execute(text("""
+                                INSERT INTO Parc_Machines_Mensuel
+                                    (Tour_ID, Mois, Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond,
+                                     Acquisition_Faite, Acq_Decoupe, Acq_Assemblage, Acq_Cond,
+                                     Cession_Faite, Ced_Decoupe, Ced_Assemblage, Ced_Cond,
+                                     Px_Cession_Decoupe, Px_Cession_Assemblage, Px_Cession_Cond)
+                                VALUES
+                                    (:tour_id, :mois, :m_dec, :m_ass, :m_cond,
+                                     :acquis, :acq_dec, :acq_ass, :acq_cond,
+                                     :cession, :ced_dec, :ced_ass, :ced_cond,
+                                     :px_dec, :px_ass, :px_cond)
+                                ON DUPLICATE KEY UPDATE
+                                    Mois=:mois, Nb_Machines_Decoupe=:m_dec, Nb_Machines_Assemblage=:m_ass,
+                                    Nb_Machines_Cond=:m_cond, Acquisition_Faite=:acquis,
+                                    Acq_Decoupe=:acq_dec, Acq_Assemblage=:acq_ass, Acq_Cond=:acq_cond,
+                                    Cession_Faite=:cession, Ced_Decoupe=:ced_dec, Ced_Assemblage=:ced_ass,
+                                    Ced_Cond=:ced_cond, Px_Cession_Decoupe=:px_dec,
+                                    Px_Cession_Assemblage=:px_ass, Px_Cession_Cond=:px_cond
+                            """), {
+                                "tour_id": int(tour_saisie), "mois": mois_saisie,
+                                "m_dec": int(m_dec), "m_ass": int(m_ass), "m_cond": int(m_cond),
+                                "acquis": acquis_val, "acq_dec": int(acq_dec),
+                                "acq_ass": int(acq_ass), "acq_cond": int(acq_cond),
+                                "cession": cession_val, "ced_dec": int(ced_dec),
+                                "ced_ass": int(ced_ass), "ced_cond": int(ced_cond),
+                                "px_dec": float(px_ced_dec_saisie), "px_ass": float(px_ced_ass_saisie),
+                                "px_cond": float(px_ced_cond_saisie),
+                            })
+                            st.success("✅ Parc machines, acquisitions et cessions enregistrés !")
+                    except Exception as exc:
+                        st.error(
+                            f"Erreur d'enregistrement du parc machines : {type(exc).__name__}: {exc}. "
+                            "Si la base n'a pas encore les colonnes de cession, rechargez l'application "
+                            "en mode Utilisateur (la migration du schéma est automatique)."
+                        )
 
     with tab_r3:
         with st.form("form_saisie_rh_reel"):
@@ -1585,6 +1719,77 @@ elif module_principal == "📥 Saisie des Données Réelles":
                 f_dette = st.number_input("Emprunts bancaires (€)", value=get_fin('Emprunts_Bancaires', 0.0), step=1000.0)
                 f_banque = st.number_input("Disponibilités banque (€)", value=get_fin('Disponibilites_Banque', 0.0), step=1000.0)
 
+            # ---- Impact financier de la cession de machines (mois courant) -------
+            st.divider()
+            st.markdown("**🤝 Cession de machines — impact financier du mois**")
+            nb_cedees = get_m('Ced_Decoupe', 0) + get_m('Ced_Assemblage', 0) + get_m('Ced_Cond', 0)
+            cession_mois = bool(get_m('Cession_Faite', 0)) and nb_cedees > 0
+            produit_cession_mois = calculate_disposal_product(
+                {
+                    "Decoupe": get_m('Ced_Decoupe', 0),
+                    "Assemblage": get_m('Ced_Assemblage', 0),
+                    "Conditionnement": get_m('Ced_Cond', 0),
+                },
+                {
+                    "Decoupe": get_m('Px_Cession_Decoupe', PRIX_CESSION_MACHINES["Decoupe"]),
+                    "Assemblage": get_m('Px_Cession_Assemblage', PRIX_CESSION_MACHINES["Assemblage"]),
+                    "Conditionnement": get_m('Px_Cession_Cond', PRIX_CESSION_MACHINES["Conditionnement"]),
+                },
+            )
+            vnc_cession = st.number_input(
+                "Valeur nette comptable des machines cédées (€) — 0 = inconnue",
+                value=get_fin('VNC_Cession_HT', 0.0), step=1000.0,
+                disabled=not cession_mois,
+            )
+            impact_cession = calculate_machine_disposal_impact(produit_cession_mois, vnc_cession)
+            reporter_impact = False
+            if not cession_mois:
+                st.caption(
+                    "Aucune cession enregistrée pour ce mois (onglet « 🏭 Machines »). "
+                    "Cochez « Des machines ont été cédées ce mois-ci ? » pour en déclarer une."
+                )
+            else:
+                ci1, ci2, ci3, ci4 = st.columns(4)
+                ci1.metric("Produit de cession HT", fmt_eur(impact_cession.produit_ht))
+                ci2.metric("TVA collectée (20 %)", fmt_eur(impact_cession.tva_collectee))
+                ci3.metric("Encaissement TTC", fmt_eur(impact_cession.produit_ttc))
+                ci4.metric("Résultat de cession (PMV)", fmt_eur(impact_cession.plus_moins_value))
+                for _w in impact_cession.warnings:
+                    st.warning(f"⚠️ Cession : {_w}")
+                st.dataframe(pd.DataFrame({
+                    "Poste": [
+                        "Trésorerie (disponibilités banque)",
+                        "Actif immobilisé",
+                        "Résultat net",
+                        "TVA collectée (dette fiscale)",
+                    ],
+                    "Effet": [
+                        "+ encaissement TTC",
+                        "− valeur nette comptable" if impact_cession.vnc_connue else "− non calculé (VNC inconnue)",
+                        "+ plus/minus-value" if impact_cession.vnc_connue else "− non calculé (VNC inconnue)",
+                        "+ TVA collectée",
+                    ],
+                    "Montant (€)": [
+                        float(impact_cession.delta_tresorerie),
+                        float(impact_cession.delta_actif_immobilise),
+                        float(impact_cession.delta_resultat),
+                        float(impact_cession.tva_collectee),
+                    ],
+                }), width="stretch", hide_index=True)
+                st.caption(
+                    "La TVA collectée est une dette fiscale : elle n'a pas de champ dans cette table, "
+                    "reportez-la dans le bilan du portail."
+                )
+                reporter_impact = st.checkbox(
+                    "Reporter l'impact de la cession sur la saisie du mois",
+                    value=False,
+                    help=(
+                        "Par défaut, rien n'est modifié : les soldes saisis proviennent du portail et "
+                        "incluent déjà l'encaissement de la cession. Cochez si vos saisies sont "
+                        "hors cession — les montants repartent alors de la valeur enregistrée en base."
+                    ),
+                )
+
             f_fin_saisi = [f_ca, f_achats, f_autres, f_resultat, f_remun, f_social, f_amort, f_afim, f_afc, f_cp, f_dette, f_banque]
             if any(float(x) != 0.0 for x in f_fin_saisi):
                 st.caption(f"Champs renseignés : **{sum(1 for x in f_fin_saisi if float(x) != 0.0)} / 12**")
@@ -1594,29 +1799,54 @@ elif module_principal == "📥 Saisie des Données Réelles":
             if st.form_submit_button("💾 Enregistrer les Données Financières"):
                 if engine:
                     try:
+                        # Impact de la cession : appliqué seulement sur demande
+                        # explicite, et jamais sur un champ laissé à 0 (« non saisi »).
+                        banque_a_ecrire, afim_a_ecrire, resultat_a_ecrire = f_banque, f_afim, f_resultat
+                        if reporter_impact and cession_mois:
+                            if float(f_banque) != 0.0:
+                                banque_a_ecrire = float(f_banque) + float(impact_cession.delta_tresorerie)
+                            else:
+                                st.warning("⚠️ Disponibilités banque non saisies : l'encaissement de cession n'a pas pu être reporté.")
+                            if impact_cession.vnc_connue:
+                                if float(f_afim) != 0.0:
+                                    afim_a_ecrire = float(f_afim) + float(impact_cession.delta_actif_immobilise)
+                                else:
+                                    st.warning("⚠️ Actif immobilisé non saisi : le retrait des machines cédées n'a pas pu être reporté.")
+                                if float(f_resultat) != 0.0:
+                                    resultat_a_ecrire = float(f_resultat) + float(impact_cession.delta_resultat)
+                                else:
+                                    st.warning("⚠️ Résultat net non saisi : le résultat de cession n'a pas pu être reporté.")
+                            else:
+                                st.warning("⚠️ Valeur nette comptable inconnue : ni l'actif immobilisé ni le résultat n'ont été ajustés.")
                         with engine.begin() as conn:
                             conn.execute(text("""
                                 INSERT INTO Finances_Mensuelles
                                     (Tour_ID, Mois, CA_Net, Achats_Matieres, Autres_Charges_Externes,
                                      Remuneration_Personnel, Charges_Sociales, Dotations_Amortissements,
                                      Resultat_Net, Total_Actif_Immobilise, Total_Actif_Circulant,
-                                     Total_Capitaux_Propres, Emprunts_Bancaires, Disponibilites_Banque)
+                                     Total_Capitaux_Propres, Emprunts_Bancaires, Disponibilites_Banque,
+                                     VNC_Cession_HT, TVA_Cession, PMV_Cession)
                                 VALUES
                                     (:tour_id, :mois, :ca, :achats, :autres,
                                      :remun, :social, :amort,
                                      :resultat, :afim, :afc,
-                                     :cp, :dette, :banque)
+                                     :cp, :dette, :banque,
+                                     :vnc, :tva_cession, :pmv)
                                 ON DUPLICATE KEY UPDATE
                                     Mois=:mois, CA_Net=:ca, Achats_Matieres=:achats, Autres_Charges_Externes=:autres,
                                     Remuneration_Personnel=:remun, Charges_Sociales=:social, Dotations_Amortissements=:amort,
                                     Resultat_Net=:resultat, Total_Actif_Immobilise=:afim, Total_Actif_Circulant=:afc,
-                                    Total_Capitaux_Propres=:cp, Emprunts_Bancaires=:dette, Disponibilites_Banque=:banque
+                                    Total_Capitaux_Propres=:cp, Emprunts_Bancaires=:dette, Disponibilites_Banque=:banque,
+                                    VNC_Cession_HT=:vnc, TVA_Cession=:tva_cession, PMV_Cession=:pmv
                             """), {
                                 "tour_id": int(tour_saisie), "mois": mois_saisie,
                                 "ca": f_ca, "achats": f_achats, "autres": f_autres,
                                 "remun": f_remun, "social": f_social, "amort": f_amort,
-                                "resultat": f_resultat, "afim": f_afim, "afc": f_afc,
-                                "cp": f_cp, "dette": f_dette, "banque": f_banque,
+                                "resultat": resultat_a_ecrire, "afim": afim_a_ecrire, "afc": f_afc,
+                                "cp": f_cp, "dette": f_dette, "banque": banque_a_ecrire,
+                                "vnc": float(vnc_cession) if cession_mois else 0.0,
+                                "tva_cession": float(impact_cession.tva_collectee) if cession_mois else 0.0,
+                                "pmv": float(impact_cession.plus_moins_value) if cession_mois else 0.0,
                             })
                         st.success("✅ Données financières enregistrées !")
                     except Exception as exc:
@@ -1765,6 +1995,17 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     nb_m_dec_actuel = get_m('Nb_Machines_Decoupe', 10)
     nb_m_ass_actuel = get_m('Nb_Machines_Assemblage', 16)
     nb_m_cond_actuel = get_m('Nb_Machines_Cond', 4)
+
+    # Le parc de référence tient déjà compte des cessions saisies sur les mois
+    # précédents : le signaler évite de les déduire une seconde fois du parc.
+    if get_m('Cession_Faite', 0):
+        _ced_ref = get_m('Ced_Decoupe', 0) + get_m('Ced_Assemblage', 0) + get_m('Ced_Cond', 0)
+        if _ced_ref > 0:
+            diag_ref.note(
+                f"Parc de référence : {int(_ced_ref)} machine(s) cédée(s) sur le mois source — "
+                "le parc affiché en tient déjà compte. L'encaissement de cession n'est pas "
+                "réintégré dans la trésorerie d'ouverture, qui provient de l'extrait bancaire."
+            )
 
     # -------------------------------------------------------------------
     # Scénarios : enregistrer / recharger une décision complète en 1 clic.

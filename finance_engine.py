@@ -187,6 +187,22 @@ class MachineDisposalResult:
 
 
 @dataclass(frozen=True)
+class MachineDisposalImpact:
+    """Impact financier d'une cession de machines sur un mois donné."""
+
+    produit_ht: Decimal
+    tva_collectee: Decimal
+    produit_ttc: Decimal
+    valeur_nette_ht: Decimal
+    plus_moins_value: Decimal
+    delta_tresorerie: Decimal
+    delta_actif_immobilise: Decimal
+    delta_resultat: Decimal
+    vnc_connue: bool
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class DebtProjectionResult:
     dette_ouverture: Decimal
     nouveaux_emprunts: Decimal
@@ -1470,6 +1486,73 @@ def calculate_machine_disposal(produit_ht: Any) -> MachineDisposalResult:
         ht = Decimal("0")
     tva = money(ht * TVA_STANDARD)
     return MachineDisposalResult(money(ht), tva, money(ht + tva))
+
+
+def calculate_disposal_product(
+    quantites: Mapping[str, Any],
+    prix_unitaires: Mapping[str, Any],
+) -> Decimal:
+    """Produit HT d'une cession : quantité cédée x prix unitaire, atelier par atelier.
+
+    Les quantités négatives sont ignorées et un atelier absent des prix
+    unitaires n'est pas valorisé : le produit ne peut donc pas être
+    surévalué par une saisie incohérente.
+    """
+    total = Decimal("0")
+    for atelier, quantite in (quantites or {}).items():
+        qte = to_decimal(quantite, Decimal("0")) or Decimal("0")
+        if qte <= 0:
+            continue
+        prix = to_decimal((prix_unitaires or {}).get(atelier), Decimal("0")) or Decimal("0")
+        if prix <= 0:
+            continue
+        total += qte * prix
+    return money(total)
+
+
+def calculate_machine_disposal_impact(
+    produit_ht: Any,
+    valeur_nette_ht: Any = 0,
+) -> MachineDisposalImpact:
+    """Impact financier complet d'une cession de machines sur un mois.
+
+    L'encaissement est immédiat et TTC (trésorerie), la machine sort du bilan
+    pour sa valeur nette comptable, et l'écart entre le prix de cession et
+    cette valeur nette constitue le résultat de cession (plus/minus-value).
+
+    La valeur nette comptable n'est pas connue du simulateur : tant qu'elle
+    n'est pas renseignée, le résultat de cession et le retrait d'immobilisation
+    ne sont pas calculés, et l'avertissement le dit — aucune valeur n'est
+    inventée pour combler le trou.
+    """
+    disposal = calculate_machine_disposal(produit_ht)
+    vnc = to_decimal(valeur_nette_ht, Decimal("0")) or Decimal("0")
+    warnings: list[str] = []
+    if vnc < 0:
+        vnc = Decimal("0")
+        warnings.append("Valeur nette comptable négative : ramenée à zéro.")
+    if disposal.produit_ht > 0 and vnc <= 0:
+        warnings.append(
+            "Valeur nette comptable des machines cédées inconnue : la plus/minus-value "
+            "et le retrait d'immobilisation ne sont pas calculés."
+        )
+        plus_moins_value = Decimal("0")
+        delta_actif_immobilise = Decimal("0")
+    else:
+        plus_moins_value = money(disposal.produit_ht - vnc)
+        delta_actif_immobilise = money(-vnc)
+    return MachineDisposalImpact(
+        produit_ht=disposal.produit_ht,
+        tva_collectee=disposal.tva_collectee,
+        produit_ttc=disposal.produit_ttc,
+        valeur_nette_ht=money(vnc),
+        plus_moins_value=plus_moins_value,
+        delta_tresorerie=disposal.produit_ttc,
+        delta_actif_immobilise=delta_actif_immobilise,
+        delta_resultat=plus_moins_value,
+        vnc_connue=vnc > 0,
+        warnings=tuple(warnings),
+    )
 
 
 def calculate_bfr(

@@ -47,7 +47,8 @@ class Stub:
         table = {
             "number_input": st._number, "text_input": st._text, "selectbox": st._select,
             "radio": st._radio, "slider": st._slider, "checkbox": lambda l, *a, **k: st._chk(l, k),
-            "button": lambda *a, **k: False, "form_submit_button": lambda *a, **k: False,
+            "button": lambda *a, **k: False,
+            "form_submit_button": lambda *a, **k: os.environ.get("SIM_SUBMIT") == "1",
             "columns": st._columns, "tabs": lambda labels, *a, **k: [Stub(st._state) for _ in labels],
             "metric": st._metric, "warning": st._msg("warnings"), "error": st._msg("errors"),
             "success": st._msg("success"), "caption": st._msg("captions"),
@@ -56,6 +57,13 @@ class Stub:
         return table.get(name, noop)
 
     # --- widgets
+    def _override_par_label(self, label):
+        """Surcharge dont la clé apparaît dans le libellé (widgets sans `key`)."""
+        for _key, _value in OVERRIDES.items():
+            if _key and _key in str(label):
+                return _value
+        return None
+
     def _key_val(self, k, default):
         key = k.get("key")
         if key is not None:
@@ -69,13 +77,23 @@ class Stub:
         return default
 
     def _number(self, label, *a, **k):
+        override = OVERRIDES.get(k.get("key")) if k.get("key") else self._override_par_label(label)
+        if override is not None:
+            self._state[k.get("key") or label] = override
+            LOG["inputs"][k.get("key") or label] = override
+            return override
         v = self._key_val(k, k.get("value", 0))
         LOG["inputs"][k.get("key") or label] = v
         return v
 
     def _text(self, label, *a, **k): return self._key_val(k, k.get("value", ""))
     def _slider(self, label, *a, **k): return self._key_val(k, k.get("value", a[0] if a else 0))
-    def _chk(self, label, k): return self._key_val(k, k.get("value", False))
+
+    def _chk(self, label, k):
+        override = OVERRIDES.get(k.get("key")) if k.get("key") else self._override_par_label(label)
+        if override is not None:
+            return override
+        return self._key_val(k, k.get("value", False))
 
     def _select(self, label, options=(), *a, **k):
         options = list(options)
@@ -86,6 +104,11 @@ class Stub:
     def _radio(self, label, options=(), *a, **k):
         options = list(options)
         if self._sidebar:
+            # SIM_WORKSPACE permet de choisir l'espace de travail ("Données réelles"...).
+            choisi = os.environ.get("SIM_WORKSPACE", "")
+            for _opt in options:
+                if choisi and choisi in str(_opt):
+                    return _opt
             return options[-1]
         return self._key_val(k, options[0])
 
@@ -133,12 +156,24 @@ class FakeResult:
                                      all=lambda: [dict(r) for r in rows])
 
 
+def _sql_pour_sqlite(sql: str) -> str:
+    """MySQL -> SQLite : `ON DUPLICATE KEY UPDATE` devient `ON CONFLICT ... DO UPDATE`.
+
+    Les tables du simulateur ont toutes `Tour_ID` en clé primaire : la cible de
+    conflit est donc la même pour toutes.
+    """
+    if "ON DUPLICATE KEY UPDATE" not in sql:
+        return sql
+    tete, _, queue = sql.partition("ON DUPLICATE KEY UPDATE")
+    return f"{tete}ON CONFLICT(Tour_ID) DO UPDATE SET {queue}"
+
+
 class FakeConn:
     def __init__(self, db): self.db = db
     def __enter__(self): return self
     def __exit__(self, *a): return False
     def execute(self, sql, params=None):
-        return FakeResult(self.db.execute(str(sql), params or {}))
+        return FakeResult(self.db.execute(_sql_pour_sqlite(str(sql)), params or {}))
 
 
 class FakeEngine(sqlite3.Connection):
@@ -152,11 +187,11 @@ def build_db() -> FakeEngine:
     db.executescript("""
         CREATE TABLE erp_donnees (id INTEGER PRIMARY KEY AUTOINCREMENT, periode TEXT, type_donnee TEXT, module TEXT, contenu TEXT);
         CREATE TABLE Historique_Equipe (Tour_ID INT PRIMARY KEY, Stock_Neo3 REAL, Stock_Neo5 REAL, Stock_Neo7 REAL, Stock_Renforts REAL, Stock_Manchons REAL, Stock_Fermetures REAL, Tresorerie_Initiale REAL);
-        CREATE TABLE Parc_Machines_Mensuel (Tour_ID INT PRIMARY KEY, Mois TEXT, Nb_Machines_Decoupe INT, Nb_Machines_Assemblage INT, Nb_Machines_Cond INT);
+        CREATE TABLE Parc_Machines_Mensuel (Tour_ID INT PRIMARY KEY, Mois TEXT, Nb_Machines_Decoupe INT, Nb_Machines_Assemblage INT, Nb_Machines_Cond INT, Acquisition_Faite INT, Acq_Decoupe INT, Acq_Assemblage INT, Acq_Cond INT, Cession_Faite INT, Ced_Decoupe INT, Ced_Assemblage INT, Ced_Cond INT, Px_Cession_Decoupe REAL, Px_Cession_Assemblage REAL, Px_Cession_Cond REAL);
         CREATE TABLE Ventes_Historique (Tour_ID INT PRIMARY KEY, Mois TEXT, Ventes_S3 INT, Ventes_I3 INT, Ventes_S5 INT, Ventes_I5 INT, Ventes_I7 INT);
         CREATE TABLE Decisions_Marketing (Tour_ID INT PRIMARY KEY, Mois TEXT, Prix_S3 REAL, Prix_I3 REAL, Prix_S5 REAL, Prix_I5 REAL, Prix_I7 REAL, Budget_Marque REAL, Axe_Principal TEXT, Axe_Accessoire TEXT, Pub_S3 REAL, Pub_I3 REAL, Pub_S5 REAL, Pub_I5 REAL, Pub_I7 REAL);
-        CREATE TABLE Decisions_RH_Mensuel (Tour_ID INT PRIMARY KEY, Mois TEXT, Eff_Employes_Prod INT, Sal_Employes_Prod REAL);
-        CREATE TABLE Finances_Mensuelles (Tour_ID INT PRIMARY KEY, Mois TEXT, Resultat_Net REAL, Disponibilites_Banque REAL, Emprunts_Bancaires REAL);
+        CREATE TABLE Decisions_RH_Mensuel (Tour_ID INT PRIMARY KEY, Mois TEXT, Eff_Employes_Prod INT, Sal_Employes_Prod REAL, Eff_Cadres_Prod INT, Sal_Cadres_Prod REAL, Eff_Directeurs_Prod INT, Sal_Directeurs_Prod REAL, Eff_Employes_Appro INT, Sal_Employes_Appro REAL, Eff_Cadres_Appro INT, Sal_Cadres_Appro REAL, Eff_Directeurs_Appro INT, Sal_Directeurs_Appro REAL, Eff_Employes_Admin INT, Sal_Employes_Admin REAL, Eff_Cadres_Admin INT, Sal_Cadres_Admin REAL, Eff_Directeurs_Admin INT, Sal_Directeurs_Admin REAL);
+        CREATE TABLE Finances_Mensuelles (Tour_ID INT PRIMARY KEY, Mois TEXT, CA_Net REAL, Achats_Matieres REAL, Autres_Charges_Externes REAL, Remuneration_Personnel REAL, Charges_Sociales REAL, Dotations_Amortissements REAL, Resultat_Net REAL, Total_Actif_Immobilise REAL, Total_Actif_Circulant REAL, Total_Capitaux_Propres REAL, Emprunts_Bancaires REAL, Disponibilites_Banque REAL, VNC_Cession_HT REAL, TVA_Cession REAL, PMV_Cession REAL);
         CREATE TABLE simulations_seeds (Token_Seed TEXT, Tour_ID INT, Nom_Scenario TEXT, Parametres_JSON TEXT);
         CREATE TABLE Normes_MS_Prod (x INT); CREATE TABLE Normes_MS_Appro (x INT); CREATE TABLE Normes_MS_Admin (x INT);
     """)
@@ -172,11 +207,17 @@ def seed(db, scenario):
     # Historique SQL saisi jusqu'en Juin (tour 6) ; marketing jusqu'en Mai (tour 5) : comme sur ta capture.
     for t in range(1, 7):
         db.execute("INSERT INTO Historique_Equipe VALUES (?,2.0,1.0,0.5,1000,100,500,0)", (t,))
-        db.execute("INSERT INTO Parc_Machines_Mensuel VALUES (?,?,10,16,4)", (t, f"m{t}"))
-        db.execute("INSERT INTO Decisions_RH_Mensuel VALUES (?,?,15,2000)", (t, f"m{t}"))
+        db.execute("INSERT INTO Parc_Machines_Mensuel (Tour_ID, Mois, Nb_Machines_Decoupe, Nb_Machines_Assemblage, Nb_Machines_Cond) VALUES (?,?,10,16,4)", (t, f"m{t}"))
+        db.execute("INSERT INTO Decisions_RH_Mensuel (Tour_ID, Mois, Eff_Employes_Prod, Sal_Employes_Prod) VALUES (?,?,15,2000)", (t, f"m{t}"))
     for t in range(1, 6):
         db.execute("INSERT INTO Decisions_Marketing VALUES (?,?,115,190,220,280,375,60500,'Prix','Qualité',3100,4100,3200,4200,3500)", (t, f"m{t}"))
         db.execute("INSERT INTO Ventes_Historique VALUES (?,?,40,400,90,1200,2000)", (t, f"m{t}"))
+    # Une cession de machines (1 Assemblage) sur le mois saisi et sur le mois de
+    # référence : exerce de bout en bout le chemin « cession » de l'application.
+    db.execute(
+        "UPDATE Parc_Machines_Mensuel SET Cession_Faite=1, Ced_Assemblage=1, Px_Cession_Assemblage=150000 "
+        "WHERE Tour_ID IN (1, 6)"
+    )
 
     soldes = lambda ini, fin: {"Banque": {"Extrait bancaire": {"Soldes bancaires": [{"Solde initial": ini, "Solde final": fin}]}}}
     if scenario == "aout_sans_juillet":
@@ -222,7 +263,8 @@ def main():
     sys.modules["dotenv"] = dotenv
     auth = types.ModuleType("auth")
     auth.setup = lambda: None
-    auth.is_editor = lambda: False
+    # SIM_EDITOR=1 ouvre les espaces réservés aux utilisateurs (saisie des données).
+    auth.is_editor = lambda: os.environ.get("SIM_EDITOR") == "1"
     auth.require_editor = lambda *a, **k: None
     auth.readonly_notice = lambda *a, **k: None
     sys.modules["auth"] = auth
@@ -237,6 +279,21 @@ def main():
     except SystemExit:
         pass
     LOG["session_keys"] = sorted(fake.session_state)
+    try:
+        LOG["finances"] = [
+            dict(r) for r in db.execute(
+                "SELECT Tour_ID, Mois, Resultat_Net, Total_Actif_Immobilise, Disponibilites_Banque, "
+                "VNC_Cession_HT, TVA_Cession, PMV_Cession FROM Finances_Mensuelles"
+            ).fetchall()
+        ]
+        LOG["parc_cessions"] = [
+            dict(r) for r in db.execute(
+                "SELECT Tour_ID, Mois, Cession_Faite, Ced_Decoupe, Ced_Assemblage, Ced_Cond, "
+                "Px_Cession_Assemblage FROM Parc_Machines_Mensuel WHERE Cession_Faite=1"
+            ).fetchall()
+        ]
+    except Exception as exc:
+        LOG["db_error"] = f"{type(exc).__name__}: {exc}"
     print("##JSON##" + json.dumps(LOG, ensure_ascii=False, default=str))
 
 

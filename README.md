@@ -254,6 +254,35 @@ pour un prix de revente HT : **125 000 €** (Découpe), **150 000 €** (Assemb
 Un atelier vidé alors qu'il est chargé rend le scénario **irréalisable** — un atelier simplement
 saturé reste valide, la production y est simplement plafonnée.
 
+### 🏭 Saisir une cession dans les données réelles
+
+La saisie manuelle (**Données réelles** → onglets **🏭 Machines** et **💶 Finance**) connaît
+désormais la cession, pour un mois **réel** :
+
+- **🏭 Machines** — la case « *Des machines ont été cédées ce mois-ci ?* » (et le nombre de machines
+  cédées par atelier, avec le prix HT unitaire réellement appliqué) est enregistrée en base.
+  Le produit de cession, la TVA collectée et l'encaissement TTC sont affichés immédiatement.
+- **💶 Finance** — l'impact comptable du mois est calculé et présenté :
+
+  | Poste | Effet de la cession |
+  |---|---|
+  | Trésorerie (disponibilités banque) | **+** encaissement TTC |
+  | Actif immobilisé | **−** valeur nette comptable des machines cédées |
+  | Résultat net | **+** plus/minus-value (prix de cession − valeur nette comptable) |
+  | TVA collectée (dette fiscale) | **+** 20 % du produit HT — à reporter dans le bilan du portail |
+
+  La valeur nette comptable est **saisie par l'utilisateur** : tant qu'elle est inconnue, le
+  résultat de cession et le retrait d'immobilisation ne sont **pas** calculés — aucun chiffre n'est
+  inventé pour combler le vide, et l'avertissement est affiché.
+
+  Le report sur les champs de saisie du mois est **opt-in** : par défaut, rien n'est modifié, car les
+  soldes saisis proviennent du portail et incluent déjà l'encaissement de la cession. Un champ laissé
+  à 0 (« non saisi ») n'est jamais écrasé par un report.
+
+> 🔄 Les bases existantes sont complétées automatiquement (`db_schema.py`) : `CREATE TABLE IF NOT
+> EXISTS` n'ajoute pas les colonnes d'une table déjà créée, l'application fait donc un `ALTER TABLE`
+> idempotent au démarrage du mode Utilisateur.
+
 **Le contexte temporel (M-1)** est résolu par `period_context.py` : si la donnée du mois simulé est
 absente, l'application **replie sur le dernier mois antérieur connu** — jamais vers l'avenir. Le
 diagnostic est affiché, et changer de mois purge le cache de décisions.
@@ -424,7 +453,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `112 passed, 1 skipped`**
+**Résultat actuel : `122 passed, 1 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -432,6 +461,7 @@ python -m pytest -q
 | `test_optimizer_engine.py` | Calibration, prédiction de part, grille respectant le budget |
 | `test_optimizer_capacity_limits.py` | Fusion des données concurrentes, **capacité appliquée comme plafond** |
 | `test_machine_disposal.py` | **Cession de machines** : parc jamais négatif, cession bridée au parc détenu, encaissement TTC, TVA collectée sur cession, effet sur le taux de service |
+| `test_cession_saisie_reelle.py` | Saisie réelle : produit de cession, impact comptable sans VNC, **migration de schéma idempotente** |
 | `test_document_optimizer.py` | Priorités, exclusion des études onéreuses, fenêtre d'achat |
 | `test_document_strategy.py` | Matrice documentaire, socle gratuit compté avant le plan payant |
 | `test_auth_core.py` / `test_auth_roles.py` | Fail-closed, verrouillage, expiration, session forgée rejetée |
@@ -466,9 +496,10 @@ erp-subakoua/
 │
 ├── auth.py / auth_core.py        # Sessions, rôles, limitation de débit
 ├── db_utils.py                   # Moteur lecture seule vs écriture
+├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 112 tests exécutés + 1 ignoré
+├── test_*.py                     # 122 tests exécutés + 1 ignoré
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │
