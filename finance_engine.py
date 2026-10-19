@@ -178,6 +178,15 @@ class MachineInvestmentResult:
 
 
 @dataclass(frozen=True)
+class MachineDisposalResult:
+    """Produit de cession d'une immobilisation (machine)."""
+
+    produit_ht: Decimal
+    tva_collectee: Decimal
+    produit_ttc: Decimal
+
+
+@dataclass(frozen=True)
 class DebtProjectionResult:
     dette_ouverture: Decimal
     nouveaux_emprunts: Decimal
@@ -218,6 +227,8 @@ class FinancialProjection:
     tva_nette: Decimal = Decimal("0")
     tva_payee_ce_mois: Decimal = Decimal("0")
     dette_fiscale_sociale_cloture: Decimal = Decimal("0")
+    cession_ht: Decimal = Decimal("0")
+    cession_ttc: Decimal = Decimal("0")
     warnings: tuple[str, ...] = ()
 
 
@@ -618,6 +629,7 @@ def calculate_vat_projection(
     tva_deductible_hors_immo_mois: Any,
     tva_deductible_immobilisations_mois: Any = 0,
     tva_nette_ouverture_a_payer: Any = 0,
+    tva_collectee_immobilisations: Any = 0,
 ) -> VATProjectionResult:
     """Calcule la TVA du mois et le règlement de TVA du mois.
 
@@ -625,12 +637,21 @@ def calculate_vat_projection(
     payée sur le mois M+1 (ex. TVA de janvier = 64 917,11 € payée en février).
     Une TVA nette négative devient un crédit de TVA ; aucun remboursement futur
     n'est supposé automatiquement.
+
+    `tva_collectee_immobilisations` porte la TVA collectée sur la cession
+    d'immobilisations du mois : comme la TVA sur l'achat, elle entre dans la
+    TVA collectée (et donc dans la dette fiscale de clôture), jamais dans le
+    chiffre d'affaires.
     """
     ca = to_decimal(chiffre_affaires_ht, Decimal("0")) or Decimal("0")
     deductible = to_decimal(tva_deductible_hors_immo_mois, Decimal("0")) or Decimal("0")
     deductible_immo = to_decimal(tva_deductible_immobilisations_mois, Decimal("0")) or Decimal("0")
     ouverture = to_decimal(tva_nette_ouverture_a_payer, Decimal("0")) or Decimal("0")
-    collectee = money(max(Decimal("0"), ca) * TVA_STANDARD)
+    collectee_immo = to_decimal(tva_collectee_immobilisations, Decimal("0")) or Decimal("0")
+    cession_negative = collectee_immo < 0
+    if cession_negative:
+        collectee_immo = Decimal("0")
+    collectee = money(max(Decimal("0"), ca) * TVA_STANDARD + collectee_immo)
     # La TVA sur immobilisations est décaissée avec l'investissement et reste
     # donc hors du cycle mensuel de TVA d'exploitation. Le dump Subakoua la
     # présente séparément dans les flux d'investissement.
@@ -642,6 +663,8 @@ def calculate_vat_projection(
     paiement = money(max(Decimal("0"), ouverture))
     credit = money(max(Decimal("0"), -ouverture))
     warnings: list[str] = []
+    if cession_negative:
+        warnings.append("TVA collectée sur cession négative : valeur ramenée à zéro.")
     if deductible < 0 or deductible_immo < 0:
         warnings.append("TVA déductible négative détectée : valeur ramenée à zéro.")
     return VATProjectionResult(
@@ -1435,6 +1458,20 @@ def calculate_machine_investment(
     return MachineInvestmentResult(money(ht), money(ttc), money(decaissement), money(dette))
 
 
+def calculate_machine_disposal(produit_ht: Any) -> MachineDisposalResult:
+    """Produit de cession d'une immobilisation, encaissé au mois de la décision.
+
+    Le prix de cession est un prix HT : la TVA collectée sur la vente s'ajoute à
+    l'encaissement. La cession relève du flux d'investissement (vente d'une
+    immobilisation), jamais du chiffre d'affaires d'exploitation.
+    """
+    ht = to_decimal(produit_ht, Decimal("0")) or Decimal("0")
+    if ht < 0:
+        ht = Decimal("0")
+    tva = money(ht * TVA_STANDARD)
+    return MachineDisposalResult(money(ht), tva, money(ht + tva))
+
+
 def calculate_bfr(
     stock_matieres: Optional[Any],
     stock_produits_finis: Optional[Any],
@@ -1573,6 +1610,7 @@ def calculate_projection(
     dette_fiscale_sociale_hors_tva_ouverture: Any = 0,
     nouvelles_charges_fiscales_sociales: Any = 0,
     paiements_fiscaux_sociaux_hors_tva: Any = 0,
+    cession_ht: Any = 0,
 ) -> FinancialProjection:
     ca = to_decimal(chiffre_affaires, Decimal("0")) or Decimal("0")
     achats_d = to_decimal(achats, Decimal("0")) or Decimal("0")
@@ -1587,6 +1625,7 @@ def calculate_projection(
     epargne = to_decimal(solde_epargne_initial, Decimal("0")) or Decimal("0")
     dette = max(Decimal("0"), to_decimal(dette_bancaire, Decimal("0")) or Decimal("0"))
     invest = calculate_machine_investment(investissement_ht, credit_fournisseur)
+    cession = calculate_machine_disposal(cession_ht)
 
     warnings: list[str] = []
     if aace is None:
@@ -1598,6 +1637,12 @@ def calculate_projection(
     if dot_base is None:
         dot_base = Decimal("0")
         warnings.append("Dotations aux amortissements manquantes : aucune valeur de secours automatique appliquée.")
+    if cession.produit_ht > 0:
+        warnings.append(
+            "Cession de machines : l'encaissement TTC entre dans le flux d'investissement, "
+            "mais ni la plus/moins-value ni l'ajustement des dotations ne sont calculés — "
+            "la valeur nette comptable par machine n'est pas connue du simulateur."
+        )
 
     dotations_totales = dot_base + invest.cout_ht / DUREE_AMORTISSEMENT_MOIS
     maintenance_nouvelles_machines = invest.cout_ht * Decimal("0.005")
@@ -1669,6 +1714,7 @@ def calculate_projection(
         tva_deductible_hors_immo_mois=tva_deductible_hors_immo_mois,
         tva_deductible_immobilisations_mois=tva_deductible_immobilisations_mois,
         tva_nette_ouverture_a_payer=tva_nette_ouverture_a_payer,
+        tva_collectee_immobilisations=cession.tva_collectee,
     )
     fiscal_social = calculate_fiscal_social_projection(
         dette_ouverture=dette_fiscale_sociale_hors_tva_ouverture,
@@ -1694,7 +1740,7 @@ def calculate_projection(
         variation_bfr_effective = variation_bfr
 
     flux_exploitation = caf - variation_bfr_effective
-    flux_investissement = -invest.decaissement_ttc
+    flux_investissement = -invest.decaissement_ttc + cession.produit_ttc
     remboursement = remboursements_capital_effectifs
     flux_financement = (
         (to_decimal(ventes_titres, Decimal("0")) or Decimal("0")) -
@@ -1730,6 +1776,8 @@ def calculate_projection(
         investissement_ttc=invest.cout_ttc,
         acompte_ttc=invest.decaissement_ttc,
         dette_fournisseur_investissement=invest.dette_fournisseur,
+        cession_ht=cession.produit_ht,
+        cession_ttc=cession.produit_ttc,
         interets_emprunt=money(interets),
         remboursement_capital=money(remboursement),
         tva_collectee=vat.tva_collectee_mois,

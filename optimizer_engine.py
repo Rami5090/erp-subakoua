@@ -49,6 +49,47 @@ class CapacityProfile:
     source: str = "fallback"
 
 
+@dataclass(frozen=True)
+class FleetUpdate:
+    """Parc machines après application des achats et des cessions."""
+
+    parc: dict[str, int]
+    cessions_retenues: dict[str, int]
+    warnings: tuple[str, ...] = ()
+
+
+def apply_fleet_decisions(
+    parc_actuel: Mapping[str, Any],
+    achats: Mapping[str, Any] | None = None,
+    cessions: Mapping[str, Any] | None = None,
+) -> FleetUpdate:
+    """Applique les achats et les cessions au parc machines.
+
+    On ne peut céder que ce que l'on possède : une cession supérieure au parc
+    est ramenée au parc réellement détenu, et le parc final ne descend jamais
+    sous zéro. Toute cession bridée est signalée — jamais corrigée en silence —
+    pour que l'interface puisse prévenir l'utilisateur.
+    """
+    achats = achats or {}
+    cessions = cessions or {}
+    parc: dict[str, int] = {}
+    retenues: dict[str, int] = {}
+    warnings: list[str] = []
+    for atelier, valeur in parc_actuel.items():
+        actuel = max(0, int(_num(valeur) or 0))
+        achete = max(0, int(_num(achats.get(atelier)) or 0))
+        demande = max(0, int(_num(cessions.get(atelier)) or 0))
+        cede = min(demande, actuel)
+        if demande > cede:
+            warnings.append(
+                f"Cession {atelier} bridée : {demande} machine(s) demandée(s) pour {actuel} au parc — "
+                f"seule(s) {cede} machine(s) cède(nt) le parc."
+            )
+        parc[str(atelier)] = max(0, actuel + achete - cede)
+        retenues[str(atelier)] = cede
+    return FleetUpdate(parc, retenues, tuple(warnings))
+
+
 def _num(v: Any) -> float | None:
     try:
         if v is None or v == "":

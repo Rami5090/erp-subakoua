@@ -51,6 +51,16 @@ DEFAULT_NOMENCLATURE: Dict[str, Dict[str, float]] = {
 # Capacité par machine (minutes/mois)
 CAPACITY_MIN_PER_MACHINE = 9600.0
 
+# Prix de revente HT d'une machine cédée (atelier -> € HT).
+# Une cession sort la machine du parc : elle réduit la capacité de l'atelier et
+# produit un encaissement (HT + TVA) au mois de la décision. Contrepartie des
+# prix d'acquisition (constants du simulateur, modifiables dans l'interface).
+PRIX_CESSION_MACHINES: Dict[str, float] = {
+    "Decoupe": 125000.0,
+    "Assemblage": 150000.0,
+    "Conditionnement": 40000.0,
+}
+
 # Groupes de produits (épaisseur Néoprène)
 PRODUCT_GROUP = {"Shorty 3": 3, "Integral 3": 3, "Shorty 5": 5, "Integral 5": 5, "Integral 7": 7}
 

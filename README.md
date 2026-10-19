@@ -236,6 +236,24 @@ flowchart TD
 fournisseur par critère de prix ou de délai. Le régime de nomenclature retenu dépend de la qualité
 matière et du score RH, via des coefficients **minimum**, **normal** ou **maximum**.
 
+### 🏭 Céder des machines
+
+Le bloc **Machines : achats & cessions** (onglet Finance) permet de **sortir une machine du parc**
+pour un prix de revente HT : **125 000 €** (Découpe), **150 000 €** (Assemblage), **40 000 €**
+(Conditionnement), centralisés dans `constants.PRIX_CESSION_MACHINES` et modifiables dans l'écran.
+
+| Effet | Règle appliquée |
+|---|---|
+| Parc | `parc actuel + achats − cessions`, **jamais négatif** |
+| Cession excessive | Bridée au parc réellement détenu, **signalée** — seules les machines cédées sont payées |
+| Trésorerie | Encaissement **TTC** immédiat, en flux d'investissement |
+| TVA | TVA collectée sur la cession (20 %), hors chiffre d'affaires |
+| Capacité | La machine cédée disparaît : la PDM réalisable baisse, la demande non servie et le taux de service suivent |
+| Résultat | **Non modélisé** — la plus/moins-value et les dotations ne sont pas ajustées, faute de valeur nette comptable connue (un avertissement le rappelle à l'écran) |
+
+Un atelier vidé alors qu'il est chargé rend le scénario **irréalisable** — un atelier simplement
+saturé reste valide, la production y est simplement plafonnée.
+
 **Le contexte temporel (M-1)** est résolu par `period_context.py` : si la donnée du mois simulé est
 absente, l'application **replie sur le dernier mois antérieur connu** — jamais vers l'avenir. Le
 diagnostic est affiché, et changer de mois purge le cache de décisions.
@@ -406,13 +424,14 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `51 passed, 1 skipped`**
+**Résultat actuel : `112 passed, 1 skipped`**
 
 | Fichier | Couverture |
 |---|---|
 | `test_forecast_engine.py` | Saisonnalité, prévision 12 mois, **absence de fuite temporelle**, concurrence |
 | `test_optimizer_engine.py` | Calibration, prédiction de part, grille respectant le budget |
 | `test_optimizer_capacity_limits.py` | Fusion des données concurrentes, **capacité appliquée comme plafond** |
+| `test_machine_disposal.py` | **Cession de machines** : parc jamais négatif, cession bridée au parc détenu, encaissement TTC, TVA collectée sur cession, effet sur le taux de service |
 | `test_document_optimizer.py` | Priorités, exclusion des études onéreuses, fenêtre d'achat |
 | `test_document_strategy.py` | Matrice documentaire, socle gratuit compté avant le plan payant |
 | `test_auth_core.py` / `test_auth_roles.py` | Fail-closed, verrouillage, expiration, session forgée rejetée |
@@ -420,7 +439,8 @@ python -m pytest -q
 
 **Invariants protégés par les tests :** aucune fuite temporelle · aucune URL inventée · aucun
 payload non lisible traité comme acquis · le rôle ne provient jamais de l'URL · le dépassement de
-capacité plafonne au lieu d'éliminer le scénario.
+capacité plafonne au lieu d'éliminer le scénario · **on ne cède jamais plus de machines qu'on n'en
+possède, et le parc ne descend jamais sous zéro**.
 
 ## 📁 Structure du dépôt
 
@@ -448,7 +468,7 @@ erp-subakoua/
 ├── db_utils.py                   # Moteur lecture seule vs écriture
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 51 tests exécutés + 1 ignoré
+├── test_*.py                     # 112 tests exécutés + 1 ignoré
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │

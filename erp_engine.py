@@ -45,6 +45,7 @@ from optimizer_engine import (
     detect_segment_product,
     resolve_own_levers,
     evaluate_scenario,
+    apply_fleet_decisions,
     CapacityProfile,
     DEFAULT_TIMES,
     DEFAULT_NOMENCLATURE,
@@ -68,6 +69,7 @@ from period_context import (
     ref_number,
     stale_keys,
 )
+from constants import PRIX_CESSION_MACHINES, TVA_STANDARD
 
 load_dotenv()
 
@@ -352,6 +354,12 @@ def _compute_pdm_scenario(
 
         if cand_eval.get("max_demand_capacity_utilization", 0) > 1.0:
             warnings.append(f"Demande > capacité : {cand_eval.get('capacity_bottlenecks')}")
+
+        if not cand_eval.get("feasible", True):
+            warnings.append(
+                "Scénario irréalisable : budget de publicité dépassé, ou atelier vide "
+                "(capacité nulle alors qu'il est chargé) — cas typique d'une cession de machines."
+            )
 
     except Exception as e:
         warnings.append(f"Erreur calcul PDM : {type(e).__name__}: {e}")
@@ -768,9 +776,9 @@ def rendre_module_etat_des_lieux(donnees_module):
                 parcourir_structure_json(contenu_onglet, niveau=4)
 
 # Utilitaires Simulateur
-def sim_number(label, key, default_val, step=None):
+def sim_number(label, key, default_val, step=None, **kwargs):
     if key not in st.session_state: st.session_state[key] = default_val
-    return st.number_input(label, key=key, step=step)
+    return st.number_input(label, key=key, step=step, **kwargs)
 def sim_text(label, key, default_val):
     if key not in st.session_state: st.session_state[key] = default_val
     return st.text_input(label, key=key)
@@ -2115,7 +2123,11 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         # Investissements machines : regroupés ici avec leur mode de financement pour éviter
         # de séparer une décision et son impact de trésorerie.
         with st.container(border=True):
-            st.markdown("**🏭 Investissements machines**")
+            st.markdown("**🏭 Machines : achats & cessions**")
+            st.caption(
+                "Parc après décision = parc actuel + machines achetées − machines cédées. "
+                "Une cession sort la machine de la capacité de son atelier et est encaissée sur le mois."
+            )
             c_inv1, c_inv2, c_inv3 = st.columns(3)
             with c_inv1:
                 achat_dec = sim_number(f"Découpe · + machines (actuel {nb_m_dec_actuel})", "sim_ach_dec", 0, step=1)
@@ -2128,9 +2140,6 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 prix_unit_cond = sim_number("Prix HT / machine Conditionnement (€)", "sim_p_cond", 160000.0, step=1000.0)
 
             cout_invest_machines = (achat_dec * prix_unit_dec) + (achat_ass * prix_unit_ass) + (achat_cond * prix_unit_cond)
-            nb_m_dec_sim = nb_m_dec_actuel + achat_dec
-            nb_m_ass_sim = nb_m_ass_actuel + achat_ass
-            nb_m_cond_sim = nb_m_cond_actuel + achat_cond
 
             mode_financement_machines = sim_radio(
                 "Règlement des machines",
@@ -2141,6 +2150,82 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
                 help="En crédit fournisseur, 70 % TTC crée une dette et ne constitue pas une entrée de trésorerie.",
             )
             st.metric("Investissement HT", fmt_eur(cout_invest_machines))
+
+            st.markdown("**🤝 Cession de machines**")
+            st.caption(
+                "Prix de revente HT par machine : "
+                + " · ".join(
+                    f"{fmt_eur(PRIX_CESSION_MACHINES[_atelier])} {_atelier}"
+                    for _atelier in ("Decoupe", "Assemblage", "Conditionnement")
+                )
+                + " (constantes du simulateur, modifiables ici). "
+                "L'encaissement est immédiat et TTC : le prix de cession est hors taxes."
+            )
+            c_ced1, c_ced2, c_ced3 = st.columns(3)
+            with c_ced1:
+                cede_dec = sim_number(f"Découpe · − machines (parc {nb_m_dec_actuel})", "sim_ced_dec", 0, step=1)
+                px_ced_dec = sim_number(
+                    "Prix HT / machine cédée Découpe (€)",
+                    "sim_px_ced_dec",
+                    float(PRIX_CESSION_MACHINES["Decoupe"]),
+                    step=1000.0,
+                )
+            with c_ced2:
+                cede_ass = sim_number(f"Assemblage · − machines (parc {nb_m_ass_actuel})", "sim_ced_ass", 0, step=1)
+                px_ced_ass = sim_number(
+                    "Prix HT / machine cédée Assemblage (€)",
+                    "sim_px_ced_ass",
+                    float(PRIX_CESSION_MACHINES["Assemblage"]),
+                    step=1000.0,
+                )
+            with c_ced3:
+                cede_cond = sim_number(f"Conditionnement · − machines (parc {nb_m_cond_actuel})", "sim_ced_cond", 0, step=1)
+                px_ced_cond = sim_number(
+                    "Prix HT / machine cédée Conditionnement (€)",
+                    "sim_px_ced_cond",
+                    float(PRIX_CESSION_MACHINES["Conditionnement"]),
+                    step=1000.0,
+                )
+
+            # Le parc ne peut jamais descendre sous zéro : une cession supérieure
+            # au parc détenu est bridée et signalée, jamais appliquée en silence.
+            parc_apres_cession = apply_fleet_decisions(
+                {
+                    "Decoupe": nb_m_dec_actuel,
+                    "Assemblage": nb_m_ass_actuel,
+                    "Conditionnement": nb_m_cond_actuel,
+                },
+                {"Decoupe": achat_dec, "Assemblage": achat_ass, "Conditionnement": achat_cond},
+                {"Decoupe": cede_dec, "Assemblage": cede_ass, "Conditionnement": cede_cond},
+            )
+            for _w in parc_apres_cession.warnings:
+                st.warning(f"⚠️ Cession machines : {_w}")
+            nb_m_dec_sim = parc_apres_cession.parc["Decoupe"]
+            nb_m_ass_sim = parc_apres_cession.parc["Assemblage"]
+            nb_m_cond_sim = parc_apres_cession.parc["Conditionnement"]
+
+            # Seules les cessions effectivement retenues produisent de l'argent.
+            produit_cession_ht = (
+                parc_apres_cession.cessions_retenues["Decoupe"] * px_ced_dec
+                + parc_apres_cession.cessions_retenues["Assemblage"] * px_ced_ass
+                + parc_apres_cession.cessions_retenues["Conditionnement"] * px_ced_cond
+            )
+            produit_cession_ttc = produit_cession_ht * (1.0 + float(TVA_STANDARD))
+
+            c_ced_m1, c_ced_m2, c_ced_m3 = st.columns(3)
+            c_ced_m1.metric("Produit de cession HT", fmt_eur(produit_cession_ht))
+            c_ced_m2.metric("Encaissement TTC du mois", fmt_eur(produit_cession_ttc))
+            c_ced_m3.metric(
+                "Parc après décision",
+                f"{nb_m_dec_sim} / {nb_m_ass_sim} / {nb_m_cond_sim}",
+                help="Découpe / Assemblage / Conditionnement",
+            )
+            if produit_cession_ht > 0:
+                st.info(
+                    "ℹ️ L'encaissement TTC entre dans le flux d'investissement. La plus/moins-value "
+                    "et l'ajustement des dotations ne sont pas calculés : la valeur nette comptable "
+                    "par machine n'est pas connue du simulateur."
+                )
 
         # ================================================================
         # PONT FINANCIER M-1 -> MOIS SIMULÉ
@@ -2368,12 +2453,13 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             tva_deductible_m1,
             step=1000.0,
         )
-        tva_immo_mois = cout_invest_machines * 0.20
+        tva_immo_mois = cout_invest_machines * float(TVA_STANDARD)
         tva_info = calculate_vat_projection(
             chiffre_affaires_ht=ca_prev_sim,
             tva_deductible_hors_immo_mois=tva_deductible_mois,
             tva_deductible_immobilisations_mois=tva_immo_mois,
             tva_nette_ouverture_a_payer=tva_ouverture_a_payer,
+            tva_collectee_immobilisations=produit_cession_ht * float(TVA_STANDARD),
         )
 
         dette_fiscale_sociale_hors_tva_ouverture = max(
@@ -2483,6 +2569,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             solde_tresorerie_initial=treso_initiale_source if treso_initiale_source is not None else 0.0,
             solde_epargne_initial=solde_epargne_initial, dette_bancaire=dette_bancaire,
             investissement_ht=cout_invest_machines, credit_fournisseur=credit_fournisseur,
+            cession_ht=produit_cession_ht,
             bfr_mois=float(bfr_projection_pre.bfr), bfr_m1=bfr_precedent_m1,
             achats_matieres_historique=achats_matieres_historique,
             aace_inclut_achats=aace_inclut_achats,
@@ -2529,6 +2616,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             solde_tresorerie_initial=treso_initiale_source if treso_initiale_source is not None else 0.0,
             solde_epargne_initial=solde_epargne_initial, dette_bancaire=dette_bancaire,
             investissement_ht=cout_invest_machines, credit_fournisseur=credit_fournisseur,
+            cession_ht=produit_cession_ht,
             bfr_mois=bfr_simule, bfr_m1=bfr_precedent_m1,
             achats_matieres_historique=achats_matieres_historique,
             aace_inclut_achats=aace_inclut_achats,
@@ -2629,6 +2717,8 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             st.metric("Chiffre d'Affaires Prévisionnel (CA)", f"{ca_prev_sim:,.2f} €")
             st.metric("Total des Charges d'Exploitation (Fixes + Variables)", f"{float(projection.total_charges):,.2f} €")
             st.metric("Achat Nouvelles Machines (TTC)", f"{-float(projection.acompte_ttc):,.2f} €")
+            if projection.cession_ttc > 0:
+                st.metric("Produit de cession machines (TTC)", f"+{float(projection.cession_ttc):,.2f} €")
             st.metric("Impôt sur les Sociétés (IS)", f"{-float(projection.impot_is):,.2f} €")
             st.metric("TVA collectée du mois", f"{float(projection.tva_collectee):,.2f} €")
             st.metric("TVA payée ce mois", f"{-float(projection.tva_payee_ce_mois):,.2f} €")
