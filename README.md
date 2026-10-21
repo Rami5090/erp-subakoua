@@ -35,6 +35,7 @@ flow.
 | **Forecasting** | ETS / Holt-Winters, with **out-of-sample model selection** |
 | **Optimisation** | Ridge calibration + deterministic grid search |
 | **Capacity** | Per-workshop bottleneck model |
+| **Break-even** | Break-even volume & revenue, safety margin, capacity-constrained margin-maximising mix |
 | **Finance** | P&L, VAT, working capital, debt & cash flow in `Decimal` |
 | **Data purchasing** | Marginal-utility knapsack over the study catalogue |
 | **Access control** | Visitor (read-only) / User (full), fail-closed |
@@ -202,6 +203,24 @@ Page principale, trois espaces de travail :
 | 📊 État des lieux | Tous | Rendu structuré des modules scrapés |
 | 📥 Données réelles | Utilisateur | Saisie : stocks, machines, RH, marketing, ventes, finance |
 | 🎯 Centre de décision | Tous | Simulateur complet |
+
+### Page 6 — 📐 Analyse quantitative
+
+Répond à trois questions, à partir des **données réelles** du mois (prix, coûts unitaires
+variables, charges fixes, volumes, capacité) :
+
+| Question | Réponse |
+|---|---|
+| **Combien vendre pour couvrir les charges fixes ?** | Point d'équilibre en unités et en CA, marge de sécurité, seuil par produit (charges fixes imputées au chiffre d'affaires) |
+| **L'équilibre est-il atteignable ?** | La capacité industrielle borne le volume : si la marge maximale atteignable est inférieure aux charges fixes, l'équilibre est **hors de portée** — l'écart est affiché |
+| **Comment maximiser la marge ?** | Mix proposé : les produits les plus rentables par unité de capacité rare sont servis d'abord, **sans jamais dépasser un atelier** |
+
+Un tableau de **sensibilité** montre l'effet d'un choc de prix (−10 % à +10 %) sur le seuil.
+
+> ⚠️ Le mix est une **heuristique gloutonne** (marge par fraction de capacité consommée) : la
+> solution proposée est toujours réalisable, mais ce n'est pas un optimum exact de programme
+> linéaire. Chaque donnée affichée indique sa source ; une donnée absente produit un
+> avertissement, jamais un chiffre inventé.
 
 ## 🧮 Le simulateur
 
@@ -453,13 +472,15 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `122 passed, 1 skipped`**
+**Résultat actuel : `144 passed, 1 skipped`**
 
 | Fichier | Couverture |
 |---|---|
 | `test_forecast_engine.py` | Saisonnalité, prévision 12 mois, **absence de fuite temporelle**, concurrence |
 | `test_optimizer_engine.py` | Calibration, prédiction de part, grille respectant le budget |
 | `test_optimizer_capacity_limits.py` | Fusion des données concurrentes, **capacité appliquée comme plafond** |
+| `test_break_even_engine.py` | **Point d'équilibre exact**, imputation des charges fixes, mix sous contrainte de capacité, **équilibre hors de portée signalé** |
+| `test_page_analyse_quantitative.py` | La page d'analyse s'exécute de bout en bout et produit un seuil cohérent |
 | `test_machine_disposal.py` | **Cession de machines** : parc jamais négatif, cession bridée au parc détenu, encaissement TTC, TVA collectée sur cession, effet sur le taux de service |
 | `test_cession_saisie_reelle.py` | Saisie réelle : produit de cession, impact comptable sans VNC, **migration de schéma idempotente** |
 | `test_document_optimizer.py` | Priorités, exclusion des études onéreuses, fenêtre d'achat |
@@ -480,6 +501,7 @@ erp-subakoua/
 ├── pages/                        # Pages 2-4 : ingestion, prévision, optimisation
 │
 ├── forecast_engine.py            # ETS, Holt, backtest, concurrence
+├── break_even_engine.py          # Point d'équilibre, marge, mix sous capacité
 ├── optimizer_engine.py           # Calibration, capacité, scénarios
 ├── finance_engine.py             # Comptabilité prévisionnelle (Decimal)
 ├── strategic_engine.py           # Métriques et alertes concurrentielles
@@ -499,7 +521,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 122 tests exécutés + 1 ignoré
+├── test_*.py                     # 144 tests exécutés + 1 ignoré
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │
