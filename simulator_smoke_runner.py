@@ -199,7 +199,7 @@ def build_db() -> FakeEngine:
         CREATE TABLE Finances_Mensuelles (Tour_ID INT PRIMARY KEY, Mois TEXT, CA_Net REAL, Achats_Matieres REAL, Autres_Charges_Externes REAL, Remuneration_Personnel REAL, Charges_Sociales REAL, Dotations_Amortissements REAL, Resultat_Net REAL, Total_Actif_Immobilise REAL, Total_Actif_Circulant REAL, Total_Capitaux_Propres REAL, Emprunts_Bancaires REAL, Disponibilites_Banque REAL, VNC_Cession_HT REAL, TVA_Cession REAL, PMV_Cession REAL);
         CREATE TABLE simulations_seeds (Token_Seed TEXT, Tour_ID INT, Nom_Scenario TEXT, Parametres_JSON TEXT);
         CREATE TABLE Normes_MS_Prod (x INT); CREATE TABLE Normes_MS_Appro (x INT); CREATE TABLE Normes_MS_Admin (x INT);
-        CREATE TABLE erp_etudes (id INTEGER PRIMARY KEY AUTOINCREMENT, periode TEXT, study_id TEXT, payload TEXT, read_allowed INT DEFAULT 1);
+        CREATE TABLE erp_etudes (id INTEGER PRIMARY KEY AUTOINCREMENT, periode TEXT, study_id TEXT, label TEXT, module TEXT, price REAL DEFAULT 0, source_endpoint TEXT, read_allowed INT DEFAULT 1, payload TEXT, fetched_at TEXT);
     """)
     return db
 
