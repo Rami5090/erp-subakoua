@@ -99,6 +99,11 @@ class Stub:
         options = list(options)
         if self._sidebar and "période" in label:
             return os.environ.get("SIM_MONTH", options[0])
+        if "Période analysée" in str(label):
+            # SIM_TOUR=8 : choisit le tour de la page d'analyse quantitative.
+            tour = os.environ.get("SIM_TOUR", "")
+            if tour.isdigit() and int(tour) in options:
+                return int(tour)
         return self._key_val(k, options[0] if options else None)
 
     def _radio(self, label, options=(), *a, **k):
@@ -194,6 +199,7 @@ def build_db() -> FakeEngine:
         CREATE TABLE Finances_Mensuelles (Tour_ID INT PRIMARY KEY, Mois TEXT, CA_Net REAL, Achats_Matieres REAL, Autres_Charges_Externes REAL, Remuneration_Personnel REAL, Charges_Sociales REAL, Dotations_Amortissements REAL, Resultat_Net REAL, Total_Actif_Immobilise REAL, Total_Actif_Circulant REAL, Total_Capitaux_Propres REAL, Emprunts_Bancaires REAL, Disponibilites_Banque REAL, VNC_Cession_HT REAL, TVA_Cession REAL, PMV_Cession REAL);
         CREATE TABLE simulations_seeds (Token_Seed TEXT, Tour_ID INT, Nom_Scenario TEXT, Parametres_JSON TEXT);
         CREATE TABLE Normes_MS_Prod (x INT); CREATE TABLE Normes_MS_Appro (x INT); CREATE TABLE Normes_MS_Admin (x INT);
+        CREATE TABLE erp_etudes (id INTEGER PRIMARY KEY AUTOINCREMENT, periode TEXT, study_id TEXT, payload TEXT, read_allowed INT DEFAULT 1);
     """)
     return db
 
@@ -217,6 +223,25 @@ def seed(db, scenario):
     db.execute(
         "UPDATE Parc_Machines_Mensuel SET Cession_Faite=1, Ced_Assemblage=1, Px_Cession_Assemblage=150000 "
         "WHERE Tour_ID IN (1, 6)"
+    )
+    # Étude de coûts de production : coûts variables unitaires (€/unité).
+    _couts = {"SHORTY_C": 60.0, "MONO_C": 90.0, "SHORTY_T": 80.0, "MONO_T": 120.0, "MONO_F": 150.0}
+    _details = []
+    for _ref, _cout in _couts.items():
+        _n = 100
+        _details.append({
+            "productRef": _ref,
+            "producedProductsNumber": _n,
+            "directCostDetail": {"phasesCostDetails": [{
+                "materialsCosts": [{"totalCost": _cout * _n * 0.6}],
+                "workshopsCosts": [{"totalCost": _cout * _n * 0.3}],
+            }]},
+            "finalProductionPhaseCostDetail": {"workshopsCosts": [{"totalCost": _cout * _n * 0.1}]},
+        })
+    db.execute(
+        "INSERT INTO erp_etudes (periode, study_id, payload, read_allowed) VALUES (?,?,?,1)",
+        ("Année 1 - Janvier", "productionCostDetailStudy",
+         json.dumps({"productsProductionCostDetails": _details}, ensure_ascii=False)),
     )
 
     soldes = lambda ini, fin: {"Banque": {"Extrait bancaire": {"Soldes bancaires": [{"Solde initial": ini, "Solde final": fin}]}}}
@@ -268,14 +293,23 @@ def main():
     auth.require_editor = lambda *a, **k: None
     auth.readonly_notice = lambda *a, **k: None
     sys.modules["auth"] = auth
-    dbu = types.ModuleType("db_utils"); dbu.get_readonly_engine_if_configured = lambda: None
+    dbu = types.ModuleType("db_utils")
+    dbu.get_readonly_engine_if_configured = lambda: None
+    dbu.get_read_engine = lambda: db
+    dbu.get_write_engine = lambda: db
     sys.modules["db_utils"] = dbu
     for k, v in {"DB_HOST": "h", "DB_USER": "u", "DB_PASSWORD": "p", "DB_NAME": "n", "DB_PORT": "3306"}.items():
         os.environ[k] = v
 
     os.environ.setdefault("SIM_MONTH", "Août N+1")
     try:
-        runpy.run_path(str(ROOT / "erp_engine.py"), run_name="__main__")
+        # SIM_PAGE=6_Analyse_Quantitative.py exécute une page de `pages/`
+        # au lieu du cockpit, avec la même base SQLite en mémoire.
+        page = os.environ.get("SIM_PAGE", "")
+        if page:
+            runpy.run_path(str(ROOT / "pages" / page), run_name="__main__")
+        else:
+            runpy.run_path(str(ROOT / "erp_engine.py"), run_name="__main__")
     except SystemExit:
         pass
     LOG["session_keys"] = sorted(fake.session_state)
