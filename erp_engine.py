@@ -73,7 +73,19 @@ from period_context import (
     ref_number,
     stale_keys,
 )
-from constants import PRIX_CESSION_MACHINES, TVA_STANDARD, TAUX_POSSESSION_STOCK_ANNUEL
+from constants import (
+    PRIX_CESSION_MACHINES,
+    PRODUCTS,
+    PRODUCT_KEYS,
+    PRODUCT_KEY_TO_NAME,
+    TAUX_POSSESSION_STOCK_ANNUEL,
+    TVA_STANDARD,
+)
+from break_even_engine import (
+    ProductEconomics,
+    compute_break_even,
+    unit_variable_costs,
+)
 from db_schema import (
     COLONNES_CESSION_FINANCES,
     COLONNES_CESSION_PARC,
@@ -3319,6 +3331,114 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             c_rc1, c_rc2 = st.columns(2)
             c_rc1.metric("Profitabilité CUMULÉE", f"{taux_profitabilite_cumule:.2f} %")
             c_rc2.metric("Rentabilité CUMULÉE", f"{taux_rentabilite_cumule:.2f} %")
+
+        # -------------------------------------------------------------------
+        # POINT D'ÉQUILIBRE DU SCÉNARIO
+        # -------------------------------------------------------------------
+        # Combien faut-il vendre pour couvrir les charges fixes du mois ?
+        # Les prix et volumes sont ceux des leviers courants ; la capacité
+        # industrielle (parc après décisions) borne le seuil atteignable.
+        st.divider()
+        st.markdown("##### 📐 Point d'équilibre du scénario")
+        st.caption(
+            "Seuil de rentabilité du mois : volume et chiffre d'affaires nécessaires pour "
+            "couvrir les charges fixes, et marge de sécurité par rapport au volume vendu. "
+            "La capacité industrielle peut rendre ce seuil inatteignable — l'écart est affiché."
+        )
+        _prix_sim = {
+            "Shorty 3": float(prix_s3), "Integral 3": float(prix_i3),
+            "Shorty 5": float(prix_s5), "Integral 5": float(prix_i5),
+            "Integral 7": float(prix_i7),
+        }
+        _vol_sim = {
+            "Shorty 3": float(sim_v_s3), "Integral 3": float(sim_v_i3),
+            "Shorty 5": float(sim_v_s5), "Integral 5": float(sim_v_i5),
+            "Integral 7": float(sim_v_i7),
+        }
+        _prix_matieres = {_ligne.matiere: float(_ligne.prix_unitaire) for _ligne in _resultat_mrp.lignes}
+        _couts_unitaires, _warn_couts = unit_variable_costs(
+            _meta_mrp.get("nomenclature") or {}, _prix_matieres, list(PRODUCTS)
+        )
+        _produits_sim = [
+            ProductEconomics(
+                key=_key,
+                name=PRODUCT_KEY_TO_NAME[_key],
+                price=_prix_sim.get(PRODUCT_KEY_TO_NAME[_key], 0.0),
+                unit_variable_cost=_couts_unitaires.get(PRODUCT_KEY_TO_NAME[_key], 0.0),
+                current_units=_vol_sim.get(PRODUCT_KEY_TO_NAME[_key], 0.0),
+            )
+            for _key in PRODUCT_KEYS
+        ]
+        _charges_fixes_sim = float(projection.charges_fixes)
+        _capacite_sim = {
+            "Decoupe": nb_m_dec_sim * CAPACITY_MIN_PER_MACHINE,
+            "Assemblage": nb_m_ass_sim * CAPACITY_MIN_PER_MACHINE,
+            "Conditionnement": nb_m_cond_sim * CAPACITY_MIN_PER_MACHINE,
+        }
+        _equilibre = compute_break_even(
+            _produits_sim,
+            _charges_fixes_sim,
+            mix={p.key: p.current_units for p in _produits_sim},
+            times=DEFAULT_TIMES,
+            capacity_minutes=_capacite_sim,
+        )
+        if _equilibre.break_even_units is None:
+            st.warning("Point d'équilibre non calculable : aucun volume de référence (ventes à zéro).")
+        else:
+            ce1, ce2, ce3, ce4 = st.columns(4)
+            ce1.metric("Point d'équilibre", f"{float(_equilibre.break_even_units):,.0f} u".replace(",", " "))
+            ce2.metric("CA d'équilibre", fmt_eur(_equilibre.break_even_revenue))
+            ce3.metric(
+                "Marge de sécurité",
+                f"{float(_equilibre.margin_of_safety_units or 0):,.0f} u".replace(",", " "),
+                delta=(
+                    f"{(float(_equilibre.margin_of_safety_ratio or 0) * 100):+.1f} % du volume vendu"
+                    if _equilibre.margin_of_safety_ratio is not None else None
+                ),
+            )
+            ce4.metric("Charges fixes du mois", fmt_eur(_charges_fixes_sim))
+            st.dataframe(pd.DataFrame([
+                {
+                    "Produit": p.name,
+                    "Prix HT (€)": round(p.price, 2),
+                    "Coût variable (€/u)": round(p.unit_variable_cost, 2),
+                    "Marge unitaire (€)": round(p.margin_per_unit, 2),
+                    "Vendu (u)": round(p.current_units),
+                    "Seuil d'équilibre (u)": round(_equilibre.break_even_units_by_product.get(p.key, 0.0)),
+                }
+                for p in _equilibre.products
+            ]), width="stretch", hide_index=True)
+            if _equilibre.equilibrium_reachable is False:
+                st.error(
+                    f"⚠️ Équilibre **hors de portée** de la capacité : la marge maximale atteignable "
+                    f"({fmt_eur(_equilibre.max_margin_under_capacity)}) est inférieure aux charges fixes "
+                    f"({fmt_eur(_charges_fixes_sim)}) — écart {fmt_eur(_equilibre.capacity_gap)}. "
+                    "Augmentez la capacité, les prix, ou réduisez les charges fixes."
+                )
+            elif _equilibre.equilibrium_reachable:
+                st.success(
+                    "✅ L'équilibre est atteignable : la marge maximale sous capacité couvre les charges fixes."
+                )
+            if _equilibre.optimal_mix:
+                st.dataframe(pd.DataFrame([
+                    {
+                        "Produit": e.name,
+                        "Unités": round(e.units),
+                        "CA (€)": round(e.revenue),
+                        "Marge (€)": round(e.margin),
+                    }
+                    for e in _equilibre.optimal_mix
+                ]), width="stretch", hide_index=True)
+                st.caption(
+                    f"Mix maximisant la marge sous contrainte d'atelier : "
+                    f"{float(_equilibre.optimal_mix_units):,.0f} u pour "
+                    f"{fmt_eur(_equilibre.optimal_mix_revenue)} de CA et "
+                    f"{fmt_eur(_equilibre.optimal_mix_margin)} de marge sur coût variable. "
+                    "Heuristique gloutonne : solution réalisable, pas un optimum exact."
+                    .replace(",", " ")
+                )
+        for _w in list(_warn_couts) + list(_equilibre.warnings):
+            st.warning(f"⚠️ Point d'équilibre : {_w}")
 
         st.divider()
         st.markdown("##### 🧮 Décomposition du BFR Prévisionnel")

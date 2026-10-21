@@ -245,6 +245,7 @@ class FinancialProjection:
     dette_fiscale_sociale_cloture: Decimal = Decimal("0")
     cession_ht: Decimal = Decimal("0")
     cession_ttc: Decimal = Decimal("0")
+    charges_fixes: Decimal = Decimal("0")
     warnings: tuple[str, ...] = ()
 
 
@@ -1772,6 +1773,11 @@ def calculate_projection(
         achats_d + aace_hors_achats + sal + sociales + mkg + dotations_totales +
         assurances_d + maintenance_nouvelles_machines + deprec
     )
+    # Part des charges qui ne varie pas avec le volume vendu : tout sauf les
+    # achats de matières. C'est la base du calcul de rentabilité (point
+    # d'équilibre) : elle est exposée pour que l'interface ne recompose pas
+    # la somme à la main.
+    charges_fixes = total_charges - achats_d
 
     if interets_emprunt is None:
         interets = Decimal("0")
@@ -1839,6 +1845,7 @@ def calculate_projection(
 
     return FinancialProjection(
         total_charges=money(total_charges),
+        charges_fixes=money(charges_fixes),
         resultat_financier=money(resultat_financier),
         resultat_avant_impot=money(resultat_avant_impot),
         impot_is=money(impot_is),

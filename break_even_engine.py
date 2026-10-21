@@ -441,3 +441,39 @@ def capacity_units_per_product(
                 maxi = min(maxi, max(0.0, _num(dispo)) / minutes)
         out[p.key] = 0.0 if maxi == float("inf") else maxi
     return out
+
+
+def unit_variable_costs(
+    bom: Mapping[str, Mapping[str, float]],
+    prix_matieres: Mapping[str, float],
+    produits: Sequence[str],
+) -> tuple[dict[str, float], tuple[str, ...]]:
+    """Coût variable unitaire par produit : nomenclature x prix des matières.
+
+    `bom` : produit -> {matière : quantité par unité}. `prix_matieres` : prix
+    unitaire par matière. Retourne (coûts par produit, avertissements).
+
+    Une matière sans prix n'est pas valorisée : le coût unitaire serait alors
+    sous-estimé — l'avertissement le dit explicitement, aucun prix n'est
+    inventé pour combler le trou.
+    """
+    warnings: list[str] = []
+    out: dict[str, float] = {}
+    matieres_sans_prix: set[str] = set()
+    for produit in produits:
+        total = 0.0
+        for matiere, quantite in (bom.get(produit) or {}).items():
+            qte = max(0.0, _num(quantite))
+            prix = _num(prix_matieres.get(matiere), -1.0)
+            if prix < 0:
+                matieres_sans_prix.add(matiere)
+                continue
+            total += qte * prix
+        out[produit] = total
+    if matieres_sans_prix:
+        warnings.append(
+            "Matières sans prix de référence : "
+            + ", ".join(sorted(matieres_sans_prix))
+            + " — le coût variable unitaire est sous-estimé."
+        )
+    return out, tuple(warnings)

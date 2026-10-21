@@ -526,6 +526,7 @@ erp-subakoua/
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │
 ├── DOCUMENT_STRATEGY.md          # Stratégie d'achat documentaire
+├── EVALUATION_NIVEAU_COMPETENCE.md # Auto-évaluation du niveau de compétence
 ├── scraper/                      # Copie autonome + guide de déploiement
 ├── requirements*.txt · packages.txt · .env.example
 └── .streamlit/                   # config.toml · secrets.toml.example
