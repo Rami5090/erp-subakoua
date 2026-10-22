@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "aout_sans_juillet"
-LOG: dict = {"metrics": [], "warnings": [], "errors": [], "success": [], "captions": [], "inputs": {}}
+LOG: dict = {"metrics": [], "warnings": [], "errors": [], "success": [], "captions": [], "inputs": {},
+             "tables": [], "charts": 0}
 
 #: Leviers du simulateur à surcharger (clé session_state -> valeur), ex.
 #: SIM_DECISIONS='{"sim_ced_dec": 2}'. S'applique comme valeur par défaut des
@@ -51,6 +52,7 @@ class Stub:
             "form_submit_button": lambda *a, **k: os.environ.get("SIM_SUBMIT") == "1",
             "columns": st._columns, "tabs": lambda labels, *a, **k: [Stub(st._state) for _ in labels],
             "metric": st._metric, "warning": st._msg("warnings"), "error": st._msg("errors"),
+            "dataframe": st._dataframe, "altair_chart": st._chart,
             "success": st._msg("success"), "caption": st._msg("captions"),
             "stop": lambda: (_ for _ in ()).throw(SystemExit()),
         }
@@ -123,6 +125,18 @@ class Stub:
 
     def _metric(self, label, value=None, delta=None, *a, **k):
         LOG["metrics"].append([str(label), str(value), None if delta is None else str(delta)])
+        return self
+
+    def _dataframe(self, data, *a, **k):
+        try:
+            rows = data.to_dict("records") if hasattr(data, "to_dict") else list(data)
+        except Exception:
+            rows = []
+        LOG["tables"].append(rows)
+        return self
+
+    def _chart(self, chart=None, *a, **k):
+        LOG["charts"] += 1
         return self
 
     def _msg(self, bucket):

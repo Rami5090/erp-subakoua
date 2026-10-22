@@ -30,6 +30,7 @@ from break_even_engine import (
     ProductEconomics,
     capacity_units_per_product,
     compute_break_even,
+    compute_optimum_targets,
     sensitivity_price,
 )
 from constants import (
@@ -316,6 +317,27 @@ with st.expander("🏢 Charges fixes du mois", expanded=True):
     st.metric("Charges fixes retenues", _fmt_eur(charges_fixes))
 
 # --------------------------------------------------------------------------- moteur
+st.markdown("**Objectif de l'optimisation**")
+c_obj1, c_obj2 = st.columns([1, 2])
+with c_obj1:
+    objectif = st.radio(
+        "Optimiser pour",
+        ["Marge maximale", "Volume maximal"],
+        index=0,
+        horizontal=True,
+        help=(
+            "Marge maximale : le mix sert d'abord les produits les plus rentables par unité "
+            "de capacité rare. Volume maximal : il sert d'abord les produits qui consomment "
+            "le moins de capacité par unité vendue."
+        ),
+    )
+with c_obj2:
+    st.caption(
+        "Le mix optimal est recalculé selon l'objectif choisi ; il sert de référence aux "
+        "valeurs à atteindre affichées juste après."
+    )
+objectif_moteur = "volume" if objectif == "Volume maximal" else "margin"
+
 produits = [
     ProductEconomics(
         key=key,
@@ -340,6 +362,7 @@ resultat = compute_break_even(
     times=temps,
     capacity_minutes=cap_minutes,
     demand_caps={p.key: p.demand_units for p in produits if p.demand_units},
+    objective=objectif_moteur,
 )
 
 # --------------------------------------------------------------------------- résultats
@@ -462,7 +485,98 @@ if resultat.optimal_mix:
     ]), width="stretch", hide_index=True)
     st.caption("Volume maximal par produit s'il était produit seul (contrainte d'atelier).")
 
-st.subheader("5 · Sensibilité du point d'équilibre à une variation de prix")
+# --------------------------------------------------------------------------- valeurs à atteindre
+st.subheader("5 · Valeurs à atteindre pour l'optimum")
+st.caption(
+    f"Chaque ligne compare la valeur actuelle à la valeur cible de l'optimum **{objectif.lower()}** "
+    "et indique le levier à actionner. Les lignes marquées « bloquant » conditionnent l'atteinte "
+    "de l'optimum : sans elles, il reste hors d'atteinte."
+)
+
+cibles, _warn_cibles = compute_optimum_targets(
+    produits,
+    resultat,
+    times=temps,
+    capacity_minutes=cap_minutes,
+    machines=machines,
+    capacity_min_per_machine=CAPACITY_MIN_PER_MACHINE,
+    objective=objectif_moteur,
+    mix_demande={p.key: (p.demand_units or 0.0) for p in produits},
+)
+
+if not cibles:
+    st.info("Aucune cible calculable : il manque un mix de référence ou une capacité.")
+else:
+    table_cibles = []
+    for cible in cibles:
+        _ecart = cible.ecart
+        if cible.atteint:
+            _statut = "✅ atteint"
+        elif cible.bloquant:
+            _statut = "⛔ bloquant"
+        else:
+            _statut = "🔸 à ajuster"
+        if _ecart > 0:
+            _ecart_texte = f"manque {_fmt_n(_ecart, 2)} {cible.unite}"
+        elif _ecart < 0:
+            _ecart_texte = f"dépassé de {_fmt_n(abs(_ecart), 2)} {cible.unite}"
+        else:
+            _ecart_texte = "—"
+        table_cibles.append({
+            "Objectif": cible.libelle,
+            "Valeur actuelle": f"{_fmt_n(cible.valeur_actuelle, 2)} {cible.unite}",
+            "Valeur cible": f"{_fmt_n(cible.valeur_cible, 2)} {cible.unite}",
+            "Écart": _ecart_texte,
+            "Levier": cible.levier,
+            "Statut": _statut,
+            "Action": cible.action,
+        })
+    st.dataframe(pd.DataFrame(table_cibles), width="stretch", hide_index=True)
+
+    _atteints = sum(1 for c in cibles if c.atteint)
+    _bloquants = [c for c in cibles if c.bloquant and not c.atteint]
+    ct1, ct2, ct3 = st.columns(3)
+    ct1.metric("Objectifs atteints", f"{_atteints} / {len(cibles)}")
+    ct2.metric("Objectifs bloquants", f"{len(_bloquants)}")
+    ct3.metric(
+        "Gain de marge potentiel",
+        _fmt_eur((resultat.optimal_mix_margin or 0) - (resultat.current_margin or 0)),
+        help="Marge sur coût variable de l'optimum moins marge du volume vendu.",
+    )
+    if _bloquants:
+        st.error(
+            "⛔ Objectifs bloquants : "
+            + " ; ".join(f"{c.libelle} → {c.action}" for c in _bloquants)
+        )
+    else:
+        st.success("✅ Aucun objectif bloquant : l'optimum est atteignable avec les leviers actuels.")
+
+    # Comparaison graphique actuel / cible sur les volumes.
+    _volumes_cibles = [c for c in cibles if c.categorie == "Volume"]
+    if _volumes_cibles:
+        _chart = pd.DataFrame([
+            {
+                "Produit": c.libelle.replace("Volume ", ""),
+                "Actuel (u)": round(c.valeur_actuelle),
+                "Cible (u)": round(c.valeur_cible),
+            }
+            for c in _volumes_cibles
+        ])
+        _chart_long = _chart.melt("Produit", var_name="Série", value_name="Unités")
+        _graphe = (
+            alt.Chart(_chart_long)
+            .mark_bar()
+            .encode(
+                x=alt.X("Produit:N", sort=_chart["Produit"].tolist(), title=None),
+                y=alt.Y("Unités:Q", title="Unités"),
+                color=alt.Color("Série:N", title=None),
+                tooltip=["Produit:N", "Série:N", "Unités:Q"],
+            )
+            .properties(height=260)
+        )
+        st.altair_chart(_graphe, width="stretch")
+
+st.subheader("6 · Sensibilité du point d'équilibre à une variation de prix")
 st.caption("Les prix de la section 1 sont repris tels quels ; ce tableau mesure l'effet d'un choc de prix appliqué à toute la gamme.")
 tab_sens = []
 for delta in (-0.10, -0.05, 0.0, 0.05, 0.10):

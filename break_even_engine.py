@@ -109,6 +109,7 @@ class BreakEvenResult:
     optimal_mix_revenue: float = 0.0
     optimal_mix_margin: float = 0.0
     allocation_method: str = "revenue"
+    objective: str = "margin"
     warnings: tuple[str, ...] = ()
 
 
@@ -158,11 +159,18 @@ def optimize_mix(
     times: Mapping[str, Mapping[str, float]],
     capacity_minutes: Mapping[str, float],
     demand_caps: Mapping[str, float] | None = None,
+    objective: str = "margin",
 ) -> tuple[tuple[MixEntry, ...], tuple[str, ...]]:
-    """Mix maximisant la marge sous contrainte de capacité d'atelier.
+    """Mix optimisé sous contrainte de capacité d'atelier.
+
+    Deux objectifs sont possibles :
+
+    * `margin` : maximiser la **marge sur coût variable** ;
+    * `volume` : maximiser le **volume vendu**.
 
     Heuristique gloutonne : les produits sont servis par **marge par fraction
-    de capacité consommée** décroissante ; chaque allocation est limitée par
+    de capacité consommée** décroissante (ou par volume par fraction de
+    capacité, pour l'objectif `volume`) ; chaque allocation est limitée par
     *tous* les ateliers, donc le mix returned est toujours réalisable (aucune
     capacité dépassée).
 
@@ -170,6 +178,7 @@ def optimize_mix(
     réalisable et proche : le résultat est annoncé comme tel.
     """
     warnings: list[str] = []
+    objectif = "volume" if str(objective).lower() == "volume" else "margin"
     rest_cap = {w: max(0.0, _num(capacity_minutes.get(w))) for w in capacity_minutes}
     rest_demande: dict[str, float] = {}
     for p in products:
@@ -191,7 +200,7 @@ def optimize_mix(
         garde += 1
 
         def score(p: ProductEconomics) -> float:
-            """Marge par fraction de capacité d'atelier consommée.
+            """Score de priorité du produit pour l'objectif courant.
 
             Pour chaque atelier, la fraction de la capacité résiduelle que le
             produit consommerait par unité ; on retient l'atelier le plus
@@ -205,6 +214,11 @@ def optimize_mix(
                     pression = max(pression, t / dispo)
             if pression <= 0:
                 return float("inf")
+            if objectif == "volume":
+                # Maximiser le volume : on sert d'abord ce qui consomme le
+                # moins de capacité rare par unité vendue.
+                return 1.0 / pression
+            # Maximiser la marge : marge par fraction de capacité consommée.
             return p.margin_per_unit / pression
 
         restants.sort(key=lambda p: (-score(p), p.key))
@@ -252,6 +266,7 @@ def compute_break_even(
     times: Mapping[str, Mapping[str, float]] | None = None,
     capacity_minutes: Mapping[str, float] | None = None,
     demand_caps: Mapping[str, float] | None = None,
+    objective: str = "margin",
 ) -> BreakEvenResult:
     """Point d'équilibre, marge de sécurité et mix sous contrainte de capacité."""
     warnings: list[str] = []
@@ -339,7 +354,7 @@ def compute_break_even(
     max_marge_cap = None
     ecart_cap = None
     if capacity_minutes and times:
-        mix_opt, warn_mix = optimize_mix(prods, times, capacity_minutes, demand_caps)
+        mix_opt, warn_mix = optimize_mix(prods, times, capacity_minutes, demand_caps, objective=objective)
         warnings.extend(warn_mix)
         max_marge_cap = sum(e.margin for e in mix_opt)
         if fc > 0:
@@ -380,6 +395,7 @@ def compute_break_even(
         optimal_mix_revenue=sum(e.revenue for e in mix_opt),
         optimal_mix_margin=sum(e.margin for e in mix_opt),
         allocation_method=allocation,
+        objective="volume" if str(objective).lower() == "volume" else "margin",
         warnings=tuple(warnings),
     )
 
@@ -477,3 +493,222 @@ def unit_variable_costs(
             + " — le coût variable unitaire est sous-estimé."
         )
     return out, tuple(warnings)
+
+
+@dataclass(frozen=True)
+class OptimumTarget:
+    """Une valeur à atteindre pour atteindre l'optimum, avec son écart.
+
+    `sens` indique comment lire la cible :
+    * `min` : plancher (prix minimum, capacité minimale) — atteint si l'on est
+      déjà **au-dessus** de la cible ;
+    * `max` : plafond (coût unitaire maximum) — atteint si l'on est déjà
+      **en-dessous** de la cible ;
+    * `cible` : valeur à rejoindre exactement (volume, CA, marge).
+    """
+
+    cle: str
+    categorie: str          # Volume · Prix · Coût · Capacité · Chiffre d'affaires · Marge
+    libelle: str
+    valeur_actuelle: float
+    valeur_cible: float
+    unite: str              # "u" · "€" · "€/u" · "min"
+    levier: str             # Production · Prix · Achats · Machines · Mix
+    action: str
+    sens: str = "cible"     # "min" · "max" · "cible"
+    bloquant: bool = False  # l'écart conditionne l'atteinte de l'optimum
+
+    @property
+    def ecart(self) -> float:
+        """Écart restant à combler (négatif si la cible est dépassée)."""
+        if self.sens == "min":
+            return self.valeur_cible - self.valeur_actuelle
+        if self.sens == "max":
+            return self.valeur_actuelle - self.valeur_cible
+        return self.valeur_cible - self.valeur_actuelle
+
+    @property
+    def atteint(self) -> bool:
+        tol = max(1e-6, abs(self.valeur_cible) * 1e-6)
+        if self.sens == "min":
+            return self.valeur_actuelle >= self.valeur_cible - tol
+        if self.sens == "max":
+            return self.valeur_actuelle <= self.valeur_cible + tol
+        return abs(self.ecart) <= tol
+
+
+def compute_optimum_targets(
+    products: Sequence[ProductEconomics],
+    resultat: BreakEvenResult,
+    times: Mapping[str, Mapping[str, float]] | None = None,
+    capacity_minutes: Mapping[str, float] | None = None,
+    machines: Mapping[str, int] | None = None,
+    capacity_min_per_machine: float = 9600.0,
+    objective: str = "margin",
+    mix_demande: Mapping[str, float] | None = None,
+) -> tuple[list[OptimumTarget], tuple[str, ...]]:
+    """Valeurs à atteindre pour atteindre l'optimum, une ligne par levier.
+
+    Pour chaque produit et par atelier, la valeur actuelle et la valeur cible
+    sont comparées : volume à vendre, prix plancher (à volume actuel), plafond
+    de coût variable, capacité d'atelier nécessaire. S'y ajoutent les objectifs
+    de chiffre d'affaires et de marge.
+
+    `mix_demande` : la demande non servie (volume souhaité par produit) ; elle
+    sert à chiffrer la capacité à acquérir pour tout servir.
+    """
+    warnings: list[str] = []
+    cibles: list[OptimumTarget] = []
+    produits = list(products)
+    par_key = {p.key: p for p in produits}
+
+    # --- 1. Volume à vendre (mix optimal) ---------------------------------
+    volumes_cibles = {e.key: e.units for e in resultat.optimal_mix}
+    for p in produits:
+        cible = volumes_cibles.get(p.key, 0.0)
+        if cible <= 0 and p.current_units <= 0:
+            continue
+        ecart = cible - p.current_units
+        if abs(ecart) < 1e-6:
+            action = "Volume déjà aligné sur l'optimum."
+        elif ecart > 0:
+            action = f"Vendre {ecart:,.0f} u de plus ({p.name}).".replace(",", " ")
+        else:
+            action = f"Réduire la production de {abs(ecart):,.0f} u ({p.name}).".replace(",", " ")
+        cibles.append(OptimumTarget(
+            cle=f"volume_{p.key}",
+            categorie="Volume",
+            libelle=f"Volume {p.name}",
+            valeur_actuelle=p.current_units,
+            valeur_cible=cible,
+            unite="u",
+            levier="Mix",
+            action=action,
+        ))
+
+    # --- 2. Prix plancher par produit (à volume actuel) --------------------
+    for p in produits:
+        qte = p.current_units
+        part_fixe = resultat.fixed_cost_allocation.get(p.key, 0.0)
+        if qte <= 0 or part_fixe <= 0:
+            continue
+        prix_plancher = p.unit_variable_cost + part_fixe / qte
+        if prix_plancher <= p.price:
+            action = f"Prix suffisant : couvre la part imputée des charges fixes."
+        elif prix_plancher > 2 * p.price:
+            action = (
+                f"À ce volume, aucun prix raisonnable ne couvre la part imputée : "
+                f"il faut d'abord augmenter le volume."
+            )
+        else:
+            action = f"Monter le prix à {prix_plancher:,.0f} € HT (+{(prix_plancher / p.price - 1) * 100:,.0f} %) pour couvrir la part imputée.".replace(",", " ")
+        cibles.append(OptimumTarget(
+            cle=f"prix_{p.key}",
+            categorie="Prix",
+            libelle=f"Prix plancher {p.name}",
+            valeur_actuelle=p.price,
+            valeur_cible=prix_plancher,
+            unite="€",
+            levier="Prix",
+            action=action,
+            sens="min",
+        ))
+
+    # --- 3. Plafond de coût variable (maintien du taux de marge) ----------
+    taux = resultat.weighted_margin_ratio
+    if taux:
+        for p in produits:
+            plafond = p.price * (1.0 - taux)
+            if plafond <= 0:
+                continue
+            action = (
+                f"Coût unitaire à tenir sous {plafond:,.0f} €/u "
+                f"(maintien du taux de marge de {taux * 100:,.0f} %).".replace(",", " ")
+            )
+            cibles.append(OptimumTarget(
+                cle=f"cout_{p.key}",
+                categorie="Coût",
+                libelle=f"Plafond coût variable {p.name}",
+                valeur_actuelle=p.unit_variable_cost,
+                valeur_cible=plafond,
+                unite="€/u",
+                levier="Achats",
+                action=action,
+                sens="max",
+            ))
+
+    # --- 4. Capacité : minutes nécessaires pour servir la demande ---------
+    if times and capacity_minutes:
+        _t = times or {}
+        charge_demande: dict[str, float] = {}
+        for atelier in capacity_minutes:
+            minutes = 0.0
+            for p in produits:
+                qte = (mix_demande or {}).get(p.key, 0.0)
+                if qte <= 0:
+                    continue
+                t = _t.get(p.name) or _t.get(p.key) or {}
+                minutes += qte * max(0.0, _num(t.get(atelier)))
+            charge_demande[atelier] = minutes
+        for atelier, dispo in capacity_minutes.items():
+            besoin = charge_demande.get(atelier, 0.0)
+            ecart = besoin - max(0.0, _num(dispo))
+            if besoin <= 0:
+                continue
+            if ecart > 0:
+                machines_ajoutees = int(-(-ecart // max(1.0, _num(capacity_min_per_machine, 9600.0))))
+                action = (
+                    f"Ajouter {machines_ajoutees} machine(s) en {atelier} "
+                    f"({ecart:,.0f} min manquantes) pour servir toute la demande."
+                    .replace(",", " ")
+                )
+            else:
+                action = (
+                    f"Capacité suffisante en {atelier} : "
+                    f"{abs(ecart):,.0f} min de marge, soit "
+                    f"{abs(ecart) / max(1.0, _num(capacity_min_per_machine, 9600.0)):.1f} machine(s) "
+                    "de réserve.".replace(",", " ")
+                )
+            cibles.append(OptimumTarget(
+                cle=f"capacite_{atelier}",
+                categorie="Capacité",
+                libelle=f"Capacité {atelier}",
+                valeur_actuelle=max(0.0, _num(dispo)),
+                valeur_cible=besoin,
+                unite="min",
+                levier="Machines",
+                action=action,
+                sens="min",
+                bloquant=ecart > 0,
+            ))
+
+    # --- 5. Chiffre d'affaires et marge du mix optimal ---------------------
+    if resultat.optimal_mix:
+        cibles.append(OptimumTarget(
+            cle="ca_optimum",
+            categorie="Chiffre d'affaires",
+            libelle="Chiffre d'affaires de l'optimum",
+            valeur_actuelle=resultat.current_revenue,
+            valeur_cible=resultat.optimal_mix_revenue,
+            unite="€",
+            levier="Mix",
+            action=(
+                f"Mix optimal : {resultat.optimal_mix_units:,.0f} u pour "
+                f"{resultat.optimal_mix_revenue:,.0f} € de CA.".replace(",", " ")
+            ),
+        ))
+        cibles.append(OptimumTarget(
+            cle="marge_optimum",
+            categorie="Marge",
+            libelle="Marge sur coût variable de l'optimum",
+            valeur_actuelle=resultat.current_margin,
+            valeur_cible=resultat.optimal_mix_margin,
+            unite="€",
+            levier="Mix",
+            action=(
+                f"Marge maximale atteignable sous capacité : "
+                f"{resultat.optimal_mix_margin:,.0f} €.".replace(",", " ")
+            ),
+        ))
+
+    return cibles, tuple(warnings)

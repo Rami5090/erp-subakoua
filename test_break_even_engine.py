@@ -13,6 +13,7 @@ from break_even_engine import (
     allocate_fixed_costs,
     capacity_units_per_product,
     compute_break_even,
+    compute_optimum_targets,
     optimize_mix,
     sensitivity_price,
 )
@@ -201,3 +202,145 @@ def test_price_decrease_raises_the_break_even_volume():
     result = sensitivity_price([S3, I3], 9000, -0.05, mix=MIX)
 
     assert result["apres"].break_even_units > result["avant"].break_even_units
+
+
+# --------------------------------------------------------------------------- objectif volume
+def test_volume_objective_serves_more_units_than_the_margin_objective():
+    capacite = {"Decoupe": 1000.0, "Assemblage": 2000.0, "Conditionnement": 1000.0}
+
+    marge = compute_break_even([S3, I3], 9000, mix=MIX, times=TIMES, capacity_minutes=capacite, objective="margin")
+    volume = compute_break_even([S3, I3], 9000, mix=MIX, times=TIMES, capacity_minutes=capacite, objective="volume")
+
+    # Le mix « marge » sert Integral 3 (33 €/min de Découpe) ; le mix « volume »
+    # sert Shorty 3 (500 u contre 333 u), moins rentable mais plus nombreux.
+    assert volume.optimal_mix_units > marge.optimal_mix_units
+    assert volume.optimal_mix_margin < marge.optimal_mix_margin
+    assert volume.objective == "volume"
+    assert marge.objective == "margin"
+
+
+def test_volume_objective_still_respects_the_capacity():
+    capacite = {"Decoupe": 1000.0, "Assemblage": 2000.0, "Conditionnement": 1000.0}
+
+    volume = compute_break_even([S3, I3], 9000, mix=MIX, times=TIMES, capacity_minutes=capacite, objective="volume")
+
+    for atelier, minutes in capacite.items():
+        charge = sum(e.minutes.get(atelier, 0.0) for e in volume.optimal_mix)
+        assert charge <= minutes + 1e-9
+
+
+# --------------------------------------------------------------------------- valeurs à atteindre
+def test_targets_list_the_price_floor_needed_to_cover_fixed_costs():
+    seul = [ProductEconomics(key="s3", name="Shorty 3", price=100.0, unit_variable_cost=60.0, current_units=100.0)]
+    resultat = compute_break_even(seul, 9000, mix={"s3": 100.0})
+
+    cibles, _ = compute_optimum_targets(seul, resultat)
+
+    prix = next(c for c in cibles if c.cle == "prix_s3")
+    # 60 €/u de coût variable + 9 000 € de charges fixes imputées / 100 u
+    assert prix.valeur_cible == pytest.approx(150.0)
+    assert prix.valeur_actuelle == pytest.approx(100.0)
+    assert prix.ecart == pytest.approx(50.0)
+    assert prix.atteint is False
+    assert "150" in prix.action
+
+
+def test_targets_list_the_cost_ceiling_that_preserves_the_margin_rate():
+    seul = [ProductEconomics(key="s3", name="Shorty 3", price=100.0, unit_variable_cost=60.0, current_units=100.0)]
+    resultat = compute_break_even(seul, 9000, mix={"s3": 100.0})
+
+    cibles, _ = compute_optimum_targets(seul, resultat)
+
+    cout = next(c for c in cibles if c.cle == "cout_s3")
+    # Taux de marge pondéré 40 % -> le coût unitaire doit rester sous 60 €/u
+    assert cout.valeur_cible == pytest.approx(60.0)
+    assert cout.atteint is True
+
+
+def test_a_satisfied_price_floor_is_reported_as_reached():
+    """Un prix déjà au-dessus du plancher n'est pas une cible à ajuster."""
+    seul = [ProductEconomics(key="s3", name="Shorty 3", price=100.0, unit_variable_cost=60.0, current_units=100.0)]
+    # Charges fixes faibles : le prix de 100 €/u couvre largement la part imputée.
+    resultat = compute_break_even(seul, 1000, mix={"s3": 100.0})
+
+    cibles, _ = compute_optimum_targets(seul, resultat)
+
+    prix = next(c for c in cibles if c.cle == "prix_s3")
+    assert prix.sens == "min"
+    assert prix.valeur_cible == pytest.approx(70.0)
+    assert prix.atteint is True
+    assert prix.ecart < 0  # le plancher est dépassé
+
+
+def test_a_cost_above_the_ceiling_is_reported_as_not_reached():
+    """Sur un mix multi-produits, le plafond suit le taux du portefeuille :
+    un produit trop cher par rapport à la moyenne doit être signalé."""
+    produits = [
+        ProductEconomics(key="s3", name="Shorty 3", price=100.0, unit_variable_cost=90.0, current_units=100.0),
+        ProductEconomics(key="i3", name="Integral 3", price=200.0, unit_variable_cost=50.0, current_units=100.0),
+    ]
+    resultat = compute_break_even(produits, 1000, mix={"s3": 100.0, "i3": 100.0})
+
+    cibles, _ = compute_optimum_targets(produits, resultat)
+
+    cout = next(c for c in cibles if c.cle == "cout_s3")
+    # Taux du portefeuille 53,3 % -> le coût de Shorty 3 doit passer sous 46,7 €/u
+    assert cout.sens == "max"
+    assert cout.valeur_cible == pytest.approx(100.0 * (1.0 - 16000.0 / 30000.0), rel=0.01)
+    assert cout.atteint is False
+    assert cout.ecart > 0
+
+    cout_ok = next(c for c in cibles if c.cle == "cout_i3")
+    assert cout_ok.atteint is True
+
+
+def test_targets_list_the_volume_to_sell_for_the_optimal_mix():
+    capacite = {"Decoupe": 1000.0, "Assemblage": 2000.0, "Conditionnement": 1000.0}
+    produits = [
+        ProductEconomics(key="s3", name="Shorty 3", price=100.0, unit_variable_cost=60.0, current_units=40.0),
+        ProductEconomics(key="i3", name="Integral 3", price=200.0, unit_variable_cost=100.0, current_units=10.0),
+    ]
+    resultat = compute_break_even(produits, 9000, mix=MIX, times=TIMES, capacity_minutes=capacite)
+
+    cibles, _ = compute_optimum_targets(produits, resultat, times=TIMES, capacity_minutes=capacite)
+
+    volume_i3 = next(c for c in cibles if c.cle == "volume_i3")
+    assert volume_i3.valeur_cible == pytest.approx(1000.0 / 3.0)
+    assert volume_i3.ecart > 0
+    assert "Vendre" in volume_i3.action
+
+
+def test_targets_count_the_machines_to_add_to_serve_the_whole_demand():
+    capacite = {"Decoupe": 1000.0, "Assemblage": 2000.0, "Conditionnement": 1000.0}
+    produits = [
+        ProductEconomics(key="s3", name="Shorty 3", price=100.0, unit_variable_cost=60.0, current_units=40.0),
+    ]
+    resultat = compute_break_even(produits, 9000, mix=MIX, times=TIMES, capacity_minutes=capacite)
+
+    cibles, _ = compute_optimum_targets(
+        produits, resultat, times=TIMES, capacity_minutes=capacite,
+        machines={"Decoupe": 1, "Assemblage": 2, "Conditionnement": 1},
+        capacity_min_per_machine=1000.0,
+        mix_demande={"s3": 1000.0},
+    )
+
+    decoupe = next(c for c in cibles if c.cle == "capacite_Decoupe")
+    # 1 000 u de Shorty 3 = 2 000 min de Découpe pour 1 000 disponibles
+    assert decoupe.valeur_cible == pytest.approx(2000.0)
+    assert decoupe.ecart == pytest.approx(1000.0)
+    assert decoupe.bloquant is True
+    assert "1 machine(s)" in decoupe.action
+
+
+def test_targets_are_already_reached_when_the_mix_is_optimal():
+    capacite = {"Decoupe": 1000.0, "Assemblage": 2000.0, "Conditionnement": 1000.0}
+    produits = [
+        ProductEconomics(key="i3", name="Integral 3", price=200.0, unit_variable_cost=100.0, current_units=1000.0 / 3.0),
+    ]
+    resultat = compute_break_even(produits, 9000, mix={"i3": 1000.0 / 3.0}, times=TIMES, capacity_minutes=capacite)
+
+    cibles, _ = compute_optimum_targets(produits, resultat, times=TIMES, capacity_minutes=capacite)
+
+    volume = next(c for c in cibles if c.cle == "volume_i3")
+    assert volume.atteint is True
+    assert "aligné" in volume.action

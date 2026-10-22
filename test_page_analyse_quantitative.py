@@ -64,3 +64,32 @@ def test_page_does_not_warn_when_the_data_is_complete():
     vigilance = [w for w in data.get("warnings", []) if "vigilance" in w.lower()]
 
     assert vigilance == []
+
+
+def test_page_lists_the_values_to_reach_the_optimum():
+    """Le tableau des valeurs à atteindre est la sortie clé de l'analyse."""
+    data = _run_page()
+    tables = data.get("tables", [])
+    cibles = next(
+        (t for t in tables if t and "Objectif" in t[0]), None
+    )
+
+    assert cibles is not None, "aucun tableau de valeurs à atteindre"
+    colonnes = set(cibles[0])
+    assert {"Objectif", "Valeur actuelle", "Valeur cible", "Écart", "Levier", "Statut", "Action"} <= colonnes
+    # Le volume, le prix, le coût, le CA et la marge doivent être documentés.
+    categories = {ligne["Objectif"].split()[0] for ligne in cibles}
+    assert {"Volume", "Prix", "Plafond", "Chiffre", "Marge"} <= categories
+    for ligne in cibles:
+        assert ligne["Action"], f"action manquante pour {ligne['Objectif']}"
+        assert ligne["Statut"] in {"✅ atteint", "⛔ bloquant", "🔸 à ajuster"}
+
+
+def test_page_reports_how_many_objectives_are_already_reached():
+    data = _run_page()
+    metriques = {m[0]: m[1] for m in data["metrics"]}
+
+    assert "Objectifs atteints" in metriques
+    assert "Objectifs bloquants" in metriques
+    atteints, total = metriques["Objectifs atteints"].split(" / ")
+    assert 0 <= int(atteints) <= int(total)

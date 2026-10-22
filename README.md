@@ -215,6 +215,21 @@ variables, charges fixes, volumes, capacité) :
 | **L'équilibre est-il atteignable ?** | La capacité industrielle borne le volume : si la marge maximale atteignable est inférieure aux charges fixes, l'équilibre est **hors de portée** — l'écart est affiché |
 | **Comment maximiser la marge ?** | Mix proposé : les produits les plus rentables par unité de capacité rare sont servis d'abord, **sans jamais dépasser un atelier** |
 
+**L'optimum est paramétrable** : *marge maximale* (on sert d'abord ce qui rapporte le plus par
+unité de capacité rare) ou *volume maximal* (on sert d'abord ce qui consomme le moins de capacité
+par unité vendue).
+
+**Le tableau des valeurs à atteindre** est la sortie clé : une ligne par levier, avec la valeur
+actuelle, la valeur cible, l'écart restant, le levier concerné et l'action à mener.
+
+| Objectif | Ce qu'il dit |
+|---|---|
+| **Volume** par produit | Combien d'unités vendre (ou réduire) pour rejoindre le mix optimal |
+| **Prix plancher** | Le prix minimum qui couvre la part des charges fixes imputée au produit, à son volume actuel |
+| **Plafond de coût variable** | Le coût matière unitaire maximum compatible avec le taux de marge du portefeuille |
+| **Capacité** par atelier | Les minutes nécessaires pour servir toute la demande, donc le **nombre de machines à ajouter** (ou la réserve disponible) |
+| **CA et marge** | Le chiffre d'affaires et la marge sur coût variable de l'optimum, comparés à la situation actuelle |
+
 Un tableau de **sensibilité** montre l'effet d'un choc de prix (−10 % à +10 %) sur le seuil.
 
 > ⚠️ Le mix est une **heuristique gloutonne** (marge par fraction de capacité consommée) : la
@@ -472,15 +487,16 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `144 passed, 1 skipped`**
+**Résultat actuel : `180 passed, 1 skipped`**
 
 | Fichier | Couverture |
 |---|---|
 | `test_forecast_engine.py` | Saisonnalité, prévision 12 mois, **absence de fuite temporelle**, concurrence |
 | `test_optimizer_engine.py` | Calibration, prédiction de part, grille respectant le budget |
 | `test_optimizer_capacity_limits.py` | Fusion des données concurrentes, **capacité appliquée comme plafond** |
-| `test_break_even_engine.py` | **Point d'équilibre exact**, imputation des charges fixes, mix sous contrainte de capacité, **équilibre hors de portée signalé** |
-| `test_page_analyse_quantitative.py` | La page d'analyse s'exécute de bout en bout et produit un seuil cohérent |
+| `test_break_even_engine.py` | **Point d'équilibre exact**, imputation des charges fixes, mix sous contrainte de capacité, **équilibre hors de portée signalé**, objectif marge/volume, **valeurs à atteindre** (plancher de prix, plafond de coût, machines à ajouter) |
+| `test_page_analyse_quantitative.py` | La page d'analyse s'exécute de bout en bout, produit un seuil cohérent et **liste les valeurs à atteindre** |
+| `test_equilibre_centre_decision.py` | Le centre de décision expose un point d'équilibre cohérent avec le volume vendu |
 | `test_machine_disposal.py` | **Cession de machines** : parc jamais négatif, cession bridée au parc détenu, encaissement TTC, TVA collectée sur cession, effet sur le taux de service |
 | `test_cession_saisie_reelle.py` | Saisie réelle : produit de cession, impact comptable sans VNC, **migration de schéma idempotente** |
 | `test_document_optimizer.py` | Priorités, exclusion des études onéreuses, fenêtre d'achat |
@@ -521,7 +537,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 144 tests exécutés + 1 ignoré
+├── test_*.py                     # 180 tests exécutés + 1 ignoré
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │
