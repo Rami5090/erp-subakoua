@@ -101,8 +101,9 @@ class Stub:
         options = list(options)
         if self._sidebar and "période" in label:
             return os.environ.get("SIM_MONTH", options[0])
-        if "Période analysée" in str(label):
-            # SIM_TOUR=8 : choisit le tour de la page d'analyse quantitative.
+        if "période" in str(label).lower():
+            # SIM_TOUR=8 : choisit le tour de la page d'analyse quantitative
+            # ou du livrable finance.
             tour = os.environ.get("SIM_TOUR", "")
             if tour.isdigit() and int(tour) in options:
                 return int(tour)
@@ -204,7 +205,6 @@ def build_db() -> FakeEngine:
     db = sqlite3.connect(":memory:", factory=FakeEngine)
     db.row_factory = sqlite3.Row
     db.executescript("""
-        CREATE TABLE erp_donnees (id INTEGER PRIMARY KEY AUTOINCREMENT, periode TEXT, type_donnee TEXT, module TEXT, contenu TEXT);
         CREATE TABLE Historique_Equipe (Tour_ID INT PRIMARY KEY, Stock_Neo3 REAL, Stock_Neo5 REAL, Stock_Neo7 REAL, Stock_Renforts REAL, Stock_Manchons REAL, Stock_Fermetures REAL, Tresorerie_Initiale REAL);
         CREATE TABLE Parc_Machines_Mensuel (Tour_ID INT PRIMARY KEY, Mois TEXT, Nb_Machines_Decoupe INT, Nb_Machines_Assemblage INT, Nb_Machines_Cond INT, Acquisition_Faite INT, Acq_Decoupe INT, Acq_Assemblage INT, Acq_Cond INT, Cession_Faite INT, Ced_Decoupe INT, Ced_Assemblage INT, Ced_Cond INT, Px_Cession_Decoupe REAL, Px_Cession_Assemblage REAL, Px_Cession_Cond REAL);
         CREATE TABLE Ventes_Historique (Tour_ID INT PRIMARY KEY, Mois TEXT, Ventes_S3 INT, Ventes_I3 INT, Ventes_S5 INT, Ventes_I5 INT, Ventes_I7 INT);
@@ -213,12 +213,20 @@ def build_db() -> FakeEngine:
         CREATE TABLE Finances_Mensuelles (Tour_ID INT PRIMARY KEY, Mois TEXT, CA_Net REAL, Achats_Matieres REAL, Autres_Charges_Externes REAL, Remuneration_Personnel REAL, Charges_Sociales REAL, Dotations_Amortissements REAL, Resultat_Net REAL, Total_Actif_Immobilise REAL, Total_Actif_Circulant REAL, Total_Capitaux_Propres REAL, Emprunts_Bancaires REAL, Disponibilites_Banque REAL, VNC_Cession_HT REAL, TVA_Cession REAL, PMV_Cession REAL);
         CREATE TABLE simulations_seeds (Token_Seed TEXT, Tour_ID INT, Nom_Scenario TEXT, Parametres_JSON TEXT);
         CREATE TABLE Normes_MS_Prod (x INT); CREATE TABLE Normes_MS_Appro (x INT); CREATE TABLE Normes_MS_Admin (x INT);
-        CREATE TABLE erp_etudes (id INTEGER PRIMARY KEY AUTOINCREMENT, periode TEXT, study_id TEXT, label TEXT, module TEXT, price REAL DEFAULT 0, source_endpoint TEXT, read_allowed INT DEFAULT 1, payload TEXT, fetched_at TEXT);
     """)
+    # SIM_SANS_EXTRACTIONS=1 simule une base fraîche où les tables du
+    # scraper n'existent pas encore : la page doit le dire, pas planter.
+    if os.environ.get("SIM_SANS_EXTRACTIONS") != "1":
+        db.executescript("""
+            CREATE TABLE erp_donnees (id INTEGER PRIMARY KEY AUTOINCREMENT, periode TEXT, type_donnee TEXT, module TEXT, contenu TEXT);
+            CREATE TABLE erp_etudes (id INTEGER PRIMARY KEY AUTOINCREMENT, periode TEXT, study_id TEXT, label TEXT, module TEXT, price REAL DEFAULT 0, source_endpoint TEXT, read_allowed INT DEFAULT 1, payload TEXT, fetched_at TEXT);
+        """)
     return db
 
 
 def erp(db, periode, module, contenu):
+    if os.environ.get("SIM_SANS_EXTRACTIONS") == "1":
+        return  # base fraîche : pas de table erp_donnees
     db.execute("INSERT INTO erp_donnees (periode, type_donnee, module, contenu) VALUES (?, 'etat_actuel', ?, ?)",
                (periode, module, json.dumps(contenu, ensure_ascii=False)))
 
@@ -252,11 +260,83 @@ def seed(db, scenario):
             }]},
             "finalProductionPhaseCostDetail": {"workshopsCosts": [{"totalCost": _cout * _n * 0.1}]},
         })
-    db.execute(
-        "INSERT INTO erp_etudes (periode, study_id, payload, read_allowed) VALUES (?,?,?,1)",
-        ("Année 1 - Janvier", "productionCostDetailStudy",
-         json.dumps({"productsProductionCostDetails": _details}, ensure_ascii=False)),
-    )
+    _avec_extractions = os.environ.get("SIM_SANS_EXTRACTIONS") != "1"
+    if _avec_extractions:
+        db.execute(
+            "INSERT INTO erp_etudes (periode, study_id, payload, read_allowed) VALUES (?,?,?,1)",
+            ("Année 1 - Janvier", "productionCostDetailStudy",
+             json.dumps({"productsProductionCostDetails": _details}, ensure_ascii=False)),
+        )
+    # Données comptables du mois analysé (page « Livrable Finance ») :
+    # bilan (tableau à deux colonnes Actif / Passif), ratios, ventes, relevés
+    # bancaires et compte de résultat simplifié.
+    _bilan = [
+        {"Actif": "Banque", "Passif": "", "Net exercice N": "1250000", "Exercice N": ""},
+        {"Actif": "Compte épargne", "Passif": "", "Net exercice N": "300000", "Exercice N": ""},
+        {"Actif": "Matières", "Passif": "", "Net exercice N": "45000", "Exercice N": ""},
+        {"Actif": "Produits finis", "Passif": "", "Net exercice N": "120000", "Exercice N": ""},
+        {"Actif": "Clients", "Passif": "", "Net exercice N": "1423680", "Exercice N": ""},
+        {"Actif": "Acomptes sur IS", "Passif": "", "Net exercice N": "0", "Exercice N": ""},
+        {"Actif": "TVA déductible", "Passif": "", "Net exercice N": "0", "Exercice N": ""},
+        {"Actif": "En-cours", "Passif": "", "Net exercice N": "0", "Exercice N": ""},
+        {"Actif": "Total actif circulant", "Passif": "", "Net exercice N": "1588680", "Exercice N": ""},
+        {"Actif": "Actions", "Passif": "", "Net exercice N": "0", "Exercice N": ""},
+        {"Actif": "Obligations", "Passif": "", "Net exercice N": "0", "Exercice N": ""},
+        {"Actif": "", "Passif": "Fournisseurs", "Net exercice N": "", "Exercice N": "300000"},
+        {"Actif": "", "Passif": "TVA collectée", "Net exercice N": "", "Exercice N": "237280"},
+        {"Actif": "", "Passif": "Impôt sur les bénéfices", "Net exercice N": "", "Exercice N": "243675"},
+        {"Actif": "", "Passif": "Emprunts mensualisés contractés", "Net exercice N": "", "Exercice N": "150000"},
+        {"Actif": "", "Passif": "Emprunts libres", "Net exercice N": "", "Exercice N": "0"},
+        {"Actif": "", "Passif": "Total dettes", "Net exercice N": "", "Exercice N": "931955"},
+        {"Actif": "", "Passif": "Total capitaux propres", "Net exercice N": "", "Exercice N": "2000000"},
+    ]
+    erp(db, "Année 1 - Août", "expert_comptable", {
+        "Synthèse": {
+            "Expert-comptable #3": {
+                "Tableau_1": _bilan,
+                "Ratios_1": {"Indicateurs_MENSUEL": [
+                    {"Chiffre d'affaires": 1186400, "Résultat avant impôt": 950000}]},
+                "Ratios_2": {"Indicateurs_CUMULÉ": [
+                    {"Chiffre d'affaires": 7000000, "Résultat avant impôt": 5000000}]},
+            },
+        },
+        "Détail des comptes": {
+            "Expert-comptable": {
+                "Ventes sur le marché concurrentiel": [
+                    {"Combinaisons": "1", "Prix HT (€)": 130},
+                    {"Combinaisons": "2", "Prix HT (€)": 205},
+                    {"Combinaisons": "3", "Prix HT (€)": 240},
+                    {"Combinaisons": "4", "Prix HT (€)": 310},
+                    {"Combinaisons": "5", "Prix HT (€)": 360},
+                ],
+            },
+        },
+    })
+    for _sid, _payload in (
+        ("productionCostDetailStudy", {"productsProductionCostDetails": _details}),
+        ("bankStatements", {"initialBankAmount": 1250000, "finalBankAmount": 900000,
+                            "vatPayment": 237280, "workstationPurchases": 0}),
+        ("peeedccscl", {"totalcl": 1423680, "encaissement": 1200000}),
+        ("peeedscrsm", {"netResult": 706325, "biensLivraisons": 1186400,
+                        "amortization": 40000, "depreciationProvision": 2000,
+                        "incomeTaxes": 243675}),
+        # Études présentes côté portail : le tableau « documents manquants »
+        # doit rester cohérent avec le catalogue.
+        ("peeedsbidt", {"balance": {}}),
+        ("peeedscrdl", {"incomeStatement": {}}),
+        ("peeedsftt", {"cashFlow": {}}),
+        ("peeefstvp", {"totalVatOutput": 237280}),
+        ("peeefsisp", {"isdu444": 243675}),
+        ("peeedcahm", {"listePeeedcahMatiere": []}),
+        ("peeedcahsx", {"aace": 0}),
+        ("peeedccg", {"chiffreAffaires": 1186400}),
+    ):
+        if not _avec_extractions:
+            break
+        db.execute(
+            "INSERT INTO erp_etudes (periode, study_id, payload, read_allowed) VALUES (?,?,?,1)",
+            ("Année 1 - Août", _sid, json.dumps(_payload, ensure_ascii=False)),
+        )
 
     soldes = lambda ini, fin: {"Banque": {"Extrait bancaire": {"Soldes bancaires": [{"Solde initial": ini, "Solde final": fin}]}}}
     if scenario == "aout_sans_juillet":

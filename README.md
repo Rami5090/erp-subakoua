@@ -412,6 +412,11 @@ pip install -r requirements-dev.txt      # pytest
 playwright install chromium
 ```
 
+> ⚠️ `requirements.txt` est **complet et obligatoire** : sans `python-dotenv` l'application ne
+> démarre pas, sans `pypdf` le remplissage du PDF « Mission spécifique Finance » est indisponible,
+> sans `statsmodels` les prévisions ne tournent pas. Une dépendance manquante est désormais signalée
+> par un message explicite plutôt que par une erreur d'import brute.
+
 ### Lancer l'application
 
 > ℹ️ Le point d'entrée est **`erp_engine.py`**. Il doit être passé explicitement à `streamlit run`.
@@ -487,7 +492,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `180 passed, 1 skipped`**
+**Résultat actuel : `189 passed, 1 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -497,6 +502,8 @@ python -m pytest -q
 | `test_break_even_engine.py` | **Point d'équilibre exact**, imputation des charges fixes, mix sous contrainte de capacité, **équilibre hors de portée signalé**, objectif marge/volume, **valeurs à atteindre** (plancher de prix, plafond de coût, machines à ajouter) |
 | `test_page_analyse_quantitative.py` | La page d'analyse s'exécute de bout en bout, produit un seuil cohérent et **liste les valeurs à atteindre** |
 | `test_equilibre_centre_decision.py` | Le centre de décision expose un point d'équilibre cohérent avec le volume vendu |
+| `test_page_livrable_finance.py` | La page Livrable s'exécute de bout en bout (bilan lu, marges produites) et **dégrade sans planter** si les tables du scraper manquent |
+| `test_livrable_pdf.py` | Remplissage du **vrai gabarit PDF** : 124 champs renseignés, 0 non trouvé ; message explicite si `pypdf` manque |
 | `test_machine_disposal.py` | **Cession de machines** : parc jamais négatif, cession bridée au parc détenu, encaissement TTC, TVA collectée sur cession, effet sur le taux de service |
 | `test_cession_saisie_reelle.py` | Saisie réelle : produit de cession, impact comptable sans VNC, **migration de schéma idempotente** |
 | `test_document_optimizer.py` | Priorités, exclusion des études onéreuses, fenêtre d'achat |
@@ -537,7 +544,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 180 tests exécutés + 1 ignoré
+├── test_*.py                     # 189 tests exécutés + 1 ignoré
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │

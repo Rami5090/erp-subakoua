@@ -3,7 +3,19 @@ import streamlit as st
 import pandas as pd
 import json
 import hashlib
-from dotenv import load_dotenv
+
+# Une dépendance manquante doit être expliquée, pas fatale : sans
+# python-dotenv, l'import interromprait toute l'application avec une
+# ModuleNotFoundError sans aucun contexte.
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - dépendance d'environnement
+    st.error(
+        "Dépendance manquante : **python-dotenv**. "
+        "Installez l'environnement avec « pip install -r requirements.txt » puis relancez."
+    )
+    st.stop()
+
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import URL
 from finance_engine import (

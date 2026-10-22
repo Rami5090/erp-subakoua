@@ -56,34 +56,42 @@ def _decode(value):
 
 def _contenu(periode: str, module: str):
     from sqlalchemy import text
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text("SELECT id, periode FROM erp_donnees WHERE type_donnee='etat_actuel' AND module=:m ORDER BY id"),
-            {"m": module},
-        ).all()
-        ident = match_period([(r[0], r[1]) for r in rows], periode)
-        if ident is None:
-            return {}
-        row = conn.execute(text("SELECT contenu FROM erp_donnees WHERE id=:i"), {"i": ident}).mappings().first()
-        return _decode(row.get("contenu")) if row else {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT id, periode FROM erp_donnees WHERE type_donnee='etat_actuel' AND module=:m ORDER BY id"),
+                {"m": module},
+            ).all()
+            ident = match_period([(r[0], r[1]) for r in rows], periode)
+            if ident is None:
+                return {}
+            row = conn.execute(text("SELECT contenu FROM erp_donnees WHERE id=:i"), {"i": ident}).mappings().first()
+            return _decode(row.get("contenu")) if row else {}
+    except Exception as exc:
+        st.warning(f"Lecture `erp_donnees` impossible : {type(exc).__name__}.")
+        return {}
 
 
 def _etude(periode: str, study_id: str):
     from sqlalchemy import text
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text("SELECT payload FROM erp_etudes WHERE study_id=:s AND periode=:p ORDER BY id DESC LIMIT 1"),
-            {"s": study_id, "p": periode},
-        ).all()
-        # match_period tolérant si le libellé diffère légèrement
-        if not rows:
-            all_rows = conn.execute(text("SELECT periode, payload FROM erp_etudes WHERE study_id=:s"), {"s": study_id}).all()
-            cands = [(i, r[0]) for i, r in enumerate(all_rows)]
-            idx = match_period(cands, periode)
-            if idx is None:
-                return {}
-            return _decode(all_rows[idx][1])
-        return _decode(rows[0][0])
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT payload FROM erp_etudes WHERE study_id=:s AND periode=:p ORDER BY id DESC LIMIT 1"),
+                {"s": study_id, "p": periode},
+            ).all()
+            # match_period tolérant si le libellé diffère légèrement
+            if not rows:
+                all_rows = conn.execute(text("SELECT periode, payload FROM erp_etudes WHERE study_id=:s"), {"s": study_id}).all()
+                cands = [(i, r[0]) for i, r in enumerate(all_rows)]
+                idx = match_period(cands, periode)
+                if idx is None:
+                    return {}
+                return _decode(all_rows[idx][1])
+            return _decode(rows[0][0])
+    except Exception as exc:
+        st.warning(f"Lecture `erp_etudes` impossible : {type(exc).__name__}.")
+        return {}
 
 
 _tours = sorted(TOURS_PERIODES)
@@ -201,7 +209,7 @@ st.dataframe(pd.DataFrame([{
     "Produit": m.produit, "Prix HT": float(m.prix_ht), "Remise A": float(m.remise_a),
     "Remise B": float(m.remise_b), "Coût var.": float(m.cout_variable),
     "Marge A": float(m.marge_a), "Marge B": float(m.marge_b)} for m in marges]),
-    hide_index=True, use_container_width=True)
+    hide_index=True, width="stretch")
 
 st.subheader("Coordination (réponses en base)")
 st.write(f"- TVA déductible : {bilan.tva_deductible} € / collectée : {bilan.tva_collectee} € "
@@ -228,8 +236,13 @@ uploaded = st.file_uploader("Template PDF « Mission spécifique Finance »", ty
 template_bytes: bytes | None = None
 template_source = ""
 if uploaded is not None:
-    template_bytes = uploaded.read()
-    template_source = f"fichier choisi : {uploaded.name}"
+    try:
+        _lu = uploaded.read()
+        template_bytes = _lu if isinstance(_lu, (bytes, bytearray)) else None
+        template_source = f"fichier choisi : {uploaded.name}"
+    except Exception:
+        template_bytes = None
+        template_source = ""
 elif os.path.exists(default_template):
     with open(default_template, "rb") as _f:
         template_bytes = _f.read()
@@ -257,6 +270,10 @@ if st.button("Générer le PDF rempli", type="primary", disabled=template_bytes 
             file_name=f"Mission_specifique_Finance_{alias}_rempli.pdf",
             mime="application/pdf",
         )
+    except RuntimeError as exc:
+        st.error(str(exc))
+    except Exception as exc:
+        st.error(f"Remplissage du PDF impossible : {type(exc).__name__}: {exc}")
     finally:
         try:
             os.unlink(out_path)
@@ -269,13 +286,17 @@ st.caption("Chaque étude manquante explique quelles cellules du PDF restent vid
            "Coche celles à acheter, puis le bouton t'emmène page Scraper avec la sélection pré-remplie "
            "(onglet « 🔁 Acquérir » : achat si besoin + synchronisation en un passage).")
 
-with engine.connect() as _conn:
-    from sqlalchemy import text as _text
-    _have_rows = _conn.execute(
-        _text("SELECT study_id FROM erp_etudes WHERE periode=:p AND read_allowed=1"),
-        {"p": periode},
-    ).all()
-_have_ids = {str(r[0]) for r in _have_rows}
+try:
+    with engine.connect() as _conn:
+        from sqlalchemy import text as _text
+        _have_rows = _conn.execute(
+            _text("SELECT study_id FROM erp_etudes WHERE periode=:p AND read_allowed=1"),
+            {"p": periode},
+        ).all()
+    _have_ids = {str(r[0]) for r in _have_rows}
+except Exception as exc:
+    st.warning(f"Lecture `erp_etudes` impossible : {type(exc).__name__} — la liste des documents manquants est indisponible.")
+    _have_ids = set()
 _profiles = doc_optimizer.load_profiles()
 _catalog = {sid: {"label": p.label, "price": p.price} for sid, p in _profiles.items()}
 _missing = missing_studies(_have_ids, _catalog)
@@ -285,7 +306,7 @@ if not _missing:
 else:
     _md = pd.DataFrame([{"Document": m["label"], "Prix (€)": m["price"],
                          "Sert à": m["pourquoi"]} for m in _missing])
-    st.dataframe(_md, hide_index=True, use_container_width=True)
+    st.dataframe(_md, hide_index=True, width="stretch")
     if not is_editor():
         st.warning("Mode visiteur (lecture seule) : l'achat/synchronisation exige le mode Utilisateur.")
     else:

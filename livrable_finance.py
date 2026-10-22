@@ -538,10 +538,20 @@ def fill_pdf(template: Any, output_path: str, values: Mapping[str, str]) -> tupl
     `template` : chemin (str/Path) du PDF ou son contenu (bytes).
     Retourne (nb_champs_renseignés, champs_logiques_non_trouvés).
     Le matching est tolérant aux accents/casse/espaces.
+
+    `pypdf` est une dépendance optionnelle du remplissage : son absence est
+    signalée par une exception explicite, pas par un `ModuleNotFoundError`
+    nu au milieu d'un rendu de page.
     """
     from io import BytesIO
 
-    from pypdf import PdfReader, PdfWriter
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except ImportError as exc:  # pragma: no cover - dépendance d'environnement
+        raise RuntimeError(
+            "Le remplissage PDF nécessite la dépendance « pypdf » : "
+            "installez-la avec « pip install -r requirements.txt »."
+        ) from exc
 
     if isinstance(template, (bytes, bytearray)):
         reader = PdfReader(BytesIO(bytes(template)))
