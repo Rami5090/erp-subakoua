@@ -67,14 +67,37 @@ def test_la_prevision_suit_la_tendance_observee():
         assert p <= d * 1.5  # ni un emballement
 
 
-def test_les_prix_de_vente_des_decisions_sont_prevus():
+def test_les_prix_de_vente_et_du_marche_sont_prevus():
     data = _run_page()
     tables = data.get("tables", [])
-    prix = next((t for t in tables if t and "Produit" in t[0] and "Prévision (€)" in t[0]), None)
+    prix = next(
+        (t for t in tables if t and "Source" in t[0] and "Prévision (€)" in t[0]), None
+    )
 
-    assert prix is not None, "aucun tableau de prix de vente"
-    assert len(prix) == 5
+    assert prix is not None, "aucun tableau de prix"
+    # 5 produits × 2 sources : le prix de vente (décisions) et le prix du marché
+    # (cours « du jour » publié par le portail).
+    assert len(prix) == 10
+    sources = {l["Source"] for l in prix}
+    assert sources == {"Prix du marché", "Décision de l'entreprise"}
     for ligne in prix:
         assert ligne["Dernier prix (€)"] > 0
+        assert ligne["Prévision (€)"] is not None
         assert ligne["Méthode"] in ("dernier", "derive", "derive_amortie", "moyenne", "niveau")
         assert ligne["Confiance"] in ("faible", "moyenne", "bonne")
+
+
+def test_le_prix_du_marche_benevolue_d_un_historique():
+    """Le prix du marché doit être lu mois après mois (et non un seul point)."""
+    data = _run_page()
+    tables = data.get("tables", [])
+    prix = next(
+        (t for t in tables if t and "Source" in t[0] and "Prévision (€)" in t[0]), None
+    )
+
+    marche = [l for l in prix if l["Source"] == "Prix du marché"]
+    assert marche
+    for ligne in marche:
+        # Un historique complet permet une bande d'erreur et une vraie méthode.
+        assert ligne["Bande d'erreur (€)"] is not None
+        assert ligne["Méthode"] != "dernier" or ligne["Confiance"] != "faible"

@@ -245,7 +245,14 @@ périodes précédentes :
 |---|---|
 | **Actions A1/A2/A3** | Étude gratuite « Portefeuille actions » (`pebaifpuao`) |
 | **Obligations O1/O2/O3** | Étude gratuite « Portefeuille obligations » (`pebaifpuoo`) |
+| **Prix du marché** | Cours « du jour » publié chaque mois (table « Ventes sur le marché concurrentiel ») |
 | **Prix de vente** des produits | Anciennes décisions (`Decisions_Marketing`) — le cours « du jour » de l'entreprise |
+
+Les cours sont lus de façon **tolérante** (payload plat, imbriqué, liste d'objets, clés préfixées
+« actionA1 » ou nues « A1 », montants au format français) et les études de portefeuille sont
+reconnaies à leur identifiant **ou** à leur libellé. Quand aucune série n'est exploitable, la page
+affiche un **diagnostic** : études présentes, lisibles (`read_allowed`), taille des payloads — la
+cause est ainsi visible au lieu d'un simple « aucune donnée ».
 
 Cinq méthodes simples et explicables sont comparées (`dernier`, `derive`, `derive_amortie`,
 `moyenne`, `niveau`) ; **la meilleure en validation hors-échantillon est retenue**, et la bande
@@ -513,7 +520,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `214 passed, 1 skipped`**
+**Résultat actuel : `217 passed, 1 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -568,7 +575,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 214 tests exécutés + 1 ignoré
+├── test_*.py                     # 217 tests exécutés + 1 ignoré
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │

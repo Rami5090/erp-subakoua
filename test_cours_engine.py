@@ -15,10 +15,10 @@ from cours_engine import (
     PricePoint,
     comparer_cours,
     extraire_cours_titres,
+    familles_de_l_etude,
     forecast_cours,
     forecast_cours_set,
     historique_cours,
-    normaliser_cle_cours,
 )
 
 
@@ -155,9 +155,29 @@ def test_un_payload_inconnu_ne_produit_aucun_cours():
 
 
 def test_normalisation_des_cles_de_cours():
-    assert normaliser_cle_cours("actionA1") == "A1"
-    assert normaliser_cle_cours("obligationO3") == "O3"
-    assert normaliser_cle_cours("totalReceipts") is None
+    assert familles_de_l_etude("pebaifpuao") == ("A",)
+    assert familles_de_l_etude("pebaifpuoo") == ("O",)
+    assert familles_de_l_etude("Portefeuille actions") == ("A",)
+    assert familles_de_l_etude("Portefeuille obligations") == ("O",)
+    assert familles_de_l_etude("totalReceipts") == ()
+
+
+def test_les_cours_sont_lus_quelsque_soient_les_cles():
+    """Clés préfixées, nues, imbriquées ou en liste : toutes les formes valent."""
+    assert extraire_cours_titres({"actionA1": 12.5}) == {"A1": 12.5}
+    assert extraire_cours_titres({"A1": 12.5}) == {"A1": 12.5}
+    assert extraire_cours_titres({"quotes": {"A1": 12.5}}) == {"A1": 12.5}
+    assert extraire_cours_titres({"actionA1": {"price": 12.5}}) == {"A1": 12.5}
+    assert extraire_cours_titres([{"code": "A1", "price": 12.5}]) == {"A1": 12.5}
+    # Un montant écrit en format français est lu aussi.
+    assert extraire_cours_titres({"actionA1": "12,50 €"}) == {"A1": 12.5}
+
+
+def test_la_famille_evite_de_melanger_actions_et_obligations():
+    payload = {"actionA1": 12.5, "obligationO1": 100.0}
+
+    assert extraire_cours_titres(payload, ("A",)) == {"A1": 12.5}
+    assert extraire_cours_titres(payload, ("O",)) == {"O1": 100.0}
 
 
 def test_historique_de_cours_construit_depuis_les_etudes():

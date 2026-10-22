@@ -92,15 +92,27 @@ def _cle_tri(periode: str) -> tuple[int, str]:
 
 
 def _num(value: Any, default: float | None = None) -> float | None:
-    try:
-        if value is None or value == "":
-            return default
-        out = float(value)
-        if out != out:  # NaN
-            return default
-        return out
-    except (TypeError, ValueError):
+    """Nombre lu de façon tolérante : « 1 234,56 € », « 1234.56 », 12.5…"""
+    if value is None or value == "" or isinstance(value, bool):
         return default
+    if isinstance(value, (int, float)):
+        out = float(value)
+        return default if out != out else out
+    texte = (
+        str(value).replace("\u202f", "").replace("\xa0", "").replace(" ", "")
+        .replace("€", "").replace("%", "")
+    )
+    if texte in ("", "-", "--"):
+        return default
+    if "," in texte and "." in texte:
+        texte = texte.replace(".", "").replace(",", ".")
+    else:
+        texte = texte.replace(",", ".")
+    try:
+        out = float(texte)
+    except ValueError:
+        return default
+    return default if out != out else out
 
 
 @dataclass(frozen=True)
@@ -315,6 +327,11 @@ def forecast_cours_set(
     )
 
 
+def trier_cours(points: Iterable[PricePoint]) -> list[PricePoint]:
+    """Trie une série de cours dans l'ordre chronologique des périodes."""
+    return sorted(points, key=lambda p: _cle_tri(p.periode))
+
+
 def comparer_cours(
     serie: Sequence[PricePoint],
     prevision: float | None,
@@ -347,69 +364,123 @@ def _valeur_cours(node: Any) -> float | None:
     return None
 
 
-def normaliser_cle_cours(cle: str) -> str | None:
-    """« actionA1 » -> « A1 », « obligationO2 » -> « O2 » ; sinon None."""
+#: Études de portefeuille de titres connues -> famille attendue.
+#: Les identifiants du portail sont opaques (« pebaifpuao ») : ils sont donc
+#: explicités ici, la détection par nom ne servant que de repli.
+ETUDES_TITRES: Mapping[str, tuple[str, ...]] = {
+    "pebaifpuao": ("A",),
+    "pebaifpuoo": ("O",),
+}
+
+
+def familles_de_l_etude(cle: str, libelle: str = "") -> tuple[str, ...]:
+    """Famille de titres attendue pour une étude (« Portefeuille actions »…).
+
+    L'identifiant d'étude n'est pas figé : on reconnaît l'étude par son
+    identifiant connu, puis à son nom (« pebaifpuao », « Portefeuille
+    actions »…) et on en déduit la famille.
+    """
+    for candidat in (str(cle or ""), str(libelle or "")):
+        nom = candidat.casefold().replace("etude_", "")
+        for ident, familles in ETUDES_TITRES.items():
+            if ident in nom:
+                return familles
+    for candidat in (str(cle or ""), str(libelle or "")):
+        libelle_cible = candidat.casefold()
+        if "obligation" in libelle_cible:
+            return ("O",)
+        if "action" in libelle_cible:
+            return ("A",)
+    return ()
+
+
+def _code_titre(cle: str, familles: Sequence[str]) -> str | None:
+    """« actionA1 » -> « A1 », « A1 » -> « A1 » (si la famille le permet)."""
     libelle = str(cle or "").strip()
     for prefixe in PREFIXES_COURS:
-        if libelle.lower().startswith(prefixe) and len(libelle) > len(prefixe):
-            return libelle[len(prefixe):].upper()
+        if libelle.casefold().startswith(prefixe) and len(libelle) > len(prefixe):
+            libelle = libelle[len(prefixe):]
+            break
+    libelle = libelle.strip().upper()
+    if len(libelle) >= 2 and libelle[0] in familles and libelle[1:].isdigit():
+        return libelle
     return None
 
 
-def extraire_cours_titres(payload: Any) -> dict[str, float]:
+def _collecter_cours(
+    node: Any,
+    familles: Sequence[str],
+    out: dict[str, float],
+    profondeur: int = 0,
+) -> None:
+    """Parcourt un payload à toute profondeur pour en extraire les cours."""
+    if profondeur > 4:
+        return
+    if isinstance(node, Mapping):
+        for cle, valeur in node.items():
+            code = _code_titre(cle, familles)
+            if code:
+                nombre = _valeur_cours(valeur)
+                if nombre is not None:
+                    out[code] = nombre
+            else:
+                _collecter_cours(valeur, familles, out, profondeur + 1)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            if isinstance(item, Mapping):
+                trouve = False
+                for cle in ("name", "code", "label", "title", "id", "reference", "symbol"):
+                    code = _code_titre(str(item.get(cle, "") or ""), familles)
+                    if code:
+                        nombre = _valeur_cours(item)
+                        if nombre is not None:
+                            out[code] = nombre
+                        trouve = True
+                        break
+                if not trouve:
+                    _collecter_cours(item, familles, out, profondeur + 1)
+            else:
+                _collecter_cours(item, familles, out, profondeur + 1)
+
+
+def extraire_cours_titres(payload: Any, familles: Sequence[str] = ("A", "O")) -> dict[str, float]:
     """Extrait les cours des titres (A1..A3, O1..O3) d'un payload d'étude.
 
-    Le portail publie les cours dans l'étude « Portefeuille actions » (clés
-    `actionA1`, `actionA2`, `actionA3`) et « Portefeuille obligations »
-    (`obligationO1`…). La structure n'étant pas garantie, la lecture est
-    tolérante : plat, imbriqué ou liste d'objets. Un payload non reconnu ne
-    produit aucun cours — jamais de valeur inventée.
+    La structure n'étant pas garantie, la lecture est tolérante : plat,
+    imbriqué, liste d'objets, clés préfixées (« actionA1 ») ou nues (« A1 »).
+    Un payload non reconnu ne produit aucun cours — jamais de valeur inventée.
     """
     out: dict[str, float] = {}
-    if isinstance(payload, Mapping):
-        for cle, valeur in payload.items():
-            nom = normaliser_cle_cours(cle)
-            if not nom:
-                continue
-            nombre = _valeur_cours(valeur)
-            if nombre is not None:
-                out[nom] = nombre
-    elif isinstance(payload, (list, tuple)):
-        for item in payload:
-            if not isinstance(item, Mapping):
-                continue
-            for cle in ("name", "code", "label", "title", "id", "reference"):
-                nom = normaliser_cle_cours(str(item.get(cle, "") or ""))
-                if nom:
-                    nombre = _valeur_cours(item)
-                    if nombre is not None:
-                        out[nom] = nombre
-                    break
+    _collecter_cours(payload, tuple(familles), out)
     return out
 
 
 def historique_cours(
     etudes_par_periode: Mapping[str, Mapping[str, Any]],
-    study_ids: Sequence[str] = ("pebaifpuao", "pebaifpuoo"),
-    prefixes: Sequence[str] = PREFIXES_COURS,
+    study_ids: Sequence[str] | None = None,
+    libelles: Mapping[str, str] | None = None,
 ) -> dict[str, list[PricePoint]]:
     """Construit l'historique de cours par titre à partir des études lues.
 
-    `etudes_par_periode` : période -> {study_id -> payload}. Seules les
-    études listées et les préfixes demandés sont retenus.
+    `etudes_par_periode` : période -> {study_id (ou `etude_<id>`) -> payload}.
+    `libelles` : study_id -> libellé lisible (« Portefeuille actions »), utile
+    pour reconnaître une étude dont l'identifiant est opaque. Les études de
+    portefeuille de titres sont retenues, les autres ignorées.
     """
+    libelles = libelles or {}
     series: dict[str, list[PricePoint]] = {}
     for periode in sorted((etudes_par_periode or {}).keys(), key=_cle_tri):
         payloads = etudes_par_periode.get(periode) or {}
-        for study_id in study_ids:
-            # Les études sont stockées tantôt par identifiant brut
-            # (`pebaifpuao`), tantôt préfixées par `etude_` (cache interne).
-            payload = payloads.get(study_id) or payloads.get(f"etude_{study_id}")
-            if not payload:
+        for study_key, payload in payloads.items():
+            if study_ids and not any(
+                str(study_key) in (sid, f"etude_{sid}") for sid in study_ids
+            ):
                 continue
-            for nom, valeur in extraire_cours_titres(payload).items():
-                if prefixes and not any(nom.startswith(p.upper()[:1]) for p in prefixes):
-                    continue
+            ident = str(study_key).replace("etude_", "")
+            familles = familles_de_l_etude(ident, libelles.get(ident, ""))
+            if not familles:
+                continue
+            for nom, valeur in extraire_cours_titres(payload, familles).items():
                 series.setdefault(nom, []).append(PricePoint(periode=periode, valeur=valeur))
     for nom in series:
         series[nom].sort(key=lambda p: _cle_tri(p.periode))

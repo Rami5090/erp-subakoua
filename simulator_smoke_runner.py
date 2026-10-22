@@ -312,6 +312,21 @@ def seed(db, scenario):
             },
         },
     })
+    # Cours du marché publiés mois après mois (« Ventes sur le marché
+    # concurrentiel ») : la page de prévision des cours s'en sert pour la
+    # trajectoire des prix, sans saisie manuelle.
+    for _i, _mois in enumerate(["Février", "Mars", "Avril", "Mai", "Juin", "Juillet"]):
+        _prix_marche = sorted([130 + _i, 205 + _i, 240 + _i, 310 + _i, 360 + _i])
+        erp(db, f"Année 1 - {_mois}", "expert_comptable", {
+            "Détail des comptes": {
+                "Expert-comptable": {
+                    "Ventes sur le marché concurrentiel": [
+                        {"Combinaisons": str(_k + 1), "Prix HT (€)": _v}
+                        for _k, _v in enumerate(_prix_marche)
+                    ],
+                },
+            },
+        })
     for _sid, _payload in (
         ("productionCostDetailStudy", {"productsProductionCostDetails": _details}),
         ("bankStatements", {"initialBankAmount": 1250000, "finalBankAmount": 900000,

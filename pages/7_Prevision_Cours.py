@@ -31,8 +31,21 @@ from cours_engine import (
     comparer_cours,
     forecast_cours_set,
     historique_cours,
+    trier_cours,
 )
 from db_utils import get_read_engine
+from livrable_finance import PRIX_TO_PRODUIT
+
+
+def _prix_marche_par_produit(prix_marche: dict[str, dict[str, float]]) -> dict[str, list[PricePoint]]:
+    """Séries de prix du marché par produit (un point par période publiée)."""
+    out: dict[str, list[PricePoint]] = {}
+    for periode, prix in (prix_marche or {}).items():
+        for produit, valeur in prix.items():
+            out.setdefault(produit, []).append(PricePoint(periode=periode, valeur=valeur))
+    for produit in out:
+        out[produit] = trier_cours(out[produit])
+    return out
 
 st.set_page_config(page_title="Prévision des cours", layout="wide")
 auth_setup()
@@ -93,19 +106,58 @@ def _fmt_eur(valeur, dec: int = 2) -> str:
 
 
 # --------------------------------------------------------------------------- données
-rows_etudes = _rows("SELECT periode, study_id, payload FROM erp_etudes WHERE read_allowed = 1 ORDER BY id ASC")
+rows_etudes = _rows(
+    "SELECT periode, study_id, label, payload, read_allowed FROM erp_etudes ORDER BY id ASC"
+)
 etudes_par_periode: dict[str, dict] = {}
+libelles_etudes: dict[str, str] = {}
+etudes_non_lisibles: list[dict] = []
 for r in rows_etudes:
-    etudes_par_periode.setdefault(str(r.get("periode") or ""), {})[str(r.get("study_id") or "")] = _decode(r.get("payload"))
+    cle = str(r.get("study_id") or "")
+    if not r.get("read_allowed"):
+        etudes_non_lisibles.append({
+            "Période": str(r.get("periode") or ""),
+            "Identifiant": cle,
+            "Libellé": str(r.get("label") or ""),
+        })
+        continue
+    etudes_par_periode.setdefault(str(r.get("periode") or ""), {})[cle] = _decode(r.get("payload"))
+    if cle and r.get("label"):
+        libelles_etudes[cle] = str(r.get("label"))
 
 rows_mkt = _rows(
     "SELECT Mois, Prix_S3, Prix_I3, Prix_S5, Prix_I5, Prix_I7 FROM Decisions_Marketing ORDER BY Tour_ID"
 )
 
+# Prix du marché publiés chaque mois (« Ventes sur le marché concurrentiel ») :
+# c'est le cours « du jour » du marché, disponible sans saisie manuelle.
+rows_expert = _rows(
+    "SELECT periode, contenu FROM erp_donnees "
+    "WHERE type_donnee='etat_actuel' AND module='expert_comptable' ORDER BY id"
+)
+#: Produits rangés par prix croissant : le marché publie les prix dans cet ordre
+#: (Shorty 3 < Integral 3 < Shorty 5 < Integral 5 < Integral 7). Le mapping se
+#: fait donc par **rang**, et non par prix exact : une évolution du prix de
+#: marché ne fait pas disparaître la série.
+_ORDRE_PAR_PRIX = [produit for _p, produit in sorted(PRIX_TO_PRODUIT.items())]
+prix_marche: dict[str, dict[str, float]] = {}
+for _r in rows_expert:
+    _expert = _decode(_r.get("contenu"))
+    _detail = (_expert.get("Détail des comptes", {}) or {}).get("Expert-comptable", {}) or {}
+    _globale = _detail.get("Ventes sur le marché concurrentiel", []) or []
+    _valeurs = sorted({
+        float(_x.get("Prix HT (€)", 0) or 0)
+        for _x in _globale
+        if str(_x.get("Combinaisons", "")).isdigit()
+    })
+    if len(_valeurs) == len(_ORDRE_PAR_PRIX):
+        _per = str(_r.get("periode") or "")
+        prix_marche[_per] = dict(zip(_ORDRE_PAR_PRIX, _valeurs))
+
 series: dict[str, tuple[str, list[PricePoint]]] = {}
 
 # --- cours des titres (études « Portefeuille actions / obligations »)
-for nom, points in historique_cours(etudes_par_periode).items():
+for nom, points in historique_cours(etudes_par_periode, libelles=libelles_etudes).items():
     famille = "Action" if nom.startswith("A") else ("Obligation" if nom.startswith("O") else "Titre")
     series[f"titre_{nom}"] = (f"{famille} {nom}", points)
 
@@ -125,6 +177,10 @@ for cle in PRODUCT_KEYS:
         points.append(PricePoint(periode=libelle, valeur=valeur))
     if points:
         series[f"prix_{cle}"] = (f"Prix de vente {produit}", points)
+
+# --- prix du marché (cours « du jour » publié par le portail)
+for produit, points in _prix_marche_par_produit(prix_marche).items():
+    series[f"marche_{produit}"] = (f"Prix du marché {produit}", points)
 
 if not series:
     st.info(
@@ -150,6 +206,44 @@ if not titres:
         "« Portefeuille obligations » sont gratuites — achetez-les et synchronisez-les "
         "depuis la page Scraper pour alimenter ce module."
     )
+    # Diagnostic : la cause peut être l'absence des études, leur structure, ou
+    # le flag `read_allowed` (étude synchronisée mais non lisible).
+    with st.expander("🔍 Diagnostic des données", expanded=True):
+        st.write(
+            f"Études en base : **{len(rows_etudes)}** · lisibles : "
+            f"**{len(rows_etudes) - len(etudes_non_lisibles)}** · "
+            f"périodes couvertes : **{len(etudes_par_periode)}**."
+        )
+        if etudes_non_lisibles:
+            st.error(
+                f"⚠️ **{len(etudes_non_lisibles)} étude(s) synchronisées mais non lisibles** "
+                "(`read_allowed = 0`) : elles ne sont pas exploitées par le module. "
+                "Resynchronisez-les depuis la page Scraper (onglet « 🔁 Acquérir »)."
+            )
+            st.dataframe(pd.DataFrame(etudes_non_lisibles).head(30), width="stretch", hide_index=True)
+        if rows_etudes:
+            apercu = pd.DataFrame([
+                {
+                    "Période": str(r.get("periode") or ""),
+                    "Identifiant": str(r.get("study_id") or ""),
+                    "Libellé": str(r.get("label") or ""),
+                    "Lisible": bool(r.get("read_allowed")),
+                    "Taille du payload": len(str(r.get("payload") or "")),
+                }
+                for r in rows_etudes
+            ])
+            st.dataframe(apercu.head(40), width="stretch", hide_index=True)
+            st.caption(
+                "Les études de portefeuille de titres sont reconnues à leur identifiant connu "
+                "(« pebaifpuao », « pebaifpuoo ») ou à leur libellé (« Portefeuille actions »). "
+                "Si elles sont listées ici mais sans cours exploité, leur structure diffère : "
+                "le module le signale plutôt que d'inventer des valeurs."
+            )
+        else:
+            st.info(
+                "Aucune étude en base : les studies n'ont pas été synchronisées, ou "
+                "`read_allowed` vaut 0."
+            )
 else:
     for i in range(0, len(titres), 3):
         for cours in titres[i:i + 3]:
@@ -192,22 +286,30 @@ else:
     ]), width="stretch", hide_index=True)
 
 # --------------------------------------------------------------------------- prix de vente
-st.subheader("2 · Cours des prix de vente (anciennes décisions)")
+st.subheader("2 · Cours des prix (marché et décisions de l'entreprise)")
 st.caption(
-    "Le prix « du jour » fixé par l'entreprise période après période. La prévision donne la "
-    "trajectoire attendue du prix si la dynamique observée se poursuit."
+    "Le cours « du jour » du marché est publié chaque mois par le portail ; le prix de vente "
+    "vient des décisions de l'entreprise. La prévision donne la trajectoire attendue."
 )
 
-prix_cours = [c for c in resultat.cours if c.cle.startswith("prix_")]
+prix_cours = [c for c in resultat.cours if c.cle.startswith("prix_") or c.cle.startswith("marche_")]
 if not prix_cours:
     st.warning(
-        "Aucun historique de prix de vente : les décisions de prix ne sont pas saisies "
+        "Aucun historique de prix exploitable : ni prix du marché publiés "
+        "(« Ventes sur le marché concurrentiel »), ni décisions de prix saisies "
         "dans « Données réelles → Marketing »."
+    )
+elif all(c.prevision is None for c in prix_cours if c.cle.startswith("prix_")):
+    st.info(
+        "Les prix de vente de l'entreprise n'ont pas d'historique exploitable : chaque mois "
+        "enregistré dans « Données réelles → Marketing » ajoute un point à la série. "
+        "En attendant, la trajectoire des prix du marché reste disponible ci-dessus."
     )
 else:
     st.dataframe(pd.DataFrame([
         {
-            "Produit": c.libelle.replace("Prix de vente ", ""),
+            "Source": "Prix du marché" if c.cle.startswith("marche_") else "Décision de l'entreprise",
+            "Produit": c.libelle.split(" ", 2)[-1] if c.cle.startswith("marche_") else c.libelle.replace("Prix de vente ", ""),
             "Dernier prix (€)": round(c.dernier, 2) if c.dernier is not None else None,
             "Prévision (€)": round(c.prevision, 2) if c.prevision is not None else None,
             "Variation (%)": round(comparer_cours(c.serie, c.prevision), 2) if comparer_cours(c.serie, c.prevision) is not None else None,
@@ -281,7 +383,10 @@ l'historique court puis comparée au cours réellement observé ; l'erreur absol
 """
     )
     if resultat.avertissements:
-        st.warning("Avertissements :\n- " + "\n- ".join(resultat.avertissements))
+        st.warning(
+            "⚠️ **Avertissements du module**\n\n"
+            + "\n\n".join(f"- {w}" for w in resultat.avertissements)
+        )
 
 st.caption(
     f"Période analysée : {periode} · {len(etudes_par_periode)} périodes d'études · "
