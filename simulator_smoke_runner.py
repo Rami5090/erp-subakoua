@@ -320,8 +320,6 @@ def seed(db, scenario):
         ("peeedscrsm", {"netResult": 706325, "biensLivraisons": 1186400,
                         "amortization": 40000, "depreciationProvision": 2000,
                         "incomeTaxes": 243675}),
-        # Études présentes côté portail : le tableau « documents manquants »
-        # doit rester cohérent avec le catalogue.
         ("peeedsbidt", {"balance": {}}),
         ("peeedscrdl", {"incomeStatement": {}}),
         ("peeedsftt", {"cashFlow": {}}),
@@ -337,6 +335,27 @@ def seed(db, scenario):
             "INSERT INTO erp_etudes (periode, study_id, payload, read_allowed) VALUES (?,?,?,1)",
             ("Année 1 - Août", _sid, json.dumps(_payload, ensure_ascii=False)),
         )
+
+    # Cours des titres (études gratuites « Portefeuille actions / obligations »)
+    # : historique de 6 périodes pour alimenter la page de prévision des cours.
+    if _avec_extractions:
+        _mois_titres = ["Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août"]
+        for _i, _mois in enumerate(_mois_titres):
+            _cours_actions = {
+                "actionA1": round(10.0 + 0.5 * _i, 2),
+                "actionA2": round(24.0 + 0.4 * _i, 2),
+                "actionA3": round(48.0 + 0.2 * _i, 2),
+            }
+            _cours_obligations = {
+                "obligationO1": round(100.0 + 0.1 * _i, 2),
+                "obligationO2": round(100.0 + 0.1 * _i, 2),
+                "obligationO3": round(100.0 + 0.1 * _i, 2),
+            }
+            for _sid, _payload in (("pebaifpuao", _cours_actions), ("pebaifpuoo", _cours_obligations)):
+                db.execute(
+                    "INSERT INTO erp_etudes (periode, study_id, payload, read_allowed) VALUES (?,?,?,1)",
+                    (f"Année 1 - {_mois}", _sid, json.dumps(_payload, ensure_ascii=False)),
+                )
 
     soldes = lambda ini, fin: {"Banque": {"Extrait bancaire": {"Soldes bancaires": [{"Solde initial": ini, "Solde final": fin}]}}}
     if scenario == "aout_sans_juillet":

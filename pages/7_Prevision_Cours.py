@@ -1,0 +1,289 @@
+"""Page 7 — Prévision des cours (actions, obligations, prix de vente).
+
+Le module prédit la valeur d'une série de prix à la période suivante, à
+partir de son historique : le « cours du jour » des périodes précédentes.
+
+Données utilisées
+-----------------
+* **Actions & obligations** : les cours A1/A2/A3 et O1/O2/O3 publiés chaque
+  mois par les études gratuites « Portefeuille actions » et « Portefeuille
+  obligations ».
+* **Prix de vente** : le prix fixé chaque mois par les anciennes décisions
+  (`Decisions_Marketing`) — le cours « du jour » de l'entreprise.
+
+La méthode retenue est choisie par validation hors-échantillon parmi des
+méthodes simples et explicables ; la bande affichée est une bande d'erreur
+empirique (erreur du backtest), pas un intervalle de confiance statistique.
+"""
+from __future__ import annotations
+
+import json
+
+import altair as alt
+import pandas as pd
+import streamlit as st
+from sqlalchemy import text
+
+from auth import setup as auth_setup
+from constants import PRODUCT_KEY_TO_NAME, PRODUCT_KEYS, TOURS_PERIODES
+from cours_engine import (
+    PricePoint,
+    comparer_cours,
+    forecast_cours_set,
+    historique_cours,
+)
+from db_utils import get_read_engine
+
+st.set_page_config(page_title="Prévision des cours", layout="wide")
+auth_setup()
+st.title("📈 Prévision des cours — actions, obligations et prix de vente")
+st.caption(
+    "Quel cours attendre à la période suivante ? La méthode est choisie par "
+    "validation hors-échantillon et la bande d'erreur est empirique : ce n'est "
+    "pas un intervalle de confiance statistique."
+)
+
+engine = get_read_engine()
+if engine is None:
+    st.error("Connexion Aiven indisponible.")
+    st.stop()
+
+TOURS = sorted(TOURS_PERIODES)
+tour = st.selectbox(
+    "Période analysée",
+    TOURS,
+    index=TOURS.index(8) if 8 in TOURS else 0,
+    format_func=lambda t: f"Tour {t} — {TOURS_PERIODES[t]}",
+)
+periode = TOURS_PERIODES[int(tour)]
+
+
+def _decode(value):
+    for _ in range(2):
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8", errors="replace")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except Exception:
+                return {}
+        else:
+            break
+    return value if isinstance(value, dict) else {}
+
+
+def _rows(sql: str, params: dict | None = None) -> list[dict]:
+    try:
+        with engine.connect() as conn:
+            return [dict(r) for r in conn.execute(text(sql), params or {}).mappings().all()]
+    except Exception as exc:
+        st.warning(f"Lecture impossible : {type(exc).__name__}.")
+        return []
+
+
+def _fmt_n(valeur, dec: int = 2) -> str:
+    try:
+        return f"{float(valeur):,.{dec}f}".replace(",", " ")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_eur(valeur, dec: int = 2) -> str:
+    return f"{_fmt_n(valeur, dec)} €"
+
+
+# --------------------------------------------------------------------------- données
+rows_etudes = _rows("SELECT periode, study_id, payload FROM erp_etudes WHERE read_allowed = 1 ORDER BY id ASC")
+etudes_par_periode: dict[str, dict] = {}
+for r in rows_etudes:
+    etudes_par_periode.setdefault(str(r.get("periode") or ""), {})[str(r.get("study_id") or "")] = _decode(r.get("payload"))
+
+rows_mkt = _rows(
+    "SELECT Mois, Prix_S3, Prix_I3, Prix_S5, Prix_I5, Prix_I7 FROM Decisions_Marketing ORDER BY Tour_ID"
+)
+
+series: dict[str, tuple[str, list[PricePoint]]] = {}
+
+# --- cours des titres (études « Portefeuille actions / obligations »)
+for nom, points in historique_cours(etudes_par_periode).items():
+    famille = "Action" if nom.startswith("A") else ("Obligation" if nom.startswith("O") else "Titre")
+    series[f"titre_{nom}"] = (f"{famille} {nom}", points)
+
+# --- prix de vente des anciennes décisions
+for cle in PRODUCT_KEYS:
+    produit = PRODUCT_KEY_TO_NAME[cle]
+    points = []
+    for r in rows_mkt:
+        libelle = str(r.get("Mois") or "")
+        valeur = r.get(f"Prix_{cle.upper()}")
+        try:
+            valeur = float(valeur)
+        except (TypeError, ValueError):
+            continue
+        if not libelle or valeur <= 0:
+            continue
+        points.append(PricePoint(periode=libelle, valeur=valeur))
+    if points:
+        series[f"prix_{cle}"] = (f"Prix de vente {produit}", points)
+
+if not series:
+    st.info(
+        "Aucun historique de cours exploitable : les études « Portefeuille actions / obligations » "
+        "n'ont pas été synchronisées, et aucune décision de prix n'est enregistrée. "
+        "Le module affiche les avertissements plutôt que des chiffres."
+    )
+    st.stop()
+
+resultat = forecast_cours_set(series)
+
+# --------------------------------------------------------------------------- titres
+st.subheader("1 · Cours des titres")
+st.caption(
+    "Le cours du jour de chaque période passée provient des études « Portefeuille actions » "
+    "(A1/A2/A3) et « Portefeuille obligations » (O1/O2/O3)."
+)
+
+titres = [c for c in resultat.cours if c.cle.startswith("titre_")]
+if not titres:
+    st.warning(
+        "Aucun cours de titre exploitable : les études « Portefeuille actions » et "
+        "« Portefeuille obligations » sont gratuites — achetez-les et synchronisez-les "
+        "depuis la page Scraper pour alimenter ce module."
+    )
+else:
+    for i in range(0, len(titres), 3):
+        for cours in titres[i:i + 3]:
+            with st.container(border=True):
+                st.markdown(f"**{cours.libelle}**")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Dernier cours", _fmt_eur(cours.dernier))
+                c2.metric(
+                    "Prévision période suivante",
+                    _fmt_eur(cours.prevision) if cours.prevision is not None else "—",
+                    delta=(
+                        f"{cours.variation_prevue:+,.2f} €".replace(",", " ")
+                        if cours.variation_prevue is not None else None
+                    ),
+                )
+                c3.metric(
+                    "Bande d'erreur",
+                    f"± {_fmt_eur(cours.erreur_moyenne)}" if cours.erreur_moyenne is not None else "—",
+                    help="Erreur absolue moyenne de la méthode en validation hors-échantillon.",
+                )
+                st.caption(
+                    f"Méthode : **{cours.methode}** · confiance : **{cours.confiance}** · "
+                    f"{len(cours.serie)} cours observés."
+                )
+                for w in cours.avertissements:
+                    st.warning(f"⚠️ {w}")
+
+    st.dataframe(pd.DataFrame([
+        {
+            "Titre": c.libelle,
+            "Dernier cours (€)": round(c.dernier, 2) if c.dernier is not None else None,
+            "Prévision (€)": round(c.prevision, 2) if c.prevision is not None else None,
+            "Variation (€)": round(c.variation_prevue, 2) if c.variation_prevue is not None else None,
+            "Bande d'erreur (€)": round(c.erreur_moyenne, 2) if c.erreur_moyenne is not None else None,
+            "Dérive du dernier mois (%)": round(c.derive_relative, 2) if c.derive_relative is not None else None,
+            "Méthode": c.methode,
+            "Confiance": c.confiance,
+        }
+        for c in titres
+    ]), width="stretch", hide_index=True)
+
+# --------------------------------------------------------------------------- prix de vente
+st.subheader("2 · Cours des prix de vente (anciennes décisions)")
+st.caption(
+    "Le prix « du jour » fixé par l'entreprise période après période. La prévision donne la "
+    "trajectoire attendue du prix si la dynamique observée se poursuit."
+)
+
+prix_cours = [c for c in resultat.cours if c.cle.startswith("prix_")]
+if not prix_cours:
+    st.warning(
+        "Aucun historique de prix de vente : les décisions de prix ne sont pas saisies "
+        "dans « Données réelles → Marketing »."
+    )
+else:
+    st.dataframe(pd.DataFrame([
+        {
+            "Produit": c.libelle.replace("Prix de vente ", ""),
+            "Dernier prix (€)": round(c.dernier, 2) if c.dernier is not None else None,
+            "Prévision (€)": round(c.prevision, 2) if c.prevision is not None else None,
+            "Variation (%)": round(comparer_cours(c.serie, c.prevision), 2) if comparer_cours(c.serie, c.prevision) is not None else None,
+            "Bande d'erreur (€)": round(c.erreur_moyenne, 2) if c.erreur_moyenne is not None else None,
+            "Méthode": c.methode,
+            "Confiance": c.confiance,
+        }
+        for c in prix_cours
+    ]), width="stretch", hide_index=True)
+
+# --------------------------------------------------------------------------- graphique
+st.subheader("3 · Trajectoire observée et prévision")
+
+choix = st.multiselect(
+    "Séries affichées",
+    options=[c.libelle for c in resultat.cours],
+    default=[c.libelle for c in titres][:2] or [c.libelle for c in resultat.cours][:2],
+)
+if choix:
+    lignes = []
+    for c in resultat.cours:
+        if c.libelle not in choix:
+            continue
+        for p in c.serie:
+            lignes.append({"Série": c.libelle, "Période": p.periode, "Cours (€)": p.valeur, "Type": "Observé"})
+        if c.prevision is not None:
+            lignes.append({
+                "Série": c.libelle,
+                "Période": "Période suivante",
+                "Cours (€)": c.prevision,
+                "Type": "Prévision",
+            })
+    if lignes:
+        cadre = pd.DataFrame(lignes)
+        graphique = (
+            alt.Chart(cadre)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("Période:N", sort=None, title=None),
+                y=alt.Y("Cours (€):Q", title="Cours (€)"),
+                color=alt.Color("Série:N", title=None),
+                tooltip=["Série:N", "Période:N", "Cours (€):Q", "Type:N"],
+            )
+            .properties(height=320)
+        )
+        st.altair_chart(graphique, width="stretch")
+
+# --------------------------------------------------------------------------- méthode
+with st.expander("🧭 Méthode et limites", expanded=False):
+    st.markdown(
+        """
+**Méthodes comparées** (la meilleure en validation hors-échantillon est retenue) :
+
+| Méthode | Principe |
+|---|---|
+| `dernier` | le dernier cours se maintient — référence naïve |
+| `derive` | la variation moyenne des derniers cours est reconduite |
+| `derive_amortie` | idem, tendance amortie (évite l'emballement) |
+| `moyenne` | moyenne des 3 derniers cours |
+| `niveau` | moyenne de toute la série (retour à la moyenne) |
+
+**Validation** : pour chaque point à partir du troisième, la méthode est appliquée sur
+l'historique court puis comparée au cours réellement observé ; l'erreur absolue moyenne
+(MAE) sert de bande d'erreur empirique.
+
+**Limites assumées** :
+- la bande affichée n'est **pas** un intervalle de confiance statistique ;
+- une série de moins de 3 cours ne produit **aucune** prévision (avertissement affiché) ;
+- un cours ne peut pas être négatif : une prévision négative est ramenée à zéro ;
+- les cours sont ceux publiés par le portail : aucune donnée externe n'est introduite.
+"""
+    )
+    if resultat.avertissements:
+        st.warning("Avertissements :\n- " + "\n- ".join(resultat.avertissements))
+
+st.caption(
+    f"Période analysée : {periode} · {len(etudes_par_periode)} périodes d'études · "
+    f"{len(rows_mkt)} décisions de prix enregistrées."
+)

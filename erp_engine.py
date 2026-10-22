@@ -114,6 +114,7 @@ from break_even_engine import (
     compute_break_even,
     unit_variable_costs,
 )
+from cours_engine import forecast_cours, historique_cours
 from db_schema import (
     COLONNES_CESSION_FINANCES,
     COLONNES_CESSION_PARC,
@@ -1196,6 +1197,29 @@ def charger_etudes_periode(periode, groupes=None):
     if groupes is None:
         groupes = charger_toutes_etudes(signature_etudes())
     return dict(groupes.get(normalize_period(periode), {}))
+
+
+def _prevoir_cours_titres():
+    """Prévision du cours des titres (A1..A3, O1..O3) pour arbitrer le portefeuille.
+
+    L'historique vient des études gratuites « Portefeuille actions /
+    obligations » (le cours du jour de chaque période passée) ; la méthode est
+    choisie par validation hors-échantillon (voir `cours_engine`). En cas
+    d'indisponibilité des études, aucun cours n'est renvoyé : l'interface reste
+    simplement muette plutôt que d'afficher un chiffre inventé.
+    """
+    try:
+        groupes = charger_toutes_etudes(signature_etudes())
+        series = historique_cours(groupes)
+        if not series:
+            return []
+        previsions = []
+        for nom, points in series.items():
+            famille = "Action" if nom.startswith("A") else ("Obligation" if nom.startswith("O") else "Titre")
+            previsions.append(forecast_cours(f"titre_{nom}", f"{famille} {nom}", points))
+        return previsions
+    except Exception:
+        return []
 
 
 _TABLES_REFERENCE = {
@@ -2997,6 +3021,27 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
         with st.expander("📊 Portefeuille de titres", expanded=(mode_pilotage == "🔧 Expert")):
             st.caption("Saisissez uniquement les quantités achetées/vendues. Les prix unitaires restent ceux du moteur.")
+            # Cours des titres : dernier cours publié et prévision de la période
+            # suivante (méthode choisie par validation hors-échantillon).
+            # La prévision aide à arbitrer entre acheter et vendre.
+            _cours_titres = _prevoir_cours_titres()
+            if _cours_titres:
+                st.dataframe(pd.DataFrame([
+                    {
+                        "Titre": _c.libelle,
+                        "Dernier cours (€)": round(_c.dernier, 2) if _c.dernier is not None else None,
+                        "Prévision (€)": round(_c.prevision, 2) if _c.prevision is not None else None,
+                        "Tendance (€)": round(_c.variation_prevue, 2) if _c.variation_prevue is not None else None,
+                        "Méthode": _c.methode,
+                        "Confiance": _c.confiance,
+                    }
+                    for _c in _cours_titres
+                ]), width="stretch", hide_index=True)
+                st.caption(
+                    "Prévision du cours à la période suivante (méthode choisie par backtest, "
+                    "bande d'erreur empirique — ce n'est pas un intervalle de confiance). "
+                    "Détail : page « 📈 Prévision des cours »."
+                )
             st.markdown("**Actions A1 / A2 / A3**")
             a_a1, v_a1, a_a2, v_a2, a_a3, v_a3 = st.columns(6)
             a_a1 = a_a1.number_input("Achat A1", key="sim_ach_a1", value=0, min_value=0)

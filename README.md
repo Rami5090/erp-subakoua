@@ -205,7 +205,6 @@ Page principale, trois espaces de travail :
 | 🎯 Centre de décision | Tous | Simulateur complet |
 
 ### Page 6 — 📐 Analyse quantitative
-
 Répond à trois questions, à partir des **données réelles** du mois (prix, coûts unitaires
 variables, charges fixes, volumes, capacité) :
 
@@ -236,6 +235,28 @@ Un tableau de **sensibilité** montre l'effet d'un choc de prix (−10 % à +10 
 > solution proposée est toujours réalisable, mais ce n'est pas un optimum exact de programme
 > linéaire. Chaque donnée affichée indique sa source ; une donnée absente produit un
 > avertissement, jamais un chiffre inventé.
+
+### Page 7 — 📈 Prévision des cours
+
+Prédit la valeur d'une série de prix à la période suivante, à partir du **cours du jour** des
+périodes précédentes :
+
+| Série | Source |
+|---|---|
+| **Actions A1/A2/A3** | Étude gratuite « Portefeuille actions » (`pebaifpuao`) |
+| **Obligations O1/O2/O3** | Étude gratuite « Portefeuille obligations » (`pebaifpuoo`) |
+| **Prix de vente** des produits | Anciennes décisions (`Decisions_Marketing`) — le cours « du jour » de l'entreprise |
+
+Cinq méthodes simples et explicables sont comparées (`dernier`, `derive`, `derive_amortie`,
+`moyenne`, `niveau`) ; **la meilleure en validation hors-échantillon est retenue**, et la bande
+affichée est une **bande d'erreur empirique** (erreur absolue moyenne du backtest), pas un
+intervalle de confiance statistique.
+
+Le centre de décision affiche la même prévision dans l'onglet **Portefeuille de titres**, là où
+l'on décide d'acheter ou de vendre : elle aide à arbitrer.
+
+> ⚠️ Une série de moins de trois cours ne produit **aucune** prévision (avertissement affiché) et
+> une prévision négative est ramenée à zéro : aucun cours n'est inventé.
 
 ## 🧮 Le simulateur
 
@@ -492,7 +513,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `189 passed, 1 skipped`**
+**Résultat actuel : `214 passed, 1 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -500,6 +521,8 @@ python -m pytest -q
 | `test_optimizer_engine.py` | Calibration, prédiction de part, grille respectant le budget |
 | `test_optimizer_capacity_limits.py` | Fusion des données concurrentes, **capacité appliquée comme plafond** |
 | `test_break_even_engine.py` | **Point d'équilibre exact**, imputation des charges fixes, mix sous contrainte de capacité, **équilibre hors de portée signalé**, objectif marge/volume, **valeurs à atteindre** (plancher de prix, plafond de coût, machines à ajouter) |
+| `test_cours_engine.py` | **Prévision des cours** : méthode choisie par backtest, série triée chronologiquement, historique insuffisant sans prévision, cours négatif ramené à zéro |
+| `test_page_prevision_cours.py` | La page de prévision produit des cours et des prévisions cohérentes |
 | `test_page_analyse_quantitative.py` | La page d'analyse s'exécute de bout en bout, produit un seuil cohérent et **liste les valeurs à atteindre** |
 | `test_equilibre_centre_decision.py` | Le centre de décision expose un point d'équilibre cohérent avec le volume vendu |
 | `test_page_livrable_finance.py` | La page Livrable s'exécute de bout en bout (bilan lu, marges produites) et **dégrade sans planter** si les tables du scraper manquent |
@@ -525,6 +548,7 @@ erp-subakoua/
 │
 ├── forecast_engine.py            # ETS, Holt, backtest, concurrence
 ├── break_even_engine.py          # Point d'équilibre, marge, mix sous capacité
+├── cours_engine.py               # Prévision des cours (méthodes comparées par backtest)
 ├── optimizer_engine.py           # Calibration, capacité, scénarios
 ├── finance_engine.py             # Comptabilité prévisionnelle (Decimal)
 ├── strategic_engine.py           # Métriques et alertes concurrentielles
@@ -544,7 +568,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 189 tests exécutés + 1 ignoré
+├── test_*.py                     # 214 tests exécutés + 1 ignoré
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │
