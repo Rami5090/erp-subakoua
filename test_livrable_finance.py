@@ -9,6 +9,7 @@ from livrable_finance import (
     pdf_field_values,
     fmt_fr,
     fmt_pct,
+    REQUIRED_STUDIES,
     LivrableFinance,
 )
 
@@ -24,6 +25,27 @@ BILAN_AOUT = [
     {"Actif": "Total actif circulant", "Net exercice N": 12016505.01, "Passif": "", "Exercice N": ""},
     {"Actif": "En-cours alpha", "Net exercice N": 0, "Passif": "Emprunts libres", "Exercice N": 0},
 ]
+
+
+def test_les_etudes_de_portefeuille_de_titres_sont_exigees():
+    """Sans elles, le module de prévision des cours n'a aucun cours à prévoir :
+    elles doivent donc apparaître dans les « documents manquants » du livrable
+    pour être achetées en un clic."""
+    exigees = {r["study_id"] for r in REQUIRED_STUDIES}
+    assert "pebaifpuao" in exigees
+    assert "pebaifpuoo" in exigees
+
+    catalogue = {
+        "pebaifpuao": {"label": "Portefeuille actions", "price": 0.0},
+        "pebaifpuoo": {"label": "Portefeuille obligations", "price": 0.0},
+    }
+    manquants = missing_studies(set(), catalogue)
+    ids = {m["study_id"] for m in manquants}
+    assert {"pebaifpuao", "pebaifpuoo"} <= ids
+    for m in manquants:
+        if m["study_id"] == "pebaifpuao":
+            assert "cours" in m["pourquoi"].lower()
+            assert m["price"] == 0.0
 
 
 def test_bilan_aout():

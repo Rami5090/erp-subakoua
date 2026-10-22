@@ -29,6 +29,7 @@ from constants import PRODUCT_KEY_TO_NAME, PRODUCT_KEYS, TOURS_PERIODES
 from cours_engine import (
     PricePoint,
     comparer_cours,
+    familles_de_l_etude,
     forecast_cours_set,
     historique_cours,
     trier_cours,
@@ -191,10 +192,21 @@ st.caption(
 
 titres = [c for c in resultat.cours if c.cle.startswith("titre_")]
 if not titres:
+    _etudes_titres = [
+        r for r in rows_etudes
+        if familles_de_l_etude(str(r.get("study_id") or ""), str(r.get("label") or ""))
+    ]
+    if not _etudes_titres:
+        st.error(
+            "Les études **« Portefeuille actions »** et **« Portefeuille obligations »** ne sont "
+            "pas en base : elles n'ont jamais été acquises. Elles sont **gratuites** — "
+            "acquérez-les en un clic depuis la page « Livrable Finance » (section « Documents "
+            "manquants » → « Acheter ces documents dans l'ERP ») ou depuis l'onglet "
+            "« 🔁 Acquérir » du Scraper."
+        )
     st.warning(
-        "Aucun cours de titre exploitable : les études « Portefeuille actions » et "
-        "« Portefeuille obligations » sont gratuites — achetez-les et synchronisez-les "
-        "depuis la page Scraper pour alimenter ce module."
+        "Aucun cours de titre exploitable : sans ces études, le module ne peut prévoir "
+        "que les prix."
     )
     # Diagnostic : la cause peut être l'absence des études, leur structure, ou
     # le flag `read_allowed` (étude synchronisée mais non lisible).

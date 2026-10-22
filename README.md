@@ -520,7 +520,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `226 passed, 1 skipped`**
+**Résultat actuel : `227 passed, 1 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -576,7 +576,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 226 tests exécutés + 1 ignoré
+├── test_*.py                     # 227 tests exécutés + 1 ignoré
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │

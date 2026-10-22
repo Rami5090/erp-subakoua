@@ -600,6 +600,10 @@ REQUIRED_STUDIES: tuple[dict[str, str], ...] = (
      "pourquoi": "Résultat p.5 : chiffre d'affaires"},
     {"study_id": "bankStatements",
      "pourquoi": "Trésorerie + budget : relevé bancaire et flux"},
+    {"study_id": "pebaifpuao",
+     "pourquoi": "Prévision des cours : cours des actions A1/A2/A3 (arbitrage du portefeuille)"},
+    {"study_id": "pebaifpuoo",
+     "pourquoi": "Prévision des cours : cours des obligations O1/O2/O3 (arbitrage du portefeuille)"},
 )
 
 
