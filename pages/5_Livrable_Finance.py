@@ -21,6 +21,8 @@ from livrable_finance import (
     parse_simplified_result,
     pdf_field_values,
     fill_pdf,
+    table_bilan_detaille,
+    table_prix_marche,
     LivrableFinance,
 )
 import document_optimizer as doc_optimizer
@@ -108,38 +110,47 @@ if not expert:
     st.warning(f"Aucun module expert_comptable en base pour {periode}.")
     st.stop()
 
-# --- Bilan : Synthèse / Expert-comptable #3 / Tableau_1 (nom d'onglet variable) ---
-bilan_rows: list = []
-syn = expert.get("Synthèse", {}) if isinstance(expert, dict) else {}
-for tab, content in syn.items():
-    if isinstance(content, dict) and isinstance(content.get("Tableau_1"), list):
-        rows = content["Tableau_1"]
-        if rows and isinstance(rows[0], dict) and "Actif" in rows[0] and "Passif" in rows[0]:
-            bilan_rows = rows
-            st.caption(f"Bilan source : Synthèse / {tab} / Tableau_1 ({len(rows)} lignes).")
-            break
+# --- Bilan : tableau « Actif » / « Passif », cherché par contenu ------------
+# Le nom de l'onglet varie ("Expert-comptable #3"…) et sa structure peut être
+# un dictionnaire ou une liste de tableaux : le tableau du bilan est donc
+# recherché par ses lignes, pas par un chemin supposé.
+bilan_rows: list = table_bilan_detaille(expert)
+if bilan_rows:
+    st.caption(f"Bilan source : module expert_comptable ({len(bilan_rows)} lignes).")
 bilan = build_bilan(bilan_rows or [])
 
-# --- Ratios ---
+# --- Ratios (cherchés dans tout le module : l'onglet peut être une liste) ---
 ratios_m = ratios_c = {}
-for tab, content in syn.items():
-    if isinstance(content, dict):
-        if isinstance(content.get("Ratios_1"), dict):
-            r = content["Ratios_1"].get("Indicateurs_MENSUEL", [{}])[0]
-            ratios_m = r
-        if isinstance(content.get("Ratios_2"), dict):
-            r = content["Ratios_2"].get("Indicateurs_CUMULÉ", content["Ratios_2"].get("Indicateurs_CUMULE", [{}]))[0]
-            ratios_c = r
+for _contenu in (expert.get("Synthèse", {}) if isinstance(expert.get("Synthèse", {}), dict) else {},):
+    if isinstance(_contenu, dict):
+        for _tab, _content in _contenu.items():
+            if isinstance(_content, dict):
+                if isinstance(_content.get("Ratios_1"), dict):
+                    r = _content["Ratios_1"].get("Indicateurs_MENSUEL", [{}])[0]
+                    ratios_m = r
+                if isinstance(_content.get("Ratios_2"), dict):
+                    r = _content["Ratios_2"].get("Indicateurs_CUMULÉ", _content["Ratios_2"].get("Indicateurs_CUMULE", [{}]))[0]
+                    ratios_c = r
+if not ratios_m or not ratios_c:
+    # Repli : les ratios peuvent être ailleurs dans le module (structure variable).
+    _syn_liste = expert.get("Synthèse", [])
+    if isinstance(_syn_liste, list):
+        for _item in _syn_liste:
+            if isinstance(_item, dict):
+                if isinstance(_item.get("Ratios_1"), dict) and not ratios_m:
+                    ratios_m = _item["Ratios_1"].get("Indicateurs_MENSUEL", [{}])[0]
+                if isinstance(_item.get("Ratios_2"), dict) and not ratios_c:
+                    ratios_c = _item["Ratios_2"].get("Indicateurs_CUMULÉ", _item["Ratios_2"].get("Indicateurs_CUMULE", [{}]))[0]
 
 # --- Ventes par canal (Détail des comptes) ---
 prix = {"Shorty 3": Decimal("130"), "Integral 3": Decimal("205"), "Shorty 5": Decimal("240"),
         "Integral 5": Decimal("310"), "Integral 7": Decimal("360")}
 prix_src = "prix catalogue observés Août (130/205/240/310/360)"
+# La structure de l'onglet varie selon les extractions (dictionnaire ou liste
+# de tableaux) : la table des prix est donc recherchée par son contenu.
 try:
-    det = expert.get("Détail des comptes", {}).get("Expert-comptable", {})
-    # table globale : prix + remise totale par combinaison (ordre prix croissant)
-    glob = det.get("Ventes sur le marché concurrentiel", [])
-    if isinstance(glob, list) and len(glob) >= 5:
+    glob = table_prix_marche(expert)
+    if len(glob) >= 5:
         vals = sorted([float(x.get("Prix HT (€)", 0) or 0) for x in glob if str(x.get("Combinaisons", "")).isdigit()])
         if vals == [130.0, 205.0, 240.0, 310.0, 360.0]:
             prix = {"Shorty 3": Decimal("130"), "Integral 3": Decimal("205"), "Shorty 5": Decimal("240"),

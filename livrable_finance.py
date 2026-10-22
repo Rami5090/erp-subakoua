@@ -50,6 +50,106 @@ def _d(value: Any, default: Decimal = Decimal("0")) -> Decimal:
         return default
 
 
+#: Clés d'une ligne de la table « Ventes sur le marché concurrentiel ».
+CLES_TABLE_PRIX = ("Prix HT (€)", "Combinaisons")
+
+
+def _table_prix_dans(node: Any, profondeur: int = 0) -> Any:
+    """Parcourt un payload pour y trouver la table des prix de marché.
+
+    La structure des extractions varie : l'onglet peut être un dictionnaire
+    (`{"Expert-comptable": {...}}`) ou une liste de tables
+    (`{"Expert-comptable": [ {...}, {...} ]}`). La recherche se fait donc par
+    **contenu** et non par chemin : on reconnaît la table à ses lignes
+    (« Prix HT (€) » et « Combinaisons ») ou à son intitulé.
+    """
+    if profondeur > 6 or node is None:
+        return None
+    if isinstance(node, Mapping):
+        for cle, valeur in node.items():
+            libelle = str(cle).casefold()
+            if "prix" in libelle and ("march" in libelle or "concurrentiel" in libelle):
+                return valeur
+        for valeur in node.values():
+            trouve = _table_prix_dans(valeur, profondeur + 1)
+            if trouve is not None:
+                return trouve
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            if isinstance(item, Mapping) and all(k in item for k in CLES_TABLE_PRIX):
+                return list(node)
+            trouve = _table_prix_dans(item, profondeur + 1)
+            if trouve is not None:
+                return trouve
+    return None
+
+
+def table_bilan_detaille(expert_comptable: Any) -> list[dict]:
+    """Lignes du bilan détaillé (tableau « Actif » / « Passif »).
+
+    Cherché par **contenu** : l'onglet peut s'appeler « Expert-comptable #3 »
+    ou autre chose, et être un dictionnaire comme une liste de tableaux.
+    """
+    def _chercher(node: Any, profondeur: int = 0) -> list[dict]:
+        if profondeur > 6 or node is None:
+            return []
+        if isinstance(node, Mapping):
+            for cle, valeur in node.items():
+                if str(cle) == "Tableau_1" and isinstance(valeur, list) and valeur:
+                    premier = valeur[0]
+                    if isinstance(premier, Mapping) and "Actif" in premier and "Passif" in premier:
+                        return [dict(x) for x in valeur if isinstance(x, Mapping)]
+            for valeur in node.values():
+                trouve = _chercher(valeur, profondeur + 1)
+                if trouve:
+                    return trouve
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                trouve = _chercher(item, profondeur + 1)
+                if trouve:
+                    return trouve
+        return []
+
+    if not isinstance(expert_comptable, Mapping):
+        return []
+    return _chercher(expert_comptable)
+
+
+def table_prix_marche(expert_comptable: Any) -> list[dict]:
+    """Lignes de la table « Ventes sur le marché concurrentiel » (module expert-comptable).
+
+    Vide si la table est absente : l'appelant garde alors son repli, sans
+    erreur. La structure peut être un dictionnaire ou une liste de tables.
+    """
+    if not isinstance(expert_comptable, Mapping):
+        return []
+    trouve = _table_prix_dans(expert_comptable)
+    if isinstance(trouve, Mapping):
+        return [dict(trouve)]
+    if isinstance(trouve, (list, tuple)):
+        return [dict(x) for x in trouve if isinstance(x, Mapping)]
+    return []
+
+
+def prix_marche_par_produit(expert_comptable: Any) -> dict[str, float]:
+    """Prix du marché par produit, mappés par **rang de prix croissant**.
+
+    Le portail publie les prix dans l'ordre des produits (Shorty 3 < Integral 3 <
+    Shorty 5 < Integral 5 < Integral 7) ; le mappage par rang reste valide si
+    les prix évoluent, contrairement à un mappage par prix exact.
+    """
+    lignes = table_prix_marche(expert_comptable)
+    valeurs = sorted({
+        float(l.get(CLES_TABLE_PRIX[0], 0) or 0)
+        for l in lignes
+        if str(l.get(CLES_TABLE_PRIX[1], "")).isdigit()
+    })
+    if len(valeurs) != len(PRIX_TO_PRODUIT):
+        return {}
+    produits = [PRIX_TO_PRODUIT[p] for p in sorted(PRIX_TO_PRODUIT)]
+    return dict(zip(produits, valeurs))
+
+
 @dataclass(frozen=True)
 class BilanDiagnostic:
     banque: Decimal

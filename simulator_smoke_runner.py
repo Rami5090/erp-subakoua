@@ -301,15 +301,16 @@ def seed(db, scenario):
             },
         },
         "Détail des comptes": {
-            "Expert-comptable": {
-                "Ventes sur le marché concurrentiel": [
+            # Structure réelle observée : l'onglet est une LISTE de tableaux.
+            "Expert-comptable": [
+                {"Ventes sur le marché concurrentiel": [
                     {"Combinaisons": "1", "Prix HT (€)": 130},
                     {"Combinaisons": "2", "Prix HT (€)": 205},
                     {"Combinaisons": "3", "Prix HT (€)": 240},
                     {"Combinaisons": "4", "Prix HT (€)": 310},
                     {"Combinaisons": "5", "Prix HT (€)": 360},
-                ],
-            },
+                ]},
+            ],
         },
     })
     # Cours du marché publiés mois après mois (« Ventes sur le marché
@@ -319,12 +320,12 @@ def seed(db, scenario):
         _prix_marche = sorted([130 + _i, 205 + _i, 240 + _i, 310 + _i, 360 + _i])
         erp(db, f"Année 1 - {_mois}", "expert_comptable", {
             "Détail des comptes": {
-                "Expert-comptable": {
-                    "Ventes sur le marché concurrentiel": [
+                "Expert-comptable": [
+                    {"Ventes sur le marché concurrentiel": [
                         {"Combinaisons": str(_k + 1), "Prix HT (€)": _v}
                         for _k, _v in enumerate(_prix_marche)
-                    ],
-                },
+                    ]},
+                ],
             },
         })
     for _sid, _payload in (

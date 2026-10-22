@@ -520,7 +520,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `217 passed, 1 skipped`**
+**Résultat actuel : `226 passed, 1 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -529,6 +529,7 @@ python -m pytest -q
 | `test_optimizer_capacity_limits.py` | Fusion des données concurrentes, **capacité appliquée comme plafond** |
 | `test_break_even_engine.py` | **Point d'équilibre exact**, imputation des charges fixes, mix sous contrainte de capacité, **équilibre hors de portée signalé**, objectif marge/volume, **valeurs à atteindre** (plancher de prix, plafond de coût, machines à ajouter) |
 | `test_cours_engine.py` | **Prévision des cours** : méthode choisie par backtest, série triée chronologiquement, historique insuffisant sans prévision, cours négatif ramené à zéro |
+| `test_table_prix_marche.py` | Lecture des tables du module expert-comptable **par contenu** (onglet dictionnaire *ou* liste de tableaux — structure réelle du portail) |
 | `test_page_prevision_cours.py` | La page de prévision produit des cours et des prévisions cohérentes |
 | `test_page_analyse_quantitative.py` | La page d'analyse s'exécute de bout en bout, produit un seuil cohérent et **liste les valeurs à atteindre** |
 | `test_equilibre_centre_decision.py` | Le centre de décision expose un point d'équilibre cohérent avec le volume vendu |
@@ -575,7 +576,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 217 tests exécutés + 1 ignoré
+├── test_*.py                     # 226 tests exécutés + 1 ignoré
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │

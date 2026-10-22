@@ -34,7 +34,7 @@ from cours_engine import (
     trier_cours,
 )
 from db_utils import get_read_engine
-from livrable_finance import PRIX_TO_PRODUIT
+from livrable_finance import PRIX_TO_PRODUIT, prix_marche_par_produit
 
 
 def _prix_marche_par_produit(prix_marche: dict[str, dict[str, float]]) -> dict[str, list[PricePoint]]:
@@ -135,24 +135,14 @@ rows_expert = _rows(
     "SELECT periode, contenu FROM erp_donnees "
     "WHERE type_donnee='etat_actuel' AND module='expert_comptable' ORDER BY id"
 )
-#: Produits rangés par prix croissant : le marché publie les prix dans cet ordre
-#: (Shorty 3 < Integral 3 < Shorty 5 < Integral 5 < Integral 7). Le mapping se
-#: fait donc par **rang**, et non par prix exact : une évolution du prix de
-#: marché ne fait pas disparaître la série.
-_ORDRE_PAR_PRIX = [produit for _p, produit in sorted(PRIX_TO_PRODUIT.items())]
 prix_marche: dict[str, dict[str, float]] = {}
 for _r in rows_expert:
     _expert = _decode(_r.get("contenu"))
-    _detail = (_expert.get("Détail des comptes", {}) or {}).get("Expert-comptable", {}) or {}
-    _globale = _detail.get("Ventes sur le marché concurrentiel", []) or []
-    _valeurs = sorted({
-        float(_x.get("Prix HT (€)", 0) or 0)
-        for _x in _globale
-        if str(_x.get("Combinaisons", "")).isdigit()
-    })
-    if len(_valeurs) == len(_ORDRE_PAR_PRIX):
-        _per = str(_r.get("periode") or "")
-        prix_marche[_per] = dict(zip(_ORDRE_PAR_PRIX, _valeurs))
+    # La structure de l'onglet varie selon les extractions (dictionnaire ou
+    # liste de tableaux) : la table des prix est cherchée par son contenu.
+    _prix = prix_marche_par_produit(_expert)
+    if _prix:
+        prix_marche[str(_r.get("periode") or "")] = _prix
 
 series: dict[str, tuple[str, list[PricePoint]]] = {}
 
