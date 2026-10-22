@@ -17,6 +17,7 @@ from db_schema import (
     COLONNES_CESSION_FINANCES,
     COLONNES_CESSION_PARC,
     ajouter_colonnes_manquantes,
+    borner_attente_verrou,
     colonnes_existantes,
 )
 from finance_engine import (
@@ -144,3 +145,30 @@ def test_finances_table_migration_adds_the_cession_columns(sqlite_engine):
         assert set(ajoutees) == set(COLONNES_CESSION_FINANCES)
         colonnes = colonnes_existantes(conn, "Finances_Mensuelles")
         assert {"vnc_cession_ht", "tva_cession", "pmv_cession"} <= colonnes
+
+
+def test_migration_respects_its_time_budget(sqlite_engine):
+    """Budget épuisé : la migration s'arrête au lieu de bloquer l'application."""
+    with sqlite_engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE Parc_Machines_Mensuel (Tour_ID INT PRIMARY KEY, Mois TEXT, "
+            "Nb_Machines_Decoupe INT)"
+        ))
+
+        ajoutees = ajouter_colonnes_manquantes(
+            conn, "Parc_Machines_Mensuel", COLONNES_CESSION_PARC, budget_s=0.0
+        )
+
+        assert ajoutees == []  # budget nul : rien n'est tenté
+        assert "cession_faite" not in colonnes_existantes(conn, "Parc_Machines_Mensuel")
+
+
+def test_lock_bound_is_harmless_on_sqlite(sqlite_engine):
+    """`SET SESSION lock_wait_timeout` n'existe pas sur SQLite : l'appel doit
+    être ignoré silencieusement, pas faire échouer la migration."""
+    with sqlite_engine.begin() as conn:
+        conn.execute(text("CREATE TABLE T (id INT PRIMARY KEY)"))
+        borner_attente_verrou(conn)  # ne doit pas lever
+        ajoutees = ajouter_colonnes_manquantes(conn, "T", {"Col": "INT"})
+
+        assert ajoutees == ["Col"]

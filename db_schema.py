@@ -7,6 +7,7 @@ données, et reste compatible MySQL (Aiven) comme SQLite (banc d'essai).
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Mapping
 
 from sqlalchemy import text
@@ -50,18 +51,46 @@ def colonnes_existantes(conn: Any, table: str) -> set[str]:
     return set()
 
 
-def ajouter_colonnes_manquantes(conn: Any, table: str, colonnes: Mapping[str, str]) -> list[str]:
+def borner_attente_verrou(conn: Any, secondes: int = 5) -> None:
+    """MySQL : borne l'attente d'un verrou de métadonnées (DDL).
+
+    `lock_wait_timeout` vaut **une heure** par défaut : un `ALTER TABLE` dont
+    le verrou est détenu par une autre session figerait l'application. On le
+    ramène à quelques secondes : le DDL échoue vite et l'application reste
+    utilisable.
+    """
+    for sql in (f"SET SESSION lock_wait_timeout = {int(max(1, secondes))}",):
+        try:
+            conn.execute(text(sql))
+        except Exception:
+            pass  # SQLite ou moteur incompatible : sans objet
+
+
+def ajouter_colonnes_manquantes(
+    conn: Any,
+    table: str,
+    colonnes: Mapping[str, str],
+    budget_s: float = 10.0,
+) -> list[str]:
     """Ajoute à `table` les colonnes absentes. Retourne celles qui ont été ajoutées.
 
     L'opération est idempotente : appeler deux fois la fonction n'ajoute
     rien la seconde fois. Une colonne qui ne peut pas être ajoutée est
     ignorée — l'appelant reste responsable de vérifier sa présence.
+
+    L'opération est **bornée dans le temps** (`budget_s`) et n'attend jamais
+    un verrou plus de quelques secondes : une base verrouillée par une autre
+    session ne doit pas figer l'application.
     """
+    deadline = time.monotonic() + max(0.0, float(budget_s))
+    borner_attente_verrou(conn)
     existantes = colonnes_existantes(conn, table)
     ajoutees: list[str] = []
     for nom, type_sql in colonnes.items():
         if nom.lower() in existantes:
             continue
+        if time.monotonic() > deadline:
+            break
         try:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {nom} {type_sql}"))
             ajoutees.append(nom)

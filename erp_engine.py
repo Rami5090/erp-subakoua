@@ -1,8 +1,24 @@
 import os
+import time
 import streamlit as st
 import pandas as pd
 import json
 import hashlib
+
+#: Trace de performance : les durées des étapes lentes sont écrites dans les
+#: logs du serveur (console Streamlit). En cas de blocage, elles indiquent
+#: immédiatement l'étape responsable.
+_T0 = time.perf_counter()
+
+
+def _log_duree(etape: str) -> None:
+    global _T0
+    now = time.perf_counter()
+    try:
+        print(f"[perf] {etape} : {now - _T0:.2f} s", flush=True)
+    except Exception:
+        pass
+    _T0 = now
 
 # Une dépendance manquante doit être expliquée, pas fatale : sans
 # python-dotenv, l'import interromprait toute l'application avec une
@@ -102,6 +118,7 @@ from db_schema import (
     COLONNES_CESSION_FINANCES,
     COLONNES_CESSION_PARC,
     ajouter_colonnes_manquantes,
+    colonnes_existantes,
 )
 
 load_dotenv()
@@ -477,6 +494,7 @@ def init_connection():
         return None, msg
 
 engine, db_error = init_connection()
+_log_duree("connexion base")
 # Défense en profondeur : un visiteur lit via l'utilisateur MySQL en lecture seule s'il est configuré.
 if not is_editor():
     _ro_engine = get_readonly_engine_if_configured()
@@ -567,8 +585,20 @@ def charger_taux_vieillissement_bdd() -> dict[str, float]:
         return {}
 
 
+@st.cache_resource(show_spinner=False)
 def init_db_simu():
-    if engine is None: return
+    """Crée et complète le schéma local — **une seule fois par processus**.
+
+    Le DDL (`CREATE TABLE` / `ALTER TABLE`) prend un verrou de métadonnées sur
+    MySQL : si une autre session le détient, l'attente peut durer une heure
+    (`lock_wait_timeout` par défaut). Le rejouer à chaque interaction de
+    l'interface ferait donc figer l'application — d'où la mémorisation par
+    processus (`cache_resource`) et une migration bornée dans le temps.
+
+    Retourne un dict : {"ok": bool, "manquantes": [colonnes non ajoutées]}.
+    """
+    if engine is None:
+        return {"ok": True, "manquantes": []}
     try:
         with engine.begin() as conn:
             conn.execute(text("""
@@ -639,13 +669,25 @@ def init_db_simu():
             """))
             # `CREATE TABLE IF NOT EXISTS` n'ajoute rien à une table déjà créée :
             # les bases antérieures à la cession de machines sont complétées ici.
-            ajouter_colonnes_manquantes(conn, "Parc_Machines_Mensuel", COLONNES_CESSION_PARC)
-            ajouter_colonnes_manquantes(conn, "Finances_Mensuelles", COLONNES_CESSION_FINANCES)
-    except Exception:
-        pass
+            # La migration est bornée (verrou + budget) : elle ne doit jamais
+            # faire figer l'application.
+            _manquantes: list[str] = []
+            for _table, _colonnes in (
+                ("Parc_Machines_Mensuel", COLONNES_CESSION_PARC),
+                ("Finances_Mensuelles", COLONNES_CESSION_FINANCES),
+            ):
+                _ajoutees = ajouter_colonnes_manquantes(conn, _table, _colonnes, budget_s=8.0)
+                _manquantes += [
+                    f"{_table}.{_c}" for _c in _colonnes if _c not in _ajoutees
+                    and _c.lower() not in {c.lower() for c in colonnes_existantes(conn, _table)}
+                ]
+        return {"ok": not _manquantes, "manquantes": _manquantes}
+    except Exception as exc:
+        return {"ok": False, "manquantes": [], "erreur": f"{type(exc).__name__}: {exc}"}
 
-if is_editor():
-    init_db_simu()  # création des tables : réservée aux utilisateurs
+
+_schema_local = init_db_simu() if is_editor() else {"ok": True, "manquantes": []}
+_log_duree("schema local")
 
 # ==========================================
 # 2. CHARGEMENT BDD & FONCTIONS GLOBALES
@@ -1402,6 +1444,13 @@ if engine is not None:
 else:
     st.sidebar.error("🔴 Base Cloud indisponible", icon="⚠️")
 
+if not _schema_local.get("ok", True):
+    _manquantes = ", ".join(_schema_local.get("manquantes", [])[:6])
+    st.sidebar.warning(
+        f"⚠️ Schéma local incomplet ({_manquantes}) — la saisie des cessions restera "
+        "indisponible tant que la migration n'a pas abouti. Rechargez l'application."
+    )
+
 auth_setup()  # badge de rôle + connexion utilisateur dans la barre latérale
 
 try:
@@ -2018,6 +2067,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     # coefficients estimés et sur les tables de décision, qui ne servent plus
     # que de repli poste par poste.
     etudes_m1 = charger_etudes_periode(period_for_tour(tour_id_precedent))
+    _log_duree("chargement etudes M-1")
     _bom_etudes = study_ops.bom_par_libelle(etudes_m1)
     _stocks_etudes = study_ops.stocks_cloture(etudes_m1)
     _prix_etudes = study_ops.prix_achat_unitaire(etudes_m1)
@@ -2322,11 +2372,21 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         with st.container(border=True):
             st.markdown("**📦 Volumes vendus prévisionnels**")
             col_vs1, col_vs2, col_vs3, col_vs4, col_vs5 = st.columns(5)
-            sim_v_s3 = col_vs1.number_input("Shorty 3 (u)", key="sim_s3", value=st.session_state.setdefault("sim_s3", volumes_ref["s3"]), min_value=0)
-            sim_v_i3 = col_vs2.number_input("Integral 3 (u)", key="sim_i3", value=st.session_state.setdefault("sim_i3", volumes_ref["i3"]), min_value=0)
-            sim_v_s5 = col_vs3.number_input("Shorty 5 (u)", key="sim_s5", value=st.session_state.setdefault("sim_s5", volumes_ref["s5"]), min_value=0)
-            sim_v_i5 = col_vs4.number_input("Integral 5 (u)", key="sim_i5", value=st.session_state.setdefault("sim_i5", volumes_ref["i5"]), min_value=0)
-            sim_v_i7 = col_vs5.number_input("Integral 7 (u)", key="sim_i7", value=st.session_state.setdefault("sim_i7", volumes_ref["i7"]), min_value=0)
+            # Les volumes sont initialisés une fois puis suivent la purge de
+            # contexte : passer la valeur du session_state ET la valeur par
+            # défaut du widget provoquait un avertissement Streamlit et
+            # figeait le volume d'un mois sur l'autre.
+            for _cle, _defaut in (
+                ("sim_s3", volumes_ref["s3"]), ("sim_i3", volumes_ref["i3"]),
+                ("sim_s5", volumes_ref["s5"]), ("sim_i5", volumes_ref["i5"]),
+                ("sim_i7", volumes_ref["i7"]),
+            ):
+                st.session_state.setdefault(_cle, _defaut)
+            sim_v_s3 = col_vs1.number_input("Shorty 3 (u)", key="sim_s3", min_value=0)
+            sim_v_i3 = col_vs2.number_input("Integral 3 (u)", key="sim_i3", min_value=0)
+            sim_v_s5 = col_vs3.number_input("Shorty 5 (u)", key="sim_s5", min_value=0)
+            sim_v_i5 = col_vs4.number_input("Integral 5 (u)", key="sim_i5", min_value=0)
+            sim_v_i7 = col_vs5.number_input("Integral 7 (u)", key="sim_i7", min_value=0)
             ca_prev_sim = (sim_v_s3 * prix_s3) + (sim_v_i3 * prix_i3) + (sim_v_s5 * prix_s5) + (sim_v_i5 * prix_i5) + (sim_v_i7 * prix_i7)
             st.metric("CA prévisionnel issu du mix prix × volumes", fmt_eur(ca_prev_sim))
 
@@ -3262,6 +3322,7 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             budgets_p_dict=budgets_p_dict,
             own_company=3,
         )
+        _log_duree("calcul PDM")
 
         # Tableau de bord court injecté en haut de la page via le placeholder.
         with kpi_header.container(border=True):
