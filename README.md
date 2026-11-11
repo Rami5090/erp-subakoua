@@ -146,7 +146,7 @@ flowchart TB
 
 ## 📦 Les modules
 
-L'application comporte **4 pages** (le fichier racine est la page 1).
+L'application comporte **8 pages** (le fichier racine est la page 1).
 
 ### Page 2 — 🕷️ Ingestion & achats documentaires
 
@@ -265,6 +265,36 @@ l'on décide d'acheter ou de vendre : elle aide à arbitrer.
 > ⚠️ Une série de moins de trois cours ne produit **aucune** prévision (avertissement affiché) et
 > une prévision négative est ramenée à zéro : aucun cours n'est inventé.
 
+### Page 8 — 📘 Rapport professionnel (livrable de l'évaluation)
+
+Produit le **rapport professionnel** attendu par l'évaluation Subakoua : un audit complet,
+stratégique et opérationnel, de l'année écoulée (**description et analyse**), avec une
+**partie collective** et une **partie individuelle** par membre. Le résultat est un fichier
+**Word éditable**, à finaliser puis exporter en PDF pour le dépôt (un seul dépôt par groupe).
+
+| Attendu de l'évaluation | Ce que produit le module |
+|---|---|
+| Stratégie(s) mise(s) en œuvre | Texte de l'équipe + **lecture des décisions observées** (positionnement prix, gamme, capacité, financement) + **chronologie des décisions clés** déduite des données |
+| Outils et méthodes (dont gestion de projet) | Tableau des outils de l'ERP (besoin, méthode, apport) + outils de GP retenus (RACI, Kanban, rétroplanning…) + répartition des rôles |
+| Explication et prise de recul sur les résultats | Audit chiffré mois par mois, **constats automatiques** (fait chiffré + piste d'analyse), forces / points de vigilance, **décomposition prix / volume / mix** de l'évolution du CA, benchmark concurrentiel |
+| Partie individuelle | Une section par membre : rôle, outils montés, forces et faiblesses, réussites et erreurs, mission spécifique, **indicateurs de son périmètre** (finance, production, RH…) |
+| Forme : graphiques, tableaux, logo, couleurs | 10 graphiques commentés (CA, ventes par produit, mix, PDM, concurrence, résultat, trésorerie, ateliers, cascade prix/volume/mix), tableaux, page de garde avec logo, **charte couleurs au choix**, sommaire, pagination, annexes de traçabilité |
+
+**Mode d'emploi** : choisir la période auditée → onglet *Identité & charte* (nom, logo,
+couleurs) → *Équipe* (membres et rôles) → rédiger la *Partie collective* et les *Parties
+individuelles* (les consignes de l'évaluation sont rappelées sous chaque champ) → *Aperçu de
+l'audit* → *Générer le rapport*. Un **contrôle de complétude** mesure l'avancement au regard
+des attendus ; le **brouillon JSON** permet à chaque membre de reprendre le travail.
+
+**Garde-fous** : aucun texte n'est inventé à la place de l'équipe — un champ vide apparaît
+surligné « [À COMPLÉTER] » dans le Word avec sa consigne ; aucun chiffre n'est extrapolé — un
+mois sans donnée reste vide et l'annexe C indique l'étude (souvent gratuite) qui le fournirait ;
+chaque chiffre renvoie à sa source (annexe B). Les lectures stratégiques sont présentées comme
+des **propositions à valider** par l'équipe. La page est en lecture seule (aucune écriture en base).
+
+Moteurs : `rapport_engine.py` (consolidation et analyses, pur), `rapport_graphiques.py`
+(matplotlib, API objet), `rapport_docx.py` (python-docx), `depot_donnees.py` (lectures partagées).
+
 ## 🧮 Le simulateur
 
 Le cœur de l'application : les leviers stratégiques sont propagés à toute la chaîne de valeur.
@@ -348,6 +378,17 @@ désormais la cession, pour un mois **réel** :
 **Le contexte temporel (M-1)** est résolu par `period_context.py` : si la donnée du mois simulé est
 absente, l'application **replie sur le dernier mois antérieur connu** — jamais vers l'avenir. Le
 diagnostic est affiché, et changer de mois purge le cache de décisions.
+
+### ⚡ Performance du cockpit
+
+Streamlit réexécute tout le script à chaque interaction. Les lectures de la base sont donc
+**mémorisées par exécution** et **mises en cache sous l'empreinte réelle des tables**
+(identifiants + dates de synchronisation `fetched_at` / `date_maj`) : une interaction ne relit
+que ces empreintes, tandis qu'un achat ou une resynchronisation invalide immédiatement le cache.
+Le calcul de part de marché ne recharge plus les deux tables complètes ni ne refait la
+calibration et les prévisions à chaque clic : seule l'évaluation du scénario est rejouée.
+Mesure sur le banc d'essai (cache simulé) : **15 requêtes par interaction au lieu de 27 à 42**,
+résultats identiques sur 22 contextes de référence (`test_performance_cache.py`).
 
 ## 📐 Méthodes
 
@@ -442,7 +483,7 @@ playwright install chromium
 
 > ⚠️ `requirements.txt` est **complet et obligatoire** : sans `python-dotenv` l'application ne
 > démarre pas, sans `pypdf` le remplissage du PDF « Mission spécifique Finance » est indisponible,
-> sans `statsmodels` les prévisions ne tournent pas. Une dépendance manquante est désormais signalée
+> sans `statsmodels` les prévisions ne tournent pas, sans `python-docx` / `matplotlib` le rapport professionnel ne peut pas être généré (la page le signale). Une dépendance manquante est désormais signalée
 > par un message explicite plutôt que par une erreur d'import brute.
 
 ### Lancer l'application
@@ -520,7 +561,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `227 passed, 1 skipped`**
+**Résultat actuel : `272 passed, 2 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -533,6 +574,11 @@ python -m pytest -q
 | `test_page_prevision_cours.py` | La page de prévision produit des cours et des prévisions cohérentes |
 | `test_page_analyse_quantitative.py` | La page d'analyse s'exécute de bout en bout, produit un seuil cohérent et **liste les valeurs à atteindre** |
 | `test_equilibre_centre_decision.py` | Le centre de décision expose un point d'équilibre cohérent avec le volume vendu |
+| `test_rapport_engine.py` | **Rapport professionnel** : consolidation annuelle, priorité des sources (saisie 0 = non saisi), une seule étude « Ventes » de décembre reconstitue l'année, **décomposition prix/volume/mix exacte**, chronologie, constats, aucun constat inventé sans données, brouillon JSON, complétude |
+| `test_rapport_docx.py` | Document Word conforme aux attendus (parties collective et individuelles, annexes), graphiques et tableaux présents, charte appliquée, **zéro « À compléter » quand tout est rempli** |
+| `test_page_rapport_professionnel.py` | La page génère et télécharge le rapport de bout en bout ; le brouillon se recharge ; base fraîche gérée sans plantage |
+| `test_performance_cache.py` | Une interaction du cockpit ne relit pas toute la base ; le cache ne change pas les résultats ; **une étude resynchronisée est bien relue** |
+| `test_depot_donnees.py` | Lecture tolérante (table absente ⇒ erreur signalée, pas d'exception) et empreintes incluant la date de synchronisation |
 | `test_page_livrable_finance.py` | La page Livrable s'exécute de bout en bout (bilan lu, marges produites) et **dégrade sans planter** si les tables du scraper manquent |
 | `test_livrable_pdf.py` | Remplissage du **vrai gabarit PDF** : 124 champs renseignés, 0 non trouvé ; message explicite si `pypdf` manque |
 | `test_machine_disposal.py` | **Cession de machines** : parc jamais négatif, cession bridée au parc détenu, encaissement TTC, TVA collectée sur cession, effet sur le taux de service |
@@ -552,11 +598,15 @@ possède, et le parc ne descend jamais sous zéro**.
 ```
 erp-subakoua/
 ├── erp_engine.py                 # Page 1 · Cockpit & simulateur
-├── pages/                        # Pages 2-4 : ingestion, prévision, optimisation
+├── pages/                        # Pages 2-8 : ingestion, prévision, optimisation, analyses, livrables
 │
 ├── forecast_engine.py            # ETS, Holt, backtest, concurrence
 ├── break_even_engine.py          # Point d'équilibre, marge, mix sous capacité
 ├── cours_engine.py               # Prévision des cours (méthodes comparées par backtest)
+├── rapport_engine.py             # Rapport professionnel : audit annuel, constats, complétude
+├── rapport_graphiques.py         # Graphiques commentés du rapport (matplotlib)
+├── rapport_docx.py               # Génération du rapport Word
+├── depot_donnees.py              # Lectures partagées et empreintes de cache
 ├── optimizer_engine.py           # Calibration, capacité, scénarios
 ├── finance_engine.py             # Comptabilité prévisionnelle (Decimal)
 ├── strategic_engine.py           # Métriques et alertes concurrentielles
@@ -576,7 +626,8 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 227 tests exécutés + 1 ignoré
+├── test_*.py                     # 272 tests exécutés + 2 ignorés
+├── rapport_jeu_essai.py          # Année de jeu fictive pour les tests du rapport
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │

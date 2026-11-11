@@ -777,8 +777,9 @@ def _audit(w: _Redacteur, audit: AuditAnnuel, graphiques: Mapping[str, Graphique
           for m in audit.mois if EFFECTIFS in m.valeurs or m.scores_rh]
     if rh:
         reste = _LARGEUR_UTILE_CM - 2.0 - 2.0 - 3.8
+        abreges = {"Production": "Prod.", "Approvisionnement": "Appro.", "Administration": "Admin."}
         w.tableau("Effectifs, masse salariale et scores RH (sur 100)",
-                  ["Mois", "Effectif", "Masse salariale brute", *[f"Score {p}" for p in poles]], rh,
+                  ["Mois", "Effectif", "Masse salariale brute", *[f"Score {abreges.get(p, p)}" for p in poles]], rh,
                   largeurs=[2.0, 2.0, 3.8, *([reste / len(poles)] * len(poles))],
                   numeriques=range(1, 3 + len(poles)), taille=8)
     else:
