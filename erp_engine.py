@@ -73,7 +73,6 @@ from optimizer_engine import (
     predict_anchored_share,
     resolve_reference_share,
     detect_segment_product,
-    resolve_own_levers,
     evaluate_scenario,
     apply_fleet_decisions,
     CapacityProfile,
@@ -160,6 +159,116 @@ def fmt_eur(value):
         return "—"
 
 
+@st.cache_data(show_spinner=False, max_entries=8)
+def _preparer_pdm(_engine, empreinte_etudes: str, empreinte_donnees: str, periode_m1: str, own_company: int) -> dict:
+    """Partie coûteuse du calcul de PDM, indépendante des leviers du simulateur.
+
+    Lecture complète de `erp_donnees` et `erp_etudes`, snapshot concurrentiel,
+    calibration et prévision 12 mois : tout cela ne dépend que des données et
+    de la période de référence. Mis en cache sous l'empreinte des deux tables,
+    ce travail n'est plus refait à chaque interaction avec un levier : seule
+    l'évaluation du scénario candidat l'est (voir `_compute_pdm_scenario`).
+
+    Retour : ``messages`` (affichés par l'appelant), ``warnings``, ``erreur``
+    (arrêt du calcul) et les objets nécessaires à l'évaluation.
+    """
+    prep = {"messages": [], "warnings": [], "erreur": None}
+
+    # 1. Données legacy (erp_donnees) pour l'historique
+    with _engine.connect() as conn:
+        legacy_rows = conn.execute(
+            text("SELECT periode, module, contenu FROM erp_donnees ORDER BY id ASC")
+        ).mappings().all()
+        legacy_data = [dict(r) for r in legacy_rows]
+    period_data = build_period_data(legacy_data)
+
+    # 2. Études achetées (erp_etudes) : elles contiennent toutes les informations de
+    # l'entreprise et sont injectées dans period_data pour que le centre de décision
+    # fonctionne SANS données legacy.
+    study_data = {}
+    try:
+        with _engine.connect() as conn:
+            study_rows = conn.execute(
+                text("SELECT periode, study_id, label, module, price, read_allowed, payload FROM erp_etudes ORDER BY id ASC")
+            ).mappings().all()
+            for r in study_rows:
+                if r.get("read_allowed"):
+                    payload = _unwrap_api_payload(_json_load(r.get("payload", r.get("contenu", {}))))
+                    period_data.setdefault(r["periode"], {})[f"etude_{r['study_id']}"] = payload
+            study_data = build_study_data([dict(r) for r in study_rows if r.get("read_allowed")])
+            acquired_ids = sorted({r.get("study_id") for r in study_rows if r.get("read_allowed")})
+            acquired_periods = sorted({r.get("periode") for r in study_rows if r.get("read_allowed")})
+            if acquired_ids:
+                prep["messages"].append(("info", f"📚 {len(acquired_ids)} étude(s) acquise(s) et lisible(s) dans erp_etudes : {', '.join(acquired_ids[:10])}{'...' if len(acquired_ids) > 10 else ''}"))
+                if periode_m1 not in acquired_periods:
+                    prep["messages"].append(("warning", f"⚠️ Les études acquises sont pour les périodes {', '.join(acquired_periods)}, mais le centre de décision utilise {periode_m1}. Les données acquises pour une période différente de M-1 ne sont pas prises en compte."))
+            else:
+                prep["messages"].append(("warning", "⚠️ Aucune étude lisible dans erp_etudes. Les documents achetés mais pas encore lisibles (période M+1) ne sont pas pris en compte."))
+    except Exception as exc:
+        study_data = {}
+        prep["messages"].append(("warning", f"Lecture erp_etudes impossible : {type(exc).__name__}: {exc}"))
+
+    # 3. Snapshot concurrentiel de la période de référence (M-1)
+    competitive = extract_competitive_snapshot(
+        period_data, own_company_number=own_company, study_data=study_data, anchor_period=periode_m1,
+    )
+    if not competitive.get("rows"):
+        prep["erreur"] = "Aucune donnée concurrentielle trouvée pour l'ancrage"
+        return prep
+
+    # 4. Historique de calibration à partir de l'état observé (et non des décisions M-1).
+    def snap_for_period(p):
+        return extract_competitive_snapshot(
+            period_data, own_company_number=own_company, study_data=study_data, anchor_period=p,
+        )
+
+    hist = build_competitive_history(period_data, own_company, snap_for_period, periods=list(period_data.keys()))
+
+    # 5. Calibration descriptive
+    cal = calibrate_descriptive_response(hist)
+    if cal is None:
+        prep["erreur"] = "Calibration impossible : pas assez d'observations"
+        return prep
+
+    # 6. Cadre concurrentiel récent
+    competitors = latest_competitor_frame(hist, own_company, periode_m1)
+    if competitors.empty:
+        prep["erreur"] = "Aucun concurrent exploitable après filtrage"
+        return prep
+
+    # 7. PDM de référence (ancrage)
+    actual_total = 0.0
+    try:
+        own_row = competitive.get("own")
+        if own_row and own_row.get("ventes") is not None:
+            actual_total = float(own_row["ventes"])
+    except Exception:
+        pass
+    ref = resolve_reference_share(competitive, hist, own_company, periode_m1, fallback_units=actual_total)
+    segment_share = ref.get("share", 0.0) if ref.get("share") is not None else 0.0
+    segment_units = ref.get("units", 0)
+    if segment_share is None or segment_share <= 0:
+        prep["warnings"].append("PDM de référence indisponible")
+        segment_share = 0.0
+
+    # 8. Produit du segment, prévision 12 mois servant de demande de base
+    segment_product = detect_segment_product(competitive.get("own") or {}, segment_units)
+    sales = extract_own_sales_history(period_data, study_data=study_data)
+    struct = extract_structural_seasonality(period_data, study_data=study_data)
+    forecast_df, _ = rolling_forecast_12m(sales, struct, periode_m1, horizon=12)
+
+    prep.update({
+        "pdm_reference": segment_share * 100.0,
+        "segment_share": segment_share,
+        "segment_units": segment_units,
+        "segment_product": segment_product,
+        "calibration": cal,
+        "competitors": competitors,
+        "forecast_df": forecast_df,
+    })
+    return prep
+
+
 def _compute_pdm_scenario(
     engine,
     tour_id_actif: int,
@@ -176,6 +285,10 @@ def _compute_pdm_scenario(
     own_company: int = 3,
 ) -> dict:
     """Calcule la PDM potentielle et réalisable pour le scénario courant du simulateur.
+
+    La préparation coûteuse (`_preparer_pdm`) est mise en cache sous
+    l'empreinte des données ; seule l'évaluation du scénario candidat est
+    refaite à chaque interaction.
 
     Retourne un dict avec:
     - pdm_potentielle: PDM avant contrainte de capacité
@@ -202,196 +315,47 @@ def _compute_pdm_scenario(
         return result
 
     try:
-        # 1. Charger les données legacy (erp_donnees) pour l'historique
-        with engine.connect() as conn:
-            legacy_rows = conn.execute(
-                text("SELECT periode, module, contenu FROM erp_donnees ORDER BY id ASC")
-            ).mappings().all()
-            legacy_data = [dict(r) for r in legacy_rows]
-
-        period_data = build_period_data(legacy_data)
-
-        # 2. Charger les données API (erp_etudes) si disponibles.
-        # Les études achetées contiennent TOUTES les informations de l'entreprise
-        # (ventes, stocks, trésorerie, production, parts de marché, etc.).
-        # Elles sont injectées dans period_data pour que le centre de décision
-        # puisse fonctionner SANS données legacy (erp_donnees).
-        study_data = {}
-        try:
-            with engine.connect() as conn:
-                study_rows = conn.execute(
-                    text("SELECT periode, study_id, label, module, price, read_allowed, payload FROM erp_etudes ORDER BY id ASC")
-                ).mappings().all()
-                for r in study_rows:
-                    if r.get("read_allowed"):
-                        pid = r["periode"]
-                        sid = r["study_id"]
-                        payload = _unwrap_api_payload(_json_load(r.get("payload", r.get("contenu", {}))))
-                        # Injecter l'étude dans period_data sous forme de module
-                        period_data.setdefault(pid, {})[f"etude_{sid}"] = payload
-                study_data = build_study_data([dict(r) for r in study_rows if r.get("read_allowed")])
-                # Diagnostic : afficher les études acquises disponibles
-                acquired_ids = sorted({r.get("study_id") for r in study_rows if r.get("read_allowed")})
-                acquired_periods = sorted({r.get("periode") for r in study_rows if r.get("read_allowed")})
-                if acquired_ids:
-                    st.info(f"📚 {len(acquired_ids)} étude(s) acquise(s) et lisible(s) dans erp_etudes : {', '.join(acquired_ids[:10])}{'...' if len(acquired_ids) > 10 else ''}")
-                    if periode_m1 not in acquired_periods:
-                        st.warning(f"⚠️ Les études acquises sont pour les périodes {', '.join(acquired_periods)}, mais le centre de décision utilise {periode_m1}. Les données acquises pour une période différente de M-1 ne sont pas prises en compte.")
-                else:
-                    st.warning("⚠️ Aucune étude lisible dans erp_etudes. Les documents achetés mais pas encore lisibles (période M+1) ne sont pas pris en compte.")
-        except Exception as exc:
-            study_data = {}
-            st.warning(f"Lecture erp_etudes impossible : {type(exc).__name__}: {exc}")
-
-        # 3. Extraire le snapshot concurrentiel pour la période de référence (M-1)
-        competitive = extract_competitive_snapshot(
-            period_data,
-            own_company_number=own_company,
-            study_data=study_data,
-            anchor_period=periode_m1,
+        prep = _preparer_pdm(
+            engine, _empreinte(signature_etudes()), _empreinte(signature_donnees()[0]), periode_m1, int(own_company),
         )
+    except Exception as e:
+        warnings.append(f"Erreur calcul PDM : {type(e).__name__}: {e}")
+        return result
+    for niveau, message in prep["messages"]:
+        (st.info if niveau == "info" else st.warning)(message)
+    warnings.extend(prep["warnings"])
+    if prep["erreur"]:
+        warnings.append(prep["erreur"])
+        return result
+    result["pdm_reference"] = prep["pdm_reference"]
 
-        if not competitive.get("rows"):
-            warnings.append("Aucune donnée concurrentielle trouvée pour l'ancrage")
-            return result
-
-        # 4. Construire l'historique de calibration à partir des données d'audit (état actuel)
-        #    Pas de dépendance aux décisions précédentes (M-1) qui sont grisées/figées : on lit
-        #    directement l'état actuel observé dans erp_donnees et erp_etudes.
-        def snap_for_period(p):
-            return extract_competitive_snapshot(
-                period_data,
-                own_company_number=own_company,
-                study_data=study_data,
-                anchor_period=p,
-            )
-
-        hist = build_competitive_history(
-            period_data,
-            own_company,
-            snap_for_period,
-            periods=list(period_data.keys()),
-        )
-
-        # 5. Calibrer la réponse descriptive
-        cal = calibrate_descriptive_response(hist)
-        if cal is None:
-            warnings.append("Calibration impossible : pas assez d'observations")
-            return result
-
-        # 6. Récupérer le cadre concurrentiel récent
-        competitors = latest_competitor_frame(hist, own_company, periode_m1)
-
-        if competitors.empty:
-            warnings.append("Aucun concurrent exploitable après filtrage")
-            return result
-
-        # 7. Déterminer la PDM de référence (ancrage)
-        from optimizer_engine import resolve_reference_share, detect_segment_product, resolve_own_levers
-        actual_sales_row = None  # Will be derived from competitive
-        actual_total = 0.0
-        try:
-            # Essayer de récupérer les ventes propres depuis le snapshot
-            own_row = competitive.get("own")
-            if own_row and own_row.get("ventes") is not None:
-                actual_total = float(own_row["ventes"])
-        except Exception:
-            pass
-
-        ref = resolve_reference_share(competitive, hist, own_company, periode_m1, fallback_units=actual_total)
-        segment_share = ref.get("share", 0.0) if ref.get("share") is not None else 0.0
-        segment_units = ref.get("units", 0)
-
-        if segment_share is None or segment_share <= 0:
-            warnings.append("PDM de référence indisponible")
-            segment_share = 0.0
-
-        result["pdm_reference"] = segment_share * 100.0
-
-        # 8. Identifier le produit du segment
-        actual_sales_row_data = competitive.get("own") or {}
-        segment_product = detect_segment_product(actual_sales_row_data, segment_units)
-
-        # 9. Résoudre les leviers de départ
-        levers = resolve_own_levers(competitive.get("own") or {}, hist, own_company, periode_m1)
-
-        # 10. Construire le scénario actuel depuis les entrées du simulateur
-        # Prix : moyenne pondérée ou prix du produit segment
-        prix_s3 = donnees_mkg.get('Prix_S3', 115.0)
-        prix_i3 = donnees_mkg.get('Prix_I3', 190.0)
-        prix_s5 = donnees_mkg.get('Prix_S5', 220.0)
+    try:
+        # Scénario candidat construit depuis les entrées du simulateur.
+        # NB : le scénario de base (leviers observés en M-1) n'est pas transmis
+        # comme ancrage à `evaluate_scenario` (contrairement à l'Optimiseur) ;
+        # le calcul d'un scénario de base, dont le résultat n'était jamais lu,
+        # a été supprimé : il coûtait une évaluation complète par interaction.
         prix_i5 = donnees_mkg.get('Prix_I5', 280.0)
-        prix_i7 = donnees_mkg.get('Prix_I7', 375.0)
-
-        # Qualité : depuis le simulateur (à ajouter) ou défaut
-        qualite_cible = 50.0  # défaut, à lire depuis le simulateur
-
-        # Publicité marque
-        pub_marque = budget_mkg_prev
-
-        # Publicité produits (moyenne)
         pub_prod_moy = sum(budgets_p_dict.values()) / max(1, len(budgets_p_dict)) if budgets_p_dict else 0.0
-
-        # Override with simulator values if available
         scenario = {
             "price": float(prix_i5),  # prix produit segment par défaut
-            "quality": qualite_cible,
-            "brand_ads": pub_marque,
+            "quality": 50.0,          # défaut, à lire depuis le simulateur
+            "brand_ads": budget_mkg_prev,
             "product_ads": pub_prod_moy,
         }
-
-        baseline_scenario = {
-            "price": float(levers.get("prix", scenario["price"])),
-            "quality": float(levers.get("qualite", scenario["quality"])),
-            "brand_ads": float(levers.get("publicite_marque", scenario["brand_ads"])),
-            "product_ads": float(levers.get("publicite_produit", scenario["product_ads"])),
-        }
-
-        # 10. Profil de capacité
-        machines = {
-            "Decoupe": nb_m_dec_sim,
-            "Assemblage": nb_m_ass_sim,
-            "Conditionnement": nb_m_cond_sim,
-        }
-
         cap = CapacityProfile(
-            machines=machines,
+            machines={"Decoupe": nb_m_dec_sim, "Assemblage": nb_m_ass_sim, "Conditionnement": nb_m_cond_sim},
             times={p: dict(v) for p, v in DEFAULT_TIMES.items()},
             capacity_min=CAPACITY_MIN_PER_MACHINE,
             source="simulateur",
         )
-
-        # 11. Évaluer le scénario de base (référence)
-        from optimizer_engine import evaluate_scenario
-        from forecast_engine import rolling_forecast_12m
-
-        # Besoin de forecast pour evaluate_scenario
-        from forecast_engine import extract_own_sales_history, extract_structural_seasonality
-        sales = extract_own_sales_history(period_data, study_data=study_data)
-        struct = extract_structural_seasonality(period_data, study_data=study_data)
-
-        forecast_df, _ = rolling_forecast_12m(sales, struct, periode_m1, horizon=12)
-
-        base_eval = evaluate_scenario(
-            forecast_df,
-            segment_product,
-            segment_share,
-            segment_units,
-            cal,
-            competitors,
-            baseline_scenario,
-            budget_mkg_prev,
-            cap,
-        )
-
-        # 12. Évaluer le scénario candidat (simulateur)
         cand_eval = evaluate_scenario(
-            forecast_df,
-            segment_product,
-            segment_share,
-            segment_units,
-            cal,
-            competitors,
+            prep["forecast_df"],
+            prep["segment_product"],
+            prep["segment_share"],
+            prep["segment_units"],
+            prep["calibration"],
+            prep["competitors"],
             scenario,
             budget_mkg_prev,
             cap,
@@ -401,7 +365,7 @@ def _compute_pdm_scenario(
         result["pdm_realisable"] = cand_eval.get("predicted_share", 0.0) * 100.0
         result["capacity_bottlenecks"] = cand_eval.get("capacity_bottlenecks", [])
         result["service_rate"] = cand_eval.get("service_rate", 1.0)
-        result["calibration_confidence"] = cal.confidence
+        result["calibration_confidence"] = prep["calibration"].confidence
 
         if cand_eval.get("max_demand_capacity_utilization", 0) > 1.0:
             warnings.append(f"Demande > capacité : {cand_eval.get('capacity_bottlenecks')}")
@@ -1068,6 +1032,83 @@ def _contenu_en_dict(contenu):
     return contenu if isinstance(contenu, dict) else {}
 
 
+# ---------------------------------------------------------------------------
+# Lectures mémorisées
+# ---------------------------------------------------------------------------
+# Streamlit réexécute tout le script à chaque interaction. Deux niveaux évitent
+# de relire la base distante à chaque clic :
+# * un mémo propre à l'exécution (`_MEMO_EXECUTION`, recréé à chaque
+#   exécution du script) : une même lecture n'est faite qu'une fois ;
+# * le cache Streamlit, indexé par une EMPREINTE des tables (identifiants et
+#   dates de synchronisation) : il n'est invalidé que lorsque la base change
+#   réellement (achat, synchronisation, nouvelle extraction).
+_MEMO_EXECUTION: dict = {}
+
+
+def _empreinte(valeur) -> str:
+    return hashlib.sha1(repr(valeur).encode("utf-8")).hexdigest()
+
+
+def _lire_premiere(requetes):
+    """Lignes de la première requête qui aboutit (colonnes optionnelles selon l'âge du schéma)."""
+    derniere = None
+    for sql in requetes:
+        try:
+            with engine.connect() as conn:
+                return conn.execute(text(sql)).all()
+        except Exception as exc:
+            derniere = exc
+    raise derniere
+
+
+def signature_donnees():
+    """Lignes légères de `erp_donnees` (id, période, type, module, date de mise à jour).
+
+    Lue une seule fois par exécution. Elle sert à la fois d'empreinte de cache
+    et de liste des candidats par module : plus besoin d'une requête par appel
+    à `charger_contenu_erp_periode`. Retourne ``(lignes, erreur)``.
+    """
+    if "sig_donnees" not in _MEMO_EXECUTION:
+        lignes, erreur = (), None
+        if engine is not None:
+            try:
+                rows = _lire_premiere((
+                    "SELECT id, periode, type_donnee, module, date_maj FROM erp_donnees ORDER BY id ASC",
+                    "SELECT id, periode, type_donnee, module FROM erp_donnees ORDER BY id ASC",
+                ))
+                lignes = tuple(
+                    (r[0], str(r[1] or ""), str(r[2] or ""), str(r[3] or ""), str(r[4]) if len(r) > 4 else "")
+                    for r in rows
+                )
+            except Exception as exc:
+                erreur = type(exc).__name__
+        _MEMO_EXECUTION["sig_donnees"] = (lignes, erreur)
+    return _MEMO_EXECUTION["sig_donnees"]
+
+
+def _candidats_etat_actuel():
+    """{module: [(id, période, version)]} des lignes `etat_actuel`, dans l'ordre des id."""
+    lignes, erreur = signature_donnees()
+    par_module: dict = {}
+    for ident, periode, type_donnee, module, version in lignes:
+        if type_donnee.strip().casefold() == "etat_actuel":
+            par_module.setdefault(module, []).append((ident, periode, version))
+    return par_module, erreur
+
+
+@st.cache_data(show_spinner=False, max_entries=256, ttl=900)
+def _contenu_erp_donnees(ident: int, version: str):
+    """Contenu décodé d'une ligne de `erp_donnees` (None si la ligne a disparu).
+
+    `version` (date de mise à jour de la ligne) fait partie de la clé : une
+    nouvelle extraction invalide le cache. Le délai de 15 min est un filet de
+    sécurité pour les bases dont la table n'a pas encore la colonne `date_maj`.
+    """
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT contenu FROM erp_donnees WHERE id = :id"), {"id": ident}).mappings().first()
+    return _contenu_en_dict(row.get("contenu")) if row else None
+
+
 def charger_contenu_erp_periode(periode, module):
     """Charge la dernière version du module pour UNE période précise.
 
@@ -1078,24 +1119,19 @@ def charger_contenu_erp_periode(periode, module):
     """
     if engine is None:
         return {}
+    par_module, erreur = _candidats_etat_actuel()
+    if erreur:
+        diag_ref.alert(f"Lecture `erp_donnees` ({module}, {periode}) impossible : {erreur}.")
+        return {}
+    cible = str(module).strip().casefold()
+    candidats = [c for nom, liste in par_module.items() if nom.strip().casefold() == cible for c in liste]
+    candidats.sort(key=lambda c: c[0])
+    ident = match_period([(i, p) for i, p, _v in candidats], periode)
+    if ident is None:
+        return {}
+    version = next((v for i, _p, v in candidats if i == ident), "")
     try:
-        with engine.connect() as conn:
-            candidats = conn.execute(
-                text("""
-                    SELECT id, periode
-                    FROM erp_donnees
-                    WHERE type_donnee = 'etat_actuel' AND module = :module
-                    ORDER BY id
-                """),
-                {"module": module},
-            ).all()
-            ident = match_period([(r[0], r[1]) for r in candidats], periode)
-            if ident is None:
-                return {}
-            row = conn.execute(
-                text("SELECT contenu FROM erp_donnees WHERE id = :id"), {"id": ident}
-            ).mappings().first()
-        return _contenu_en_dict(row.get("contenu")) if row else {}
+        return _contenu_erp_donnees(ident, version) or {}
     except Exception as exc:
         diag_ref.alert(f"Lecture `erp_donnees` ({module}, {periode}) impossible : {type(exc).__name__}.")
         return {}
@@ -1105,72 +1141,65 @@ def charger_modules_erp_periode(periode):
     """Tous les modules `etat_actuel` d'une période (dernière version de chacun)."""
     if engine is None:
         return {}
+    par_module, erreur = _candidats_etat_actuel()
+    if erreur:
+        diag_ref.alert(f"Lecture `erp_donnees` ({periode}) impossible : {erreur}.")
+        return {}
+    out = {}
     try:
-        with engine.connect() as conn:
-            candidats = conn.execute(
-                text("SELECT id, periode, module FROM erp_donnees WHERE type_donnee = 'etat_actuel' ORDER BY id")
-            ).all()
-            par_module = {}
-            for ident, per, module in candidats:
-                par_module.setdefault(module, []).append((ident, per))
-            out = {}
-            for module, cands in par_module.items():
-                ident = match_period(cands, periode)
-                if ident is None:
-                    continue
-                row = conn.execute(
-                    text("SELECT contenu FROM erp_donnees WHERE id = :id"), {"id": ident}
-                ).mappings().first()
-                if row:
-                    out[module] = _contenu_en_dict(row.get("contenu"))
-            return out
+        for module, candidats in par_module.items():
+            ident = match_period([(i, p) for i, p, _v in candidats], periode)
+            if ident is None:
+                continue
+            version = next((v for i, _p, v in candidats if i == ident), "")
+            contenu = _contenu_erp_donnees(ident, version)
+            if contenu is not None:
+                out[module] = contenu
     except Exception as exc:
         diag_ref.alert(f"Lecture `erp_donnees` ({periode}) impossible : {type(exc).__name__}.")
         return {}
+    return out
 
 
 def signature_etudes():
-    """Empreinte légère du contenu de `erp_etudes` (sans les payloads).
+    """Empreinte légère du contenu de `erp_etudes` (sans les payloads), lue une fois par exécution.
 
     Sert de clé de cache : la lecture des payloads n'est refaite que lorsqu'un
     achat, une synchronisation ou un changement de lisibilité a réellement eu
-    lieu. Aucun délai de péremption n'est nécessaire, donc aucune donnée
-    périmée ne peut être servie juste après un achat.
+    lieu. Elle inclut la date de synchronisation (`fetched_at`) : l'upsert du
+    scraper conserve l'identifiant d'une étude resynchronisée, si bien qu'une
+    empreinte limitée aux identifiants ne voyait pas un contenu modifié.
     """
-    if engine is None:
-        return ()
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text("SELECT id, periode, study_id, read_allowed FROM erp_etudes ORDER BY id ASC")
-            ).all()
-        return tuple((r[0], str(r[1] or ""), r[2], bool(r[3])) for r in rows)
-    except Exception as exc:
-        diag_ref.alert(f"Lecture `erp_etudes` impossible : {type(exc).__name__}.")
-        return ()
-
-
-@st.cache_data(show_spinner=False)
-def charger_toutes_etudes(_signature):
-    """Toutes les études achetées et lisibles, groupées par période normalisée.
-
-    Une seule requête par changement de contenu : le regroupement se fait en
-    mémoire, ce qui évite à la fois une requête par période et un cache qui
-    servirait des données périmées.
-    """
-    if engine is None or not _signature:
-        return {}
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    "SELECT periode, study_id, payload FROM erp_etudes "
-                    "WHERE read_allowed = 1 ORDER BY id ASC"
+    if "sig_etudes" not in _MEMO_EXECUTION:
+        signature = ()
+        if engine is not None:
+            try:
+                rows = _lire_premiere((
+                    "SELECT id, periode, study_id, read_allowed, fetched_at FROM erp_etudes ORDER BY id ASC",
+                    "SELECT id, periode, study_id, read_allowed FROM erp_etudes ORDER BY id ASC",
+                ))
+                signature = tuple(
+                    (r[0], str(r[1] or ""), r[2], bool(r[3]), str(r[4]) if len(r) > 4 else "") for r in rows
                 )
-            ).mappings().all()
-    except Exception as exc:
-        diag_ref.alert(f"Lecture `erp_etudes` impossible : {type(exc).__name__}.")
-        return {}
+            except Exception as exc:
+                diag_ref.alert(f"Lecture `erp_etudes` impossible : {type(exc).__name__}.")
+        _MEMO_EXECUTION["sig_etudes"] = signature
+    return _MEMO_EXECUTION["sig_etudes"]
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def _etudes_lisibles(empreinte: str):
+    """Études lisibles groupées par période normalisée, relues seulement si `empreinte` change.
+
+    Le paramètre n'a PAS de tiret bas : Streamlit exclut de la clé de cache les
+    paramètres préfixés par « _ ». C'était le cas de l'ancienne signature, si
+    bien que le cache ignorait les achats et resynchronisations jusqu'au
+    redémarrage du serveur. Une erreur de lecture remonte (jamais mise en cache).
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT periode, study_id, payload FROM erp_etudes WHERE read_allowed = 1 ORDER BY id ASC")
+        ).mappings().all()
     groupes: dict[str, dict[str, object]] = {}
     for r in rows:
         cle = normalize_period(r.get("periode"))
@@ -1180,6 +1209,24 @@ def charger_toutes_etudes(_signature):
         if isinstance(payload, dict) and payload:
             groupes.setdefault(cle, {})[f"etude_{r.get('study_id')}"] = payload
     return groupes
+
+
+def charger_toutes_etudes(signature=None):
+    """Toutes les études achetées et lisibles, groupées par période normalisée.
+
+    Une seule lecture par exécution (mémo) et une seule requête par
+    changement réel de contenu (cache indexé par l'empreinte de la table).
+    """
+    if "etudes" not in _MEMO_EXECUTION:
+        signature = signature_etudes() if signature is None else signature
+        groupes = {}
+        if engine is not None and signature:
+            try:
+                groupes = _etudes_lisibles(_empreinte(signature))
+            except Exception as exc:
+                diag_ref.alert(f"Lecture `erp_etudes` impossible : {type(exc).__name__}.")
+        _MEMO_EXECUTION["etudes"] = groupes
+    return _MEMO_EXECUTION["etudes"]
 
 
 def charger_etudes_periode(periode, groupes=None):

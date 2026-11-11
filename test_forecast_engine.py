@@ -136,3 +136,18 @@ def test_realistic_wrapped_dump_supports_seasonal_forecast():
     f, _ = build_12m_forecast(sales, struct, "Année 1 - Janvier")
     assert f.loc[f["periode"] == "Année 1 - Juillet", "Total unités"].iloc[0] != f.loc[f["periode"] == "Année 1 - Janvier", "Total unités"].iloc[0]
     assert sum(potential.values()) > 0
+
+
+def test_ventes_mensuelles_multi_mois_lit_le_mois_du_document():
+    """L'étude « Ventes mensuelles » publie plusieurs mois : la période reçoit la ligne
+    de son propre mois (le plus récent), comme study_ops.ventes_mensuelles — et non
+    la première ligne du tableau (janvier), ce qui décalait toutes les prévisions."""
+    import study_ops
+    payload = {"studyId": "ensaacvm", "sales": [
+        {"month": 13, "monthlySalesByProducts": [{"productId": "MONO_F", "sales": 2100}]},
+        {"month": 14, "monthlySalesByProducts": [{"productId": "MONO_F", "sales": 2300}]},
+        {"month": 15, "monthlySalesByProducts": [{"productId": "MONO_F", "sales": 2900}]},
+    ]}
+    h = extract_own_sales_history({}, study_data={"Année 1 - Mars": {"ensaacvm": payload}})
+    assert h.iloc[0]["Integral 7"] == 2900
+    assert study_ops.ventes_par_libelle({"etude_ensaacvm": payload})["Integral 7"] == h.iloc[0]["Integral 7"]

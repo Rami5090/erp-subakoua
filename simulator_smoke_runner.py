@@ -13,6 +13,7 @@ import os
 import runpy
 import sqlite3
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -21,13 +22,16 @@ sys.path.insert(0, str(ROOT))
 
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "aout_sans_juillet"
 LOG: dict = {"metrics": [], "warnings": [], "errors": [], "success": [], "captions": [], "inputs": {},
-             "tables": [], "charts": 0, "images": 0, "downloads": []}
+             "tables": [], "charts": 0, "images": 0, "downloads": [], "sql_requetes": 0}
 
 #: Leviers du simulateur à surcharger (clé session_state -> valeur), ex.
 #: SIM_DECISIONS='{"sim_ced_dec": 2}'. S'applique comme valeur par défaut des
 #: widgets : le simulateur purge ses leviers au changement de contexte, une
 #: valeur injectée dans session_state serait donc effacée avant d'être lue.
 OVERRIDES: dict = {}
+
+#: Cache partagé entre exécutions successives du script (SIM_CACHE=1).
+CACHE_GLOBAL: dict = {}
 
 
 # --------------------------------------------------------------------------- Streamlit factice
@@ -187,11 +191,41 @@ class FakeStreamlit(types.ModuleType):
         self.sidebar = Stub(self.session_state, sidebar=True)
 
     def cache_resource(self, *a, **k):
-        if a and callable(a[0]):
-            return a[0]
-        return lambda f: f
+        return self._cache(a, copie=False)
 
-    cache_data = cache_resource
+    def cache_data(self, *a, **k):
+        return self._cache(a, copie=True)
+
+    @staticmethod
+    def _cache(a, copie):
+        """Sans SIM_CACHE : pas de cache (comportement historique du banc d'essai).
+
+        Avec SIM_CACHE=1 : imite Streamlit — la clé est le nom qualifié de la
+        fonction et ses paramètres SANS tiret bas ; le cache survit d'une
+        exécution du script à l'autre (SIM_REPEAT) ; cache_data rend une copie.
+        """
+        import copy
+        import inspect
+
+        def decorer(f):
+            if os.environ.get("SIM_CACHE") != "1":
+                return f
+            signature = inspect.signature(f)
+
+            def enveloppe(*args, **kwargs):
+                lies = signature.bind(*args, **kwargs)
+                lies.apply_defaults()
+                cle = (f.__qualname__, tuple((n, repr(v)) for n, v in lies.arguments.items() if not n.startswith("_")))
+                if cle not in CACHE_GLOBAL:
+                    CACHE_GLOBAL[cle] = f(*args, **kwargs)
+                return copy.deepcopy(CACHE_GLOBAL[cle]) if copie else CACHE_GLOBAL[cle]
+
+            enveloppe.clear = CACHE_GLOBAL.clear
+            return enveloppe
+
+        if a and callable(a[0]):
+            return decorer(a[0])
+        return decorer
 
     def __getattr__(self, name):
         return getattr(self._main, name)
@@ -224,12 +258,18 @@ class FakeConn:
     def __enter__(self): return self
     def __exit__(self, *a): return False
     def execute(self, sql, params=None):
+        LOG["sql_requetes"] += 1          # mesure du nombre d'allers-retours avec la base
         return FakeResult(self.db.execute(_sql_pour_sqlite(str(sql)), params or {}))
 
 
 class FakeEngine(sqlite3.Connection):
     def connect(self): return FakeConn(self)
     begin = connect
+
+    def cursor(self, *a, **k):
+        # pd.read_sql ouvre un curseur par requête : elles sont comptées aussi.
+        LOG["sql_requetes"] += 1
+        return super().cursor(*a, **k)
 
 
 def build_db() -> FakeEngine:
@@ -485,16 +525,28 @@ def main():
         os.environ[k] = v
 
     os.environ.setdefault("SIM_MONTH", "Août N+1")
-    try:
-        # SIM_PAGE=6_Analyse_Quantitative.py exécute une page de `pages/`
-        # au lieu du cockpit, avec la même base SQLite en mémoire.
-        page = os.environ.get("SIM_PAGE", "")
-        if page:
-            runpy.run_path(str(ROOT / "pages" / page), run_name="__main__")
-        else:
-            runpy.run_path(str(ROOT / "erp_engine.py"), run_name="__main__")
-    except SystemExit:
-        pass
+    # SIM_PAGE=6_Analyse_Quantitative.py exécute une page de `pages/`
+    # au lieu du cockpit, avec la même base SQLite en mémoire.
+    page = os.environ.get("SIM_PAGE", "")
+    script = ROOT / "pages" / page if page else ROOT / "erp_engine.py"
+    LOG["sql_par_execution"], LOG["duree_par_execution"] = [], []
+    repetitions = max(1, int(os.environ.get("SIM_REPEAT", "1") or 1))
+    for rang in range(repetitions):
+        if rang and os.environ.get("SIM_ENTRE_EXECUTIONS"):
+            # Modification de la base entre deux interactions (ex. resynchronisation d'une étude).
+            db.executescript(os.environ["SIM_ENTRE_EXECUTIONS"])
+            db.commit()
+        # Chaque exécution imite une interaction : le journal ne garde que la dernière.
+        for _cle in ("metrics", "warnings", "errors", "success", "captions", "tables", "downloads"):
+            LOG[_cle] = []
+        LOG["charts"], LOG["images"] = 0, 0
+        avant, debut = LOG["sql_requetes"], time.perf_counter()
+        try:
+            runpy.run_path(str(script), run_name="__main__")
+        except SystemExit:
+            pass
+        LOG["sql_par_execution"].append(LOG["sql_requetes"] - avant)
+        LOG["duree_par_execution"].append(round(time.perf_counter() - debut, 3))
     LOG["session_keys"] = sorted(fake.session_state)
     try:
         LOG["finances"] = [

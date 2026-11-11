@@ -183,3 +183,14 @@ def test_missing_studies():
     assert "bankStatements" not in ids
     couts = next(m for m in missing if m["study_id"] == "productionCostDetailStudy")
     assert couts["price"] == 50.0 and "Marges" in couts["pourquoi"]
+
+
+def test_capitaux_propres_lus_dans_resultats_si_le_bilan_ne_les_porte_pas():
+    """Une étude « Bilan détaillé » sans total des capitaux propres ne masque plus
+    l'étude « Résultats » ; idem pour l'épargne et le bilan d'ouverture."""
+    from finance_engine import extract_capitaux_propres, extract_savings_balance
+    data = {"etude_peeedsbidt": {"empr16": 100000.0}, "etude_companyResults": {"equity": 2500000.0}}
+    assert float(extract_capitaux_propres(data)) == 2500000.0
+    data = {"etude_peeedsbidt": {"empr16": 100000.0},
+            "etude_initialBalanceSheet": {"po215Net": 300000.0}}
+    assert float(extract_savings_balance(data)) == 300000.0

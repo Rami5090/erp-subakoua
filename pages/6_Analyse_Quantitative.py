@@ -18,12 +18,10 @@ combler une donnée manquante.
 """
 from __future__ import annotations
 
-import json
 
 import altair as alt
 import pandas as pd
 import streamlit as st
-from sqlalchemy import text
 
 from auth import setup as auth_setup
 from break_even_engine import (
@@ -43,9 +41,11 @@ from constants import (
     TOURS_PERIODES,
 )
 from db_utils import get_read_engine
+import depot_donnees as depot
 from finance_engine import extract_financial_state
 from forecast_engine import (
     build_period_data,
+    build_study_data,
     extract_own_sales_history,
     extract_structural_seasonality,
     latest_observed_period,
@@ -81,26 +81,13 @@ periode_m1 = TOURS_PERIODES[tour_m1]
 
 
 # --------------------------------------------------------------------------- accès base
-def _decode(value):
-    for _ in range(2):
-        if isinstance(value, (bytes, bytearray)):
-            value = value.decode("utf-8", errors="replace")
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except Exception:
-                return {}
-        else:
-            break
-    return value if isinstance(value, dict) else {}
+# Lecture partagée (depot_donnees) : même décodage JSON et même tolérance
+# aux tables absentes que les autres pages.
+_decode = depot.decoder_json
 
 
 def _rows(sql: str, params: dict | None = None) -> list[dict]:
-    try:
-        with engine.connect() as conn:
-            return [dict(r) for r in conn.execute(text(sql), params or {}).mappings().all()]
-    except Exception:
-        return []
+    return depot.lire_lignes(engine, sql, params)[0]
 
 
 def _table(name: str) -> pd.DataFrame:
@@ -171,7 +158,10 @@ ventes = {k: float(ventes_m1.get(f"Ventes_{k.upper()}", 0) or 0) for k in PRODUC
 prevision = {}
 try:
     period_data = build_period_data(rows_donnees)
-    study_data = {}
+    # Les études achetées (dont « Ventes mensuelles ») alimentent la prévision,
+    # comme dans le pilotage 12 mois et le cockpit : sans elles, la demande de la
+    # page reposait sur les seuls extraits historiques.
+    study_data = build_study_data(rows_etudes)
     ventes_hist = extract_own_sales_history(period_data, study_data=study_data)
     struct = extract_structural_seasonality(period_data, study_data=study_data)
     anchor = latest_observed_period(ventes_hist)

@@ -322,9 +322,15 @@ def _extract_sales_from_api_payload(payload: Mapping[str, Any]) -> dict[str, flo
     # --- Approche 1 : format Subakoua standard (ensaacvm) ---
     sales = payload.get("sales")
     if isinstance(sales, list):
-        for item in sales:
-            if not isinstance(item, Mapping):
-                continue
+        items = [item for item in sales if isinstance(item, Mapping)]
+        # L'étude « Ventes mensuelles » publie un tableau de plusieurs mois : seule
+        # la ligne du mois du document (le plus récent) décrit la période, comme
+        # dans `study_ops.ventes_mensuelles`. Lire la première ligne attribuait les
+        # ventes de janvier à chaque mois suivant.
+        avec_mois = [item for item in items if _num(item.get("month")) is not None]
+        if avec_mois:
+            items = sorted(avec_mois, key=lambda item: _num(item.get("month")), reverse=True)
+        for item in items:
             monthly = item.get("monthlySalesByProducts")
             if isinstance(monthly, list):
                 for p in monthly:

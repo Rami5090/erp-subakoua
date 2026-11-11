@@ -17,12 +17,10 @@ empirique (erreur du backtest), pas un intervalle de confiance statistique.
 """
 from __future__ import annotations
 
-import json
 
 import altair as alt
 import pandas as pd
 import streamlit as st
-from sqlalchemy import text
 
 from auth import setup as auth_setup
 from constants import PRODUCT_KEY_TO_NAME, PRODUCT_KEYS, TOURS_PERIODES
@@ -35,6 +33,7 @@ from cours_engine import (
     trier_cours,
 )
 from db_utils import get_read_engine
+import depot_donnees as depot
 from livrable_finance import PRIX_TO_PRODUIT, prix_marche_par_produit
 
 
@@ -72,27 +71,16 @@ tour = st.selectbox(
 periode = TOURS_PERIODES[int(tour)]
 
 
-def _decode(value):
-    for _ in range(2):
-        if isinstance(value, (bytes, bytearray)):
-            value = value.decode("utf-8", errors="replace")
-        if isinstance(value, str):
-            try:
-                value = json.loads(value)
-            except Exception:
-                return {}
-        else:
-            break
-    return value if isinstance(value, dict) else {}
+# Lecture partagée (depot_donnees) : même décodage JSON et même tolérance
+# aux tables absentes que les autres pages.
+_decode = depot.decoder_json
 
 
 def _rows(sql: str, params: dict | None = None) -> list[dict]:
-    try:
-        with engine.connect() as conn:
-            return [dict(r) for r in conn.execute(text(sql), params or {}).mappings().all()]
-    except Exception as exc:
-        st.warning(f"Lecture impossible : {type(exc).__name__}.")
-        return []
+    lignes, erreur = depot.lire_lignes(engine, sql, params)
+    if erreur:
+        st.warning(f"Lecture impossible : {erreur}.")
+    return lignes
 
 
 def _fmt_n(valeur, dec: int = 2) -> str:
