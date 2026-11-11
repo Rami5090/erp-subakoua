@@ -129,6 +129,7 @@ def _appliquer_brouillon() -> None:
         st.session_state[f"rp_{champ}"] = getattr(contenu, champ)
     st.session_state["rp_outils_erp"] = [o for o in contenu.outils_erp if o in NOMS_OUTILS]
     st.session_state["rp_outils_gp"] = [o for o in contenu.outils_gp if o in R.OUTILS_GP]
+    st.session_state["rp_usages_ia"] = list(contenu.usages_ia)
     st.session_state["rp_membres_base"] = pd.DataFrame(
         [{"Nom": m.nom, "Rôle": m.role, "Missions": m.missions} for m in contenu.membres], columns=COLONNES_MEMBRES)
     st.session_state.pop("rp_membres", None)
@@ -214,6 +215,16 @@ with tab_id:
         st.image(logo, width=160)
     else:
         st.caption("Sans logo, un emplacement « À compléter » est réservé sur la page de garde.")
+    fichier_logo_etab = st.file_uploader("Logo de l'établissement (IUT, université) — facultatif, page de garde",
+                                         type=["png", "jpg", "jpeg"], key="rp_logo_etab_fichier")
+    logo_etablissement: bytes | None = None
+    if fichier_logo_etab is not None:
+        try:
+            contenu_logo_etab = fichier_logo_etab.getvalue()
+            logo_etablissement = (bytes(contenu_logo_etab) if isinstance(contenu_logo_etab, (bytes, bytearray))
+                                  else None)
+        except Exception:
+            logo_etablissement = None
 
     st.markdown("**Codes couleurs**")
     choix_charte = st.radio("Charte graphique", [*CHARTES, "Personnalisée"], horizontal=True, key="rp_charte")
@@ -291,17 +302,34 @@ def _contenu_courant(contexte_equipe: str) -> tuple[R.ContenuRapport, list[str]]
 
 MODE_API = "Automatique (API Claude)"
 MODE_MANUEL = "Manuel : claude.ai, sans clé API"
+PORTEE_TOUT = "Tout le rapport (partie collective et parties individuelles)"
+PORTEE_COLLECTIF = "Partie collective seulement"
+PORTEE_INDIVIDUEL = "Toutes les parties individuelles"
+PREFIXE_MEMBRE = "Partie individuelle : "
+EFFORTS_PROPOSES = {"low": "Économe (low)", "medium": "Standard (medium)", "high": "Approfondi (high)"}
+
+
+def _dollars(montant: float) -> str:
+    return f"{montant:.2f}".replace(".", ",") + " $"
 
 
 def _appliquer_redaction(redaction: RR.Redaction, demande: RR.Demande, remplacer: bool) -> None:
-    """Écrit les textes produits dans les champs, avant leur création, et garde le bilan affiché."""
+    """Écrit les textes produits dans les champs, avant leur création, garde le bilan affiché et
+    consigne l'usage de l'IA (déclaration pré-remplie en annexe du rapport)."""
     ecritures = RR.mises_a_jour(redaction, st.session_state, remplacer)
     for cle, texte_redige in ecritures.items():
         st.session_state[cle] = texte_redige
+    if ecritures:
+        usages = [u for u in (st.session_state.get("rp_usages_ia") or []) if isinstance(u, str)]
+        usages.append(RR.declaration_usage(redaction, len(ecritures), date.today().strftime("%d/%m/%Y")))
+        st.session_state["rp_usages_ia"] = usages[-10:]
     st.session_state["rp_redaction_bilan"] = {
         "champs": len(ecritures), "modele": redaction.modele, "notes": list(redaction.notes),
         "a_completer": RR.passages_a_completer(redaction),
         "a_verifier": RR.chiffres_non_verifies(redaction, demande),
+        "cout": RR.cout_reel(redaction),
+        "jetons": (redaction.jetons_entree, redaction.jetons_cache_lus, redaction.jetons_cache_ecrits,
+                   redaction.jetons_sortie),
     }
 
 
@@ -321,20 +349,46 @@ with tab_redaction:
         help="Stratégie et intentions, faits marquants, organisation de l'équipe, et une phrase par membre "
              "(contribution, réussite, difficulté). Plus il est précis, moins il restera de passages à compléter.",
     ))
-    st.caption(f"{R.nombre_mots(contexte)} mot(s) · décrivez ce que les chiffres ne disent pas : vos intentions, "
-               "vos arbitrages, ce que chacun a fait. Les chiffres viennent de l'audit.")
-    o1, o2, o3 = st.columns(3)
-    rediger_collectif = bool(o1.checkbox("Partie collective", value=True, key="rp_red_collectif"))
-    rediger_individuel = bool(o2.checkbox("Parties individuelles", value=True, key="rp_red_individuel"))
-    remplacer_textes = bool(o3.checkbox(
-        "Remplacer les textes déjà rédigés", value=False, key="rp_red_remplacer",
-        help="Décoché : seuls les champs vides sont rédigés ; les textes existants servent de contexte."))
+    st.caption(f"{R.nombre_mots(contexte)} mot(s) · {R.fmt_nombre(len(contexte.strip()))} / "
+               f"{R.fmt_nombre(RR.CONTEXTE_MAX)} caractères · décrivez ce que les chiffres ne disent pas : vos "
+               "intentions, vos arbitrages, ce que chacun a fait. Les chiffres viennent de l'audit.")
+    if len(contexte.strip()) > RR.CONTEXTE_MAX:
+        st.warning(f"Contexte au-delà de la limite de {R.fmt_nombre(RR.CONTEXTE_MAX)} caractères : la rédaction "
+                   "automatique le refusera. Gardez l'essentiel (intentions, arbitrages, faits marquants, une phrase "
+                   "par membre).")
+    cles_page = [_cle_membre(ligne["Nom"], rang) for rang, ligne in enumerate(membres_lignes)]
+    portees = {PORTEE_TOUT: (True, True, None), PORTEE_COLLECTIF: (True, False, None),
+               PORTEE_INDIVIDUEL: (False, True, None)}
+    for rang, (ligne, cle) in enumerate(zip(membres_lignes, cles_page)):
+        portees[f"{PREFIXE_MEMBRE}{ligne['Nom'] or 'membre ' + str(rang + 1)}"] = (False, True, {cle})
+    if st.session_state.get("rp_red_portee") not in portees:
+        st.session_state["rp_red_portee"] = PORTEE_TOUT
+    o1, o2 = st.columns([2, 1])
+    portee = o1.selectbox(
+        "À rédiger", list(portees), key="rp_red_portee",
+        help="Première rédaction : tout le rapport en une demande (le moins cher). Pour reprendre une partie, "
+             "choisissez-la seule : la demande est plus courte, moins chère et ne risque pas d'être tronquée.")
+    rediger_collectif, rediger_individuel, membres_cibles = portees.get(portee, (True, True, None))
+    with o2:
+        st.write("")
+        remplacer_textes = bool(st.checkbox(
+            "Remplacer les textes déjà rédigés", value=False, key="rp_red_remplacer",
+            help="Décoché : seuls les champs vides sont rédigés ; les textes existants utiles servent de contexte."))
     mode_redaction = st.radio(
         "Mode de rédaction", [MODE_API, MODE_MANUEL], index=0 if config_redaction.api_key else 1,
         horizontal=True, key="rp_red_mode",
         help="Automatique : l'application appelle l'API Claude (clé API et crédits nécessaires). Manuel : vous "
              "copiez la demande dans une conversation claude.ai (offre gratuite ou abonnement), puis collez sa "
              "réponse ici — sans clé ni coût pour l'application.")
+
+    # La demande est reconstruite à chaque exécution (simple mise en forme, sans appel) : son
+    # budget s'affiche avant tout clic, et la réponse collée du mode manuel est lue contre elle.
+    demande_courante = None
+    if contexte.strip():
+        contenu_saisi, cles_membres = _contenu_courant(contexte)
+        demande_courante = RR.preparer_demande(audit, contenu_saisi, cles_membres, collectif=rediger_collectif,
+                                               individuel=rediger_individuel, membres_cibles=membres_cibles,
+                                               remplacer=remplacer_textes)
 
     if mode_redaction == MODE_API:
         if not is_editor():
@@ -343,39 +397,62 @@ with tab_redaction:
         elif not RR.sdk_disponible():
             st.warning("Rédaction automatique indisponible : installez le paquet « anthropic » "
                        "(pip install -r requirements.txt), ou utilisez le mode manuel.")
+        modeles = list(RR.MODELES) + ([config_redaction.modele] if config_redaction.modele not in RR.MODELES else [])
+        efforts = list(EFFORTS_PROPOSES) + ([config_redaction.effort] if config_redaction.effort not in EFFORTS_PROPOSES
+                                            else [])
+        st.session_state.setdefault("rp_red_modele", config_redaction.modele)
+        st.session_state.setdefault("rp_red_effort", config_redaction.effort)
+        r1, r2 = st.columns(2)
+        modele_choisi = r1.selectbox(
+            "Modèle", modeles, key="rp_red_modele",
+            format_func=lambda m: (f"{RR.libelle_modele(m)} — {RR.MODELES[m][1]:g} $ / {RR.MODELES[m][2]:g} $ par "
+                                   "million de jetons (entrée / sortie)" if m in RR.MODELES else m),
+            help="Opus 5.5 rédige le mieux ; Sonnet 5.5 coûte deux fois moins, Haiku 5.5 bien moins encore. "
+                 "Le choix vous revient : relisez d'autant plus un brouillon produit par un modèle plus léger.")
+        effort_choisi = r2.radio(
+            "Effort de réflexion", efforts, key="rp_red_effort", horizontal=True,
+            format_func=lambda e: EFFORTS_PROPOSES.get(e, e),
+            help="La réflexion du modèle est facturée comme du texte produit : « Économe » la réduit, pour une "
+                 "rédaction guidée par des consignes précises.")
+        config_appel = replace(config_redaction, modele=modele_choisi or config_redaction.modele,
+                               effort=effort_choisi or config_redaction.effort)
+        if demande_courante is not None and demande_courante.nb_champs:
+            budget = RR.estimer_budget(demande_courante, config_appel.effort)
+            couts = RR.cout_estime(budget, config_appel.modele)
+            st.caption(
+                f"📏 Budget de cette demande : {demande_courante.nb_champs} champ(s) · ≈ "
+                f"{R.fmt_nombre(budget.jetons_entree)} jetons envoyés (limite {R.fmt_nombre(RR.BUDGET_ENTREE)}) · ≈ "
+                f"{R.fmt_nombre(budget.jetons_texte)} jetons de texte attendus · plafond de sortie "
+                f"{R.fmt_nombre(budget.max_tokens)} jetons, réflexion comprise."
+                + (f" Coût estimé : {_dollars(couts[0])} hors réflexion, {_dollars(couts[1])} au plus."
+                   if couts else ""))
+            for probleme in RR.depassements(demande_courante, budget):
+                st.warning(probleme)
         clic_redaction = st.button("✨ Rédiger les paragraphes", type="primary", disabled=not redaction_possible)
         if clic_redaction and not redaction_possible:
             st.error("Rédaction automatique réservée aux utilisateurs connectés.")
-        elif clic_redaction and not contexte.strip():
+        elif clic_redaction and demande_courante is None:
             st.warning("Rédigez d'abord le paragraphe de contexte : c'est la source principale du brouillon.")
+        elif clic_redaction and demande_courante.nb_champs == 0:
+            st.info("Rien à rédiger : les champs sélectionnés sont déjà remplis "
+                    "(cochez « Remplacer les textes déjà rédigés » pour les réécrire).")
         elif clic_redaction:
-            contenu_saisi, cles_membres = _contenu_courant(contexte)
-            demande = RR.preparer_demande(audit, contenu_saisi, cles_membres, collectif=rediger_collectif,
-                                          individuel=rediger_individuel, remplacer=remplacer_textes)
-            if demande.nb_champs == 0:
-                st.info("Rien à rédiger : les champs sélectionnés sont déjà remplis "
-                        "(cochez « Remplacer les textes déjà rédigés » pour les réécrire).")
-            else:
-                redaction = None
-                with st.spinner(f"Rédaction de {demande.nb_champs} champ(s) par Claude…"):
-                    try:
-                        redaction = RR.rediger(demande, config_redaction)
-                    except RR.ErreurRedaction as exc:
-                        st.error(str(exc))
-                if redaction is not None:
-                    _appliquer_redaction(redaction, demande, remplacer_textes)
-        st.caption(f"Modèle : {config_redaction.modele} · effort {config_redaction.effort}. Le contexte, les "
-                   "paramètres du rapport et les chiffres de l'audit sont envoyés à l'API d'Anthropic ; rien "
+            redaction = None
+            with st.spinner(f"Rédaction de {demande_courante.nb_champs} champ(s) par Claude…"):
+                try:
+                    redaction = RR.rediger(demande_courante, config_appel)
+                except RR.ErreurRedaction as exc:
+                    st.error(str(exc))
+            if redaction is not None:
+                _appliquer_redaction(redaction, demande_courante, remplacer_textes)
+        st.caption(f"Modèle : {config_appel.modele} · effort {config_appel.effort}. Le contexte, les paramètres du "
+                   "rapport et les chiffres de l'audit sont envoyés à l'API d'Anthropic ; les chiffres de l'audit, "
+                   "identiques d'une demande à l'autre, sont mis en cache 5 minutes (relance moins chère). Rien "
                    "n'est écrit en base.")
     else:
-        # Mode manuel : aucun appel ni coût pour l'application, donc ouvert à tous. La demande est
-        # reconstruite à chaque exécution ; la réponse collée est lue contre elle (membres reconnus
-        # par leur nom, champs rédigés depuis la copie jamais écrasés).
-        demande_manuelle = None
-        if contexte.strip():
-            contenu_saisi, cles_membres = _contenu_courant(contexte)
-            demande_manuelle = RR.preparer_demande(audit, contenu_saisi, cles_membres, collectif=rediger_collectif,
-                                                   individuel=rediger_individuel, remplacer=remplacer_textes)
+        # Mode manuel : aucun appel ni coût pour l'application, donc ouvert à tous. La réponse collée
+        # est lue contre la demande (membres reconnus par leur nom, champs rédigés jamais écrasés).
+        demande_manuelle = demande_courante
         st.markdown("**① Copiez la demande** (bouton en haut à droite du cadre) dans une nouvelle conversation "
                     "sur claude.ai, puis envoyez-la.")
         if demande_manuelle is None:
@@ -388,8 +465,12 @@ with tab_redaction:
             st.code(texte_demande, language=None, wrap_lines=True, height=260)
             st.download_button("⬇️ Télécharger la demande (.txt)", data=texte_demande.encode("utf-8"),
                                file_name="demande_redaction_rapport.txt", mime="text/plain")
-            st.caption(f"{demande_manuelle.nb_champs} champ(s) à rédiger. Si vous modifiez ensuite l'équipe ou "
-                       "les options, copiez de nouveau la demande.")
+            st.caption(f"{demande_manuelle.nb_champs} champ(s) à rédiger · {R.fmt_nombre(len(texte_demande))} "
+                       f"caractères (≈ {R.fmt_nombre(RR.estimer_jetons(texte_demande))} jetons). Si vous modifiez "
+                       "ensuite l'équipe ou les options, copiez de nouveau la demande.")
+            if demande_manuelle.nb_champs > 20:
+                st.info("Demande longue : si claude.ai coupe sa réponse (offre gratuite), rédigez partie par partie "
+                        "avec le menu « À rédiger ».")
         st.markdown("**② Collez la réponse de Claude**, puis intégrez-la : les champs vides sont remplis, vos "
                     "textes conservés (sauf « Remplacer »).")
         reponse_collee = _texte(st.text_area(
@@ -413,6 +494,11 @@ with tab_redaction:
         st.success(f"✨ Dernière rédaction : {bilan_redaction.get('champs', 0)} champ(s) rempli(s) par "
                    f"{bilan_redaction.get('modele') or 'Claude'}. Relisez-les dans les onglets « 🧭 Partie "
                    "collective » et « 🙋 Parties individuelles ».")
+        jetons = bilan_redaction.get("jetons") or (None, 0, 0, None)
+        if bilan_redaction.get("cout") is not None and jetons[0] is not None:
+            st.caption(f"Consommation réelle : {R.fmt_nombre(jetons[0] + jetons[1] + jetons[2])} jetons envoyés, dont "
+                       f"{R.fmt_nombre(jetons[1])} lus en cache · {R.fmt_nombre(jetons[3])} jetons produits (réflexion "
+                       f"comprise) · coût ≈ {_dollars(bilan_redaction['cout'])}.")
         for _note in bilan_redaction.get("notes") or []:
             st.info(_note)
         if bilan_redaction.get("a_completer"):
@@ -426,9 +512,9 @@ with tab_coll:
     st.info("Rédigez ici la partie collective. Un champ vide reste signalé « À COMPLÉTER » (surligné) dans le Word. "
             "Mise en forme : une ligne par paragraphe, « - » en début de ligne pour une puce, **gras**.")
     for champ, libelle, mini in CHAMPS_COLLECTIFS:
-        saisies[champ] = _texte(st.text_area(libelle, key=f"rp_{champ}", height=170, help=R.CONSIGNES[champ],
-                                             placeholder=R.CONSIGNES[champ]))
-        st.caption(f"{R.nombre_mots(saisies[champ])} mot(s) · repère : au moins {mini}")
+        saisies[champ] = _texte(st.text_area(libelle, key=f"rp_{champ}", height=170 if mini >= 60 else 90,
+                                             help=R.CONSIGNES[champ], placeholder=R.CONSIGNES[champ]))
+        st.caption(f"{R.nombre_mots(saisies[champ])} mot(s) · repère : environ {mini}")
         if champ == "strategie" and (audit.lecture_strategique or audit.chronologie):
             with st.expander("💡 Repères de l'audit pour expliquer la stratégie"):
                 for ligne in audit.lecture_strategique:
@@ -478,6 +564,7 @@ contenu = R.ContenuRapport(
     outils_erp=tuple(o for o in (outils_erp if isinstance(outils_erp, list) else NOMS_OUTILS) if o in NOMS_OUTILS),
     outils_gp=tuple(o for o in (outils_gp if isinstance(outils_gp, list) else []) if o in R.OUTILS_GP),
     membres=tuple(membres),
+    usages_ia=tuple(u for u in (st.session_state.get("rp_usages_ia") or []) if isinstance(u, str)),
 )
 
 # --------------------------------------------------------------------------- aperçu de l'audit
@@ -555,14 +642,16 @@ with tab_gen:
     st.dataframe(pd.DataFrame([{"Partie": c.partie, "Critère": c.critere, "Statut": STATUTS.get(c.statut, c.statut),
                                 "Détail": c.detail} for c in criteres]), hide_index=True, width="stretch")
 
-    # Le paragraphe de contexte n'apparaît pas dans le Word : le modifier ne rend pas le document obsolète.
+    # Le paragraphe de contexte n'apparaît dans le Word qu'avec la déclaration d'usage de l'IA (annexe E) :
+    # sans rédaction assistée, le modifier ne rend pas le document obsolète.
     empreinte = hashlib.sha1(
-        (replace(contenu, contexte="").to_json() + repr(couleurs) + debut + fin + str(numero) + cle_donnees
-         + hashlib.sha1(logo or b"").hexdigest()).encode("utf-8")).hexdigest()
+        ((contenu if contenu.usages_ia else replace(contenu, contexte="")).to_json() + repr(couleurs) + debut + fin
+         + str(numero) + cle_donnees + hashlib.sha1(logo or b"").hexdigest()
+         + hashlib.sha1(logo_etablissement or b"").hexdigest()).encode("utf-8")).hexdigest()
     nom_fichier = f"Rapport_professionnel_{_slug(contenu.entreprise) or 'subakoua'}_{date.today():%Y%m%d}"
     if st.button("📄 Générer le rapport Word", type="primary", disabled=not DOCX_DISPONIBLE):
         try:
-            octets = generer_rapport_docx(audit, contenu, graphiques, charte, logo)
+            octets = generer_rapport_docx(audit, contenu, graphiques, charte, logo, logo_etablissement)
             st.session_state["rp_docx"] = {"octets": octets, "nom": nom_fichier + ".docx", "empreinte": empreinte,
                                            "a_completer": compter_a_completer(octets)}
         except Exception as exc:
@@ -582,7 +671,8 @@ with tab_gen:
                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                            type="primary")
     st.info("Finalisation : ouvrez le fichier dans Word → acceptez la mise à jour des champs (sommaire, pagination) "
-            "→ complétez les passages surlignés → relisez → Fichier ▸ Exporter ▸ PDF. Un seul dépôt par groupe.")
+            "→ complétez les passages surlignés → relisez → complétez et signez la déclaration d'usage de l'IA "
+            "(annexe E) → Fichier ▸ Exporter ▸ PDF. Un seul dépôt par groupe.")
     d1, d2 = st.columns(2)
     d1.download_button("💾 Enregistrer le brouillon (.json)", data=contenu.to_json().encode("utf-8"),
                        file_name=f"brouillon_{nom_fichier}.json", mime="application/json")

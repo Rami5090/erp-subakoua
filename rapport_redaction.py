@@ -20,6 +20,19 @@ traçable) :
   avant de générer le Word ; par défaut, un champ déjà rédigé n'est pas
   remplacé — il est transmis au modèle pour que le reste reste cohérent.
 
+Budget de ressources (par demande, voir les constantes ci-dessous) :
+
+* la demande est compacte : JSON sans indentation, consignes individuelles
+  écrites une seule fois, indicateurs dédoublonnés, outils résumés à leur apport,
+  et seules les informations utiles aux champs demandés sont envoyées ;
+* les faits de l'audit, identiques d'une demande à l'autre, forment le préfixe
+  mis en cache (relance à prix réduit pendant 5 minutes) ;
+* le contexte est plafonné (`CONTEXTE_MAX`), l'entrée estimée aussi
+  (`BUDGET_ENTREE`) ; la sortie est plafonnée d'après les longueurs demandées
+  (`estimer_budget`) au lieu d'un plafond fixe ;
+* le coût est estimé avant l'appel et mesuré après (`cout_estime`, `cout_reel`) ;
+* la rédaction se fait au choix pour tout le rapport ou partie par partie.
+
 Deux modes, mêmes consignes et mêmes garde-fous :
 
 * **automatique** (`rediger`) : appel à l'API Claude, qui demande une clé API et
@@ -33,11 +46,12 @@ Tout est pur (testable sans réseau) sauf `rediger`, dont le client est injectab
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import unicodedata
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 import rapport_engine as R
 
@@ -49,29 +63,52 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 MODELES_AVEC_REPLI = frozenset({"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5",
                                 "claude-fable-5-2", "claude-fable-5-1"})
 BETA_REPLI = "server-side-fallback-2026-07-01"
-#: Plafond de sortie (réflexion comprise) ; la requête est diffusée en flux, sans risque de délai.
-MAX_TOKENS = 64_000
+
+#: Modèles proposés dans la page : nom affiché et tarifs publics de l'API Anthropic en $ par
+#: million de jetons (entrée, sortie, lecture du cache ; None = non publié ici). Tarifs relevés
+#: en novembre 2026 : à mettre à jour s'ils changent.
+MODELES: dict[str, tuple[str, float, float, float | None]] = {
+    "claude-opus-5-5": ("Claude Opus 5.5", 4.00, 20.00, 0.20),
+    "claude-sonnet-5-5": ("Claude Sonnet 5.5", 2.00, 10.00, 0.10),
+    "claude-haiku-5-5": ("Claude Haiku 5.5", 0.10, 0.50, None),
+}
+
+# --------------------------------------------------------------------------- budget de ressources
+#: Estimations prudentes pour un texte français mêlé de JSON (mesure exacte : `count_tokens`).
+CARACTERES_PAR_JETON = 3.0
+JETONS_PAR_MOT = 2.0
+JETONS_PAR_CHAMP = 30          # clés JSON, guillemets, échappements
+#: Paragraphe de contexte : au-delà, la demande automatique est refusée (≈ 4 000 jetons).
+CONTEXTE_MAX = 12_000
+#: Jetons envoyés par demande automatique (estimation) : au-delà, rédiger partie par partie.
+BUDGET_ENTREE = 15_000
+#: Marge de réflexion ajoutée au plafond de sortie, selon l'effort (la réflexion est facturée
+#: comme la sortie ; Opus 5.5 réfléchit toujours, l'effort en règle la profondeur).
+REFLEXION = {"low": 8_000, "medium": 16_000, "high": 24_000, "xhigh": 32_000, "max": 48_000}
+PLAFOND_SORTIE = 64_000
 #: Longueur visée (en mots) des champs individuels, sans repère dans la page.
 MOTS_INDIVIDUELS = {"outils": 70, "forces": 70, "faiblesses": 70, "reussites": 80, "erreurs": 80,
                     "mission_specifique": 70, "bilan": 70}
+#: Textes collectifs utiles pour rédiger les parties individuelles (les autres ne sont pas renvoyés).
+COLLECTIF_UTILE_AUX_MEMBRES = ("presentation", "strategie", "prise_de_recul")
 
-SYSTEME = """Tu aides une équipe d'étudiants à rédiger son rapport professionnel de fin d'année. L'équipe a dirigé une entreprise industrielle dans une simulation de gestion : chaque mois, plusieurs entreprises concurrentes y décident de leurs prix, de leur publicité, de leur production, de leurs effectifs et de leur financement sur un même marché. Le rapport est un audit stratégique et opérationnel de l'année, avec une partie collective et une partie individuelle par membre.
+SYSTEME = """Tu aides une équipe d'étudiants à rédiger son rapport professionnel de fin d'année. L'équipe a dirigé une entreprise industrielle de combinaisons de plongée en néoprène dans une simulation de gestion : chaque mois, plusieurs entreprises concurrentes y décident de leurs prix, de leur publicité, de leur production, de leurs effectifs et de leur financement sur un même marché. Le rapport est un audit stratégique et opérationnel de l'année, avec une partie collective et une partie individuelle par membre.
 
 Tu rédiges un brouillon des parties textuelles. L'équipe le relira, le corrigera et se l'appropriera avant de le rendre : ton texte doit être exact, sobre et facile à reprendre.
 
 Tes seules sources sont celles du message :
+- les faits de l'audit (<faits_de_l_audit>), calculés par l'ERP de l'équipe à partir des données du jeu ;
 - le contexte rédigé par l'équipe (<contexte_equipe>) : sa stratégie, son organisation et les faits marquants, vus de l'intérieur ;
 - les paramètres du rapport (<parametres_du_rapport>) : l'entreprise, les membres, leurs rôles, leurs missions et leurs outils ;
-- les faits de l'audit (<faits_de_l_audit>), calculés par l'ERP de l'équipe à partir des données du jeu ;
 - le cas échéant, les textes déjà rédigés par l'équipe (<textes_deja_rediges>) : tes textes doivent rester cohérents avec eux sans les répéter.
 
 Règles de rédaction :
 1. Chiffres : n'écris que des nombres présents dans ces sources, recopiés exactement comme ils y sont écrits (mêmes décimales, même unité). Ne calcule ni écart, ni ratio, ni moyenne : le rapport est évalué et chaque chiffre doit pouvoir être retrouvé dans l'audit.
 2. Faits : n'invente aucune décision, aucun événement, aucune anecdote, aucune qualité ni difficulté personnelle. Quand un champ demande une information que les sources ne donnent pas (une situation concrète, une erreur précise, un ressenti), écris à sa place un marqueur « [À COMPLÉTER : ce que l'équipe doit préciser] » et poursuis la rédaction autour.
-3. Interprétations : la « lecture_strategique » et les pistes d'analyse des constats sont des hypothèses de l'ERP. Reprends-les seulement si le contexte de l'équipe va dans le même sens, et présente-les comme des interprétations.
+3. Interprétations : la « lecture_strategique » de l'audit est une hypothèse de l'ERP. Reprends-la seulement si le contexte de l'équipe va dans le même sens, et présente-la comme une interprétation.
 4. Voix : la partie collective parle au nom de l'équipe (« nous ») ; chaque partie individuelle est écrite à la première personne (« je ») par le membre concerné, à partir de son rôle, de ses missions, de ses outils et des indicateurs de son périmètre.
-5. Consignes et longueur : chaque champ a une consigne et une longueur visée en mots ; respecte la consigne et reste proche de cette longueur. Chaque champ est lu dans sa propre section du rapport, entourée des tableaux et des graphiques de l'ERP : explique et argumente plutôt que d'aligner des chiffres, et ne répète pas ce qu'un autre champ dit déjà.
-6. Forme : français professionnel, phrases claires, sans formules creuses. Texte brut : un paragraphe par ligne, « - » en début de ligne pour une puce, **gras** pour quelques mots clés au plus. Pas de titre ni d'autre balisage.
+5. Consignes et longueur : chaque champ a une consigne et une longueur visée en mots (les consignes des parties individuelles valent pour chaque membre) ; respecte-les. Le rapport suit un fil : introduction et problématique, stratégies, outils et méthodes, résultats, prise de recul, parties individuelles, conclusion. Chaque champ est lu dans sa section, entouré des graphiques et des schémas de l'ERP : explique et argumente plutôt que d'aligner des chiffres, et ne répète pas ce qu'un autre champ dit déjà.
+6. Forme : français professionnel (sauf « abstract », en anglais), phrases courtes, sans formules creuses ; développe un sigle à sa première occurrence. Texte brut : un paragraphe par ligne, « - » en début de ligne pour une puce, **gras** pour quelques mots clés au plus. Pas de titre ni d'autre balisage.
 
 Rends l'objet JSON demandé, avec un texte par champ."""
 
@@ -121,6 +158,10 @@ def sdk_disponible() -> bool:
     return True
 
 
+def libelle_modele(modele: str) -> str:
+    return MODELES[modele][0] if modele in MODELES else modele
+
+
 # --------------------------------------------------------------------------- demande
 @dataclass(frozen=True)
 class Champ:
@@ -142,14 +183,25 @@ class MembreDemande:
 @dataclass(frozen=True)
 class Demande:
     systeme: str
-    message: str
+    faits: str          # bloc stable (chiffres de l'audit) : préfixe mis en cache
+    variable: str       # contexte, paramètres, textes existants et champs à rédiger
     schema: dict[str, Any]
     collectif: tuple[Champ, ...]
     membres: tuple[MembreDemande, ...]
+    taille_contexte: int = 0   # caractères du paragraphe de contexte
+
+    @property
+    def message(self) -> str:
+        """Message complet, dans l'ordre d'envoi : faits de l'audit, puis la partie variable."""
+        return f"{self.faits}\n\n{self.variable}"
+
+    @property
+    def champs(self) -> tuple[Champ, ...]:
+        return (*self.collectif, *(c for m in self.membres for c in m.champs))
 
     @property
     def nb_champs(self) -> int:
-        return len(self.collectif) + sum(len(m.champs) for m in self.membres)
+        return len(self.champs)
 
 
 def _sans_vide(valeurs: Mapping[str, Any]) -> dict[str, Any]:
@@ -175,6 +227,16 @@ def _parc(parc: Mapping[str, float]) -> str | None:
 
 def _pct2(valeur: Any) -> str:
     return R.fmt_pct(valeur, 2)
+
+
+def _une_ligne(texte: Any) -> str:
+    """Texte sur une ligne (missions copiées d'un PDF : retours à la ligne au milieu des phrases)."""
+    return " ".join(str(texte or "").split())
+
+
+#: Indicateurs donnés « début → fin » : l'union des périmètres de toutes les fonctions, pour
+#: que le bloc des faits ne dépende que de l'audit (préfixe stable, donc mis en cache).
+INDICATEURS_DEBUT_FIN = tuple(dict.fromkeys(cle for _mots, cles in R._PERIMETRES for cle in cles))
 
 
 def faits_audit(audit: R.AuditAnnuel) -> dict[str, Any]:
@@ -216,6 +278,13 @@ def faits_audit(audit: R.AuditAnnuel) -> dict[str, Any]:
             for a, moy in s.utilisation_moyenne.items()
         ],
     })
+    indicateurs: dict[str, str] = {}
+    for cle in INDICATEURS_DEBUT_FIN:
+        serie = audit.serie(cle)
+        if serie:
+            (p0, v0), (p1, v1) = serie[0], serie[-1]
+            indicateurs[R.INDICATEURS[cle][0]] = (f"{R.fmt_valeur(cle, v0)} en {R.mois_long(p0)} → "
+                                                  f"{R.fmt_valeur(cle, v1)} en {R.mois_long(p1)}")
     produits = [_sans_vide({
         "produit": l.produit,
         "unites_vendues": R.fmt_nombre(l.ventes) if l.ventes else None,
@@ -253,30 +322,19 @@ def faits_audit(audit: R.AuditAnnuel) -> dict[str, Any]:
         }))
     return _sans_vide({
         "synthese": synthese,
+        "indicateurs_debut_fin": indicateurs,
         "produits": produits,
         "decomposition_prix_volume_mix_du_ca": decomposition,
         "benchmark_concurrentiel": ({"periode": R.mois_long(audit.concurrence_periode or audit.fin),
                                      "entreprises": concurrence} if concurrence else {}),
         "chronologie_des_decisions": [f"{R.mois_long(e.periode)} — {e.domaine} : {e.texte}"
                                       for e in audit.chronologie],
-        "constats": [_sans_vide({"theme": k.theme, "nature": k.nature, "constat": k.texte,
-                                 "piste_d_analyse": k.analyse}) for k in audit.constats],
+        # Constats en une ligne : les pistes d'analyse (conseils génériques) restent dans le Word.
+        "constats": [f"{k.theme} · {k.nature} — {k.texte}" for k in audit.constats],
         "lecture_strategique": list(audit.lecture_strategique),
-        "donnees_manquantes": [{"donnee": m.element, "mois": [R.mois_long(p) for p in m.periodes],
-                                "consequence": m.consequence} for m in audit.manques],
+        "donnees_manquantes": [f"{m.element} ({', '.join(R.mois_long(p) for p in m.periodes)}) : {m.consequence}"
+                               for m in audit.manques],
     })
-
-
-def _indicateurs_perimetre(audit: R.AuditAnnuel, role: str) -> dict[str, str]:
-    """Indicateurs du périmètre d'un rôle, début → fin (comme le tableau « Mon périmètre en chiffres »)."""
-    out: dict[str, str] = {}
-    for cle in R.perimetre_role(role):
-        serie = audit.serie(cle)
-        if serie:
-            (p0, v0), (p1, v1) = serie[0], serie[-1]
-            out[R.INDICATEURS[cle][0]] = (f"{R.fmt_valeur(cle, v0)} en {R.mois_long(p0)} → "
-                                          f"{R.fmt_valeur(cle, v1)} en {R.mois_long(p1)}")
-    return out
 
 
 def _schema(collectif: Sequence[Champ], membres: Sequence[MembreDemande]) -> dict[str, Any]:
@@ -293,8 +351,13 @@ def _schema(collectif: Sequence[Champ], membres: Sequence[MembreDemande]) -> dic
     return objet(proprietes)
 
 
+def _json(contenu: Any) -> str:
+    """JSON compact : sans indentation ni espaces superflus (environ 10 % de jetons en moins)."""
+    return json.dumps(contenu, ensure_ascii=False, separators=(",", ":"))
+
+
 def _bloc(balise: str, contenu: Any) -> str:
-    texte = contenu if isinstance(contenu, str) else json.dumps(contenu, ensure_ascii=False, indent=1)
+    texte = contenu if isinstance(contenu, str) else _json(contenu)
     return f"<{balise}>\n{texte}\n</{balise}>"
 
 
@@ -309,13 +372,15 @@ def preparer_demande(
     *,
     collectif: bool = True,
     individuel: bool = True,
+    membres_cibles: Collection[str] | None = None,
     remplacer: bool = False,
 ) -> Demande:
     """Requête de rédaction : champs à rédiger, sources et schéma de la réponse.
 
     ``cles_membres`` donne, dans l'ordre de ``contenu.membres``, la clé de chaque membre
-    dans la page. Sans ``remplacer``, seuls les champs vides sont demandés ; les textes
-    existants (et ceux d'une partie non sélectionnée) sont transmis comme contexte.
+    dans la page ; ``membres_cibles`` restreint la partie individuelle à certains membres
+    (rédaction membre par membre). Sans ``remplacer``, seuls les champs vides sont demandés ;
+    les textes existants utiles aux champs demandés sont transmis comme contexte.
     """
     def a_rediger(texte: str) -> bool:
         return remplacer or not str(texte or "").strip()
@@ -326,9 +391,12 @@ def preparer_demande(
         if collectif and a_rediger(getattr(contenu, champ))
     )
     membres: list[MembreDemande] = []
-    demandes_par_rang: dict[int, set[str]] = {}
+    cibles: dict[int, R.Membre] = {}
     if individuel:
         for rang, (m, cle) in enumerate(zip(contenu.membres, cles_membres), start=1):
+            if membres_cibles is not None and cle not in membres_cibles:
+                continue
+            cibles[rang] = m
             champs = tuple(
                 Champ(champ, libelle, R.CONSIGNES[consigne], MOTS_INDIVIDUELS.get(champ, 70))
                 for champ, libelle, consigne in R.CHAMPS_INDIVIDUELS
@@ -336,36 +404,41 @@ def preparer_demande(
             )
             if champs:
                 membres.append(MembreDemande(f"membre_{rang}", cle, m.nom, m.role, champs))
-                demandes_par_rang[rang] = {c.cle for c in champs}
+    demandes_par_rang = {int(m.cle_json.split("_")[1]): {c.cle for c in m.champs} for m in membres}
 
-    # Textes existants qui ne seront pas réécrits : transmis pour que le brouillon reste cohérent.
+    # Textes existants transmis pour la cohérence — seulement ceux qui servent aux champs demandés.
     demandes_collectives = {c.cle for c in champs_collectifs}
+    utiles = ([champ for champ, _, _ in R.CHAMPS_COLLECTIFS] if champs_collectifs
+              else list(COLLECTIF_UTILE_AUX_MEMBRES) if membres else [])
     deja = _sans_vide({
-        "collectif": _sans_vide({champ: getattr(contenu, champ).strip() for champ, _, _ in R.CHAMPS_COLLECTIFS
+        "collectif": _sans_vide({champ: getattr(contenu, champ).strip() for champ in utiles
                                  if champ not in demandes_collectives}),
         "membres": _sans_vide({f"membre_{rang}" + (f" ({m.nom})" if m.nom else ""): _sans_vide({
             champ: getattr(m, champ).strip() for champ, _, _ in R.CHAMPS_INDIVIDUELS
             if champ not in demandes_par_rang.get(rang, set())
-        }) for rang, m in enumerate(contenu.membres, start=1)}),
+        }) for rang, m in cibles.items() if rang in demandes_par_rang}),
     })
 
-    retenus = set(contenu.outils_erp)
+    # Paramètres : nom et rôle de chacun ; missions, outils et périmètre des seuls membres rédigés.
+    retenus = set(contenu.outils_erp) if champs_collectifs else set()
+    for rang in demandes_par_rang:
+        retenus.update(cibles[rang].outils_erp)
     parametres = _sans_vide({
         "entreprise": contenu.entreprise or audit.entreprise,
         "numero_de_l_entreprise_dans_le_jeu": audit.numero,
         "equipe": contenu.equipe,
         "formation": contenu.formation,
         "etablissement": contenu.etablissement,
-        "periode_auditee": f"de {R.mois_long(audit.debut)} à {R.mois_long(audit.fin)}",
         "membres": [_sans_vide({
-            "cle": f"membre_{i}", "nom": m.nom, "role": m.role, "missions": m.missions,
-            "outils_de_l_erp_montes_ou_pilotes": list(m.outils_erp),
-            "indicateurs_du_perimetre": _indicateurs_perimetre(audit, m.role),
+            "cle": f"membre_{i}", "nom": m.nom, "role": m.role,
+            **({"missions": _une_ligne(m.missions),
+                "outils_de_l_erp_montes_ou_pilotes": list(m.outils_erp),
+                "indicateurs_du_perimetre": [R.INDICATEURS[k][0] for k in R.perimetre_role(m.role)
+                                             if audit.serie(k)]} if i in demandes_par_rang else {}),
         }) for i, m in enumerate(contenu.membres, start=1)],
-        "outils_de_l_erp_presentes": [{"nom": o.nom, "besoin": o.besoin, "methode": o.methode, "apport": o.apport}
-                                      for o in R.OUTILS_ERP if o.nom in retenus],
-        "outils_de_gestion_de_projet": [{"nom": nom, "usage": R.OUTILS_GP[nom]}
-                                        for nom in contenu.outils_gp if nom in R.OUTILS_GP],
+        "outils_de_l_erp": {o.nom: o.apport for o in R.OUTILS_ERP if o.nom in retenus},
+        "outils_de_gestion_de_projet": ({nom: R.OUTILS_GP[nom] for nom in contenu.outils_gp if nom in R.OUTILS_GP}
+                                        if champs_collectifs else {}),
     })
 
     consignes: list[str] = []
@@ -373,21 +446,69 @@ def preparer_demande(
         consignes.append("Partie collective (« nous ») — objet « collectif » :")
         consignes.extend(_ligne_champ(c) for c in champs_collectifs)
     if membres:
-        consignes.append("Parties individuelles (« je ») — objet « membres » :")
+        demandes = {c.cle for m in membres for c in m.champs}
+        consignes.append("Parties individuelles (« je ») — objet « membres ». Consignes communes à chaque membre :")
+        consignes.extend(_ligne_champ(Champ(champ, libelle, R.CONSIGNES[consigne], MOTS_INDIVIDUELS.get(champ, 70)))
+                         for champ, libelle, consigne in R.CHAMPS_INDIVIDUELS if champ in demandes)
+        consignes.append("Membres à rédiger :")
+        tous = len(R.CHAMPS_INDIVIDUELS)
         for m in membres:
-            consignes.append(f"- {m.cle_json} : {m.nom or 'membre sans nom'}" + (f" ({m.role})" if m.role else ""))
-            consignes.extend(_ligne_champ(c) for c in m.champs)
+            consignes.append(f"- {m.cle_json} : {m.nom or 'membre sans nom'}" + (f" ({m.role})" if m.role else "")
+                             + (" — tous les champs" if len(m.champs) == tous
+                                else " — champs : " + ", ".join(c.cle for c in m.champs)))
 
-    blocs = [
-        _bloc("contexte_equipe", contenu.contexte.strip() or "(aucun contexte fourni)"),
-        _bloc("parametres_du_rapport", parametres),
-        _bloc("faits_de_l_audit", faits_audit(audit)),
-    ]
+    blocs = [_bloc("contexte_equipe", contenu.contexte.strip() or "(aucun contexte fourni)"),
+             _bloc("parametres_du_rapport", parametres)]
     if deja:
         blocs.append(_bloc("textes_deja_rediges", deja))
     blocs.append(_bloc("champs_a_rediger", "\n".join(consignes)))
-    message = "\n\n".join(blocs) + "\n\nRédige chacun de ces champs en suivant les règles."
-    return Demande(SYSTEME, message, _schema(champs_collectifs, membres), champs_collectifs, tuple(membres))
+    variable = "\n\n".join(blocs) + "\n\nRédige chacun de ces champs en suivant les règles."
+    return Demande(SYSTEME, _bloc("faits_de_l_audit", faits_audit(audit)), variable,
+                   _schema(champs_collectifs, membres), champs_collectifs, tuple(membres),
+                   taille_contexte=len(contenu.contexte.strip()))
+
+
+# --------------------------------------------------------------------------- budget et coût
+@dataclass(frozen=True)
+class Budget:
+    jetons_entree: int     # estimation de ce qui est envoyé (consignes, faits, contexte…)
+    jetons_texte: int      # estimation des textes demandés (sortie hors réflexion)
+    max_tokens: int        # plafond de sortie envoyé à l'API, réflexion comprise
+
+
+def estimer_jetons(texte: str) -> int:
+    return math.ceil(len(str(texte or "")) / CARACTERES_PAR_JETON)
+
+
+def estimer_budget(demande: Demande, effort: str = EFFORT_PAR_DEFAUT) -> Budget:
+    """Jetons estimés de la demande et plafond de sortie calculé d'après les longueurs demandées."""
+    entree = estimer_jetons(demande.systeme) + estimer_jetons(demande.message)
+    texte = math.ceil(sum(c.mots for c in demande.champs) * JETONS_PAR_MOT) + JETONS_PAR_CHAMP * demande.nb_champs
+    plafond = math.ceil(texte * 1.5 / 1000) * 1000 + REFLEXION.get(effort, REFLEXION[EFFORT_PAR_DEFAUT])
+    return Budget(entree, texte, min(PLAFOND_SORTIE, plafond))
+
+
+def depassements(demande: Demande, budget: Budget) -> list[str]:
+    """Limites dépassées (la demande automatique est alors refusée, rien n'est facturé)."""
+    out: list[str] = []
+    if demande.taille_contexte > CONTEXTE_MAX:
+        out.append(f"Contexte trop long ({R.fmt_nombre(demande.taille_contexte)} caractères, limite "
+                   f"{R.fmt_nombre(CONTEXTE_MAX)}) : gardez l'essentiel — intentions, arbitrages, faits marquants, "
+                   "une phrase par membre.")
+    if budget.jetons_entree > BUDGET_ENTREE:
+        out.append(f"Demande trop volumineuse (≈ {R.fmt_nombre(budget.jetons_entree)} jetons, limite "
+                   f"{R.fmt_nombre(BUDGET_ENTREE)}) : rédigez partie par partie (menu « À rédiger ») ou raccourcissez "
+                   "le contexte.")
+    return out
+
+
+def cout_estime(budget: Budget, modele: str) -> tuple[float, float] | None:
+    """(coût probable sans réflexion, coût maximal au plafond de sortie), en dollars ; None si tarif inconnu."""
+    if modele not in MODELES:
+        return None
+    _nom, prix_entree, prix_sortie, _cache = MODELES[modele]
+    entree = budget.jetons_entree * prix_entree
+    return ((entree + budget.jetons_texte * prix_sortie) / 1e6, (entree + budget.max_tokens * prix_sortie) / 1e6)
 
 
 # --------------------------------------------------------------------------- réponse
@@ -396,12 +517,27 @@ class Redaction:
     collectif: dict[str, str]
     membres: dict[str, dict[str, str]]      # clé de session du membre -> champ -> texte
     modele: str = ""
-    jetons_entree: int | None = None
-    jetons_sortie: int | None = None
+    jetons_entree: int | None = None        # jetons facturés plein tarif (hors cache)
+    jetons_sortie: int | None = None        # texte et réflexion
     notes: tuple[str, ...] = ()             # remarques de lecture (mode manuel), affichées à l'équipe
+    jetons_cache_lus: int = 0
+    jetons_cache_ecrits: int = 0
 
     def textes(self) -> list[str]:
         return [*self.collectif.values(), *(t for champs in self.membres.values() for t in champs.values())]
+
+
+def cout_reel(redaction: Redaction) -> float | None:
+    """Coût d'un appel d'après l'usage renvoyé par l'API (écriture du cache : 1,25 × l'entrée)."""
+    if redaction.jetons_entree is None or redaction.jetons_sortie is None:
+        return None
+    modele = next((m for m in MODELES if redaction.modele.startswith(m)), None)
+    if modele is None:
+        return None
+    _nom, prix_entree, prix_sortie, prix_cache = MODELES[modele]
+    return (redaction.jetons_entree * prix_entree + redaction.jetons_cache_ecrits * prix_entree * 1.25
+            + redaction.jetons_cache_lus * (prix_cache if prix_cache is not None else prix_entree)
+            + redaction.jetons_sortie * prix_sortie) / 1e6
 
 
 def _nettoyer(valeur: Any) -> str:
@@ -445,7 +581,7 @@ def _lire(brut: Mapping[str, Any], demande: Demande, par_nom: bool) -> Redaction
         if par_nom and isinstance(nom, str) and nom.strip():
             cible = par_nom_normalise.get(_nom_normalise(nom))
             if cible is None:
-                notes.append(f"Textes de « {nom.strip()} » ignorés : membre absent de l'équipe ou champs déjà rédigés.")
+                notes.append(f"Textes de « {nom.strip()} » ignorés : membre absent de la demande ou champs déjà rédigés.")
                 continue
         else:
             cible = par_cle.get(str(cle))
@@ -524,9 +660,9 @@ def lire_reponse_manuelle(texte: str, demande: Demande) -> Redaction:
 # --------------------------------------------------------------------------- vérifications
 _NOMBRE = re.compile(
     r"(?<![\w,.])"
-    r"([+\-−]?\d{1,3}(?:[   ]\d{3})+(?!\d)|[+\-−]?\d+)"   # entier (groupé ou non)
+    r"([+\-−]?\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?!\d)|[+\-−]?\d+)"   # entier (groupé ou non)
     r"(?:[,.](\d+))?"                                                       # décimales
-    r"(?:[   ]?(%|k€|M€|€))?"                                     # unité
+    r"(?:[ \u00a0\u202f]?(%|k€|M€|€))?"                                     # unité
 )
 
 
@@ -593,16 +729,28 @@ def mises_a_jour(redaction: Redaction, etat: Mapping[str, Any], remplacer: bool 
     return out
 
 
+def declaration_usage(redaction: Redaction, nb_champs: int, jour: str) -> str:
+    """Ligne de la déclaration d'usage de l'IA (annexe du rapport) : outil, version, mode, date."""
+    if redaction.modele.startswith("claude.ai"):
+        outil = "Claude (claude.ai, conversation copiée-collée ; version du modèle à préciser)"
+    else:
+        outil = f"{libelle_modele(redaction.modele)} ({redaction.modele}), API Anthropic"
+    return f"{outil} — génération de texte partiel : {nb_champs} champ(s) rédigé(s) le {jour}"
+
+
 # --------------------------------------------------------------------------- appel à l'API
 def parametres_requete(demande: Demande, config: Configuration) -> dict[str, Any]:
     """Paramètres de ``client.beta.messages.stream`` : sortie JSON imposée par le schéma, effort
-    explicite, invite système mise en cache et, pour les modèles concernés, repli serveur
-    sur un autre modèle si les garde-fous déclinent la demande."""
+    explicite, plafond de sortie calculé, préfixe stable mis en cache (consignes puis faits de
+    l'audit) et, pour les modèles concernés, repli serveur si les garde-fous déclinent."""
     params: dict[str, Any] = {
         "model": config.modele,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": estimer_budget(demande, config.effort).max_tokens,
         "system": [{"type": "text", "text": demande.systeme, "cache_control": {"type": "ephemeral"}}],
-        "messages": [{"role": "user", "content": demande.message}],
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": demande.faits, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": demande.variable},
+        ]}],
         "output_config": {"effort": config.effort,
                           "format": {"type": "json_schema", "schema": demande.schema}},
     }
@@ -651,9 +799,15 @@ def _message_erreur(exc: Exception, config: Configuration) -> str:
 
 
 def rediger(demande: Demande, config: Configuration, client: Any = None) -> Redaction:
-    """Rédige les champs de ``demande`` ; lève ``ErreurRedaction`` avec un message lisible."""
+    """Rédige les champs de ``demande`` ; lève ``ErreurRedaction`` avec un message lisible.
+
+    Une demande hors budget (`depassements`) est refusée avant tout appel : rien n'est facturé.
+    """
     if demande.nb_champs == 0:
         raise ErreurRedaction("Aucun champ à rédiger : ils sont tous déjà remplis.")
+    problemes = depassements(demande, estimer_budget(demande, config.effort))
+    if problemes:
+        raise ErreurRedaction(" ".join(problemes))
     try:
         client = client if client is not None else creer_client(config)
         with client.beta.messages.stream(**parametres_requete(demande, config)) as flux:
@@ -670,8 +824,8 @@ def rediger(demande: Demande, config: Configuration, client: Any = None) -> Reda
                               + (f" (catégorie « {categorie} »)" if categorie else "")
                               + " : reformulez le contexte, puis relancez.")
     if arret == "max_tokens":
-        raise ErreurRedaction("Réponse tronquée (longueur maximale atteinte) : rédigez la partie collective "
-                              "et les parties individuelles séparément.")
+        raise ErreurRedaction("Réponse tronquée (plafond de sortie atteint) : rédigez partie par partie "
+                              "(menu « À rédiger ») ou baissez l'effort de réflexion.")
     textes = [b.text for b in getattr(message, "content", None) or [] if getattr(b, "type", None) == "text"]
     if not textes:
         raise ErreurRedaction("Réponse vide : relancez la rédaction.")
@@ -685,4 +839,6 @@ def rediger(demande: Demande, config: Configuration, client: Any = None) -> Reda
     usage = getattr(message, "usage", None)
     return replace(redaction, modele=str(getattr(message, "model", "") or config.modele),
                    jetons_entree=getattr(usage, "input_tokens", None),
-                   jetons_sortie=getattr(usage, "output_tokens", None))
+                   jetons_sortie=getattr(usage, "output_tokens", None),
+                   jetons_cache_lus=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+                   jetons_cache_ecrits=int(getattr(usage, "cache_creation_input_tokens", 0) or 0))

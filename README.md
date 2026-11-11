@@ -272,29 +272,46 @@ stratégique et opérationnel, de l'année écoulée (**description et analyse**
 **partie collective** et une **partie individuelle** par membre. Le résultat est un fichier
 **Word éditable**, à finaliser puis exporter en PDF pour le dépôt (un seul dépôt par groupe).
 
-| Attendu de l'évaluation | Ce que produit le module |
-|---|---|
-| Stratégie(s) mise(s) en œuvre | Texte de l'équipe + **lecture des décisions observées** (positionnement prix, gamme, capacité, financement) + **chronologie des décisions clés** déduite des données |
-| Outils et méthodes (dont gestion de projet) | Tableau des outils de l'ERP (besoin, méthode, apport) + outils de GP retenus (RACI, Kanban, rétroplanning…) + répartition des rôles |
-| Explication et prise de recul sur les résultats | Audit chiffré mois par mois, **constats automatiques** (fait chiffré + piste d'analyse), forces / points de vigilance, **décomposition prix / volume / mix** de l'évolution du CA, benchmark concurrentiel |
-| Partie individuelle | Une section par membre : rôle, outils montés, forces et faiblesses, réussites et erreurs, mission spécifique, **indicateurs de son périmètre** (finance, production, RH…) |
-| Forme : graphiques, tableaux, logo, couleurs | 10 graphiques commentés (CA, ventes par produit, mix, PDM, concurrence, résultat, trésorerie, ateliers, cascade prix/volume/mix), tableaux, page de garde avec logo, **charte couleurs au choix**, sommaire, pagination, annexes de traçabilité |
+**Architecture** — les attendus des enseignantes (présentation « Rapport professionnel
+Subakoua ») dans la structure du guide du mémoire professionnel de BUT 3e année :
 
-**Mode d'emploi** : choisir la période auditée → onglet *Identité & charte* (nom, logo,
+| Partie du rapport | Contenu | Attendu couvert |
+|---|---|---|
+| Page de garde, sommaire | Logos de l'entreprise et de l'établissement, titre, équipe, formation, année universitaire, encadrement ; sommaire automatique | Forme (guide § 2.1 et 3.1) |
+| **Introduction** | Enjeux de l'exercice ; l'entreprise et l'équipe (fiche d'identité, **organigramme**) ; **problématique** ; annonce du plan rédigée d'après la structure réelle + **schéma du parcours** | Guide § 2.2 (accroche, contexte, problématique, plan) |
+| **Partie 1 — travail collectif** | 1. Le cap : stratégies (texte, lecture de l'ERP, **carte de positionnement prix / part de marché**, prix, chronologie) · 2. L'équipement : outils (**chaîne des outils de l'ERP**) et méthodes (**cycle mensuel de décision**, outils de GP) · 3. La plongée : résultats décrits puis analysés (tuiles, 10 graphiques commentés, constats) · 4. La remontée : prise de recul | Stratégies, outils et méthodes, explication et prise de recul, audit « description et analyse » |
+| **Partie 2 — travail individuel** | Par membre : rôle, outils montés, forces / faiblesses, réussites / erreurs, mission spécifique, périmètre en chiffres, bilan | Partie individuelle |
+| **Conclusion** | Résultats, pistes d'amélioration, apports, prolongements | Guide § 2.4 |
+| **Sources et bibliographie** | Données du jeu, ERP, ouvrage cité, outil d'IA au **format APA** | Guide § 2.5 |
+| **Annexes** | A. tableaux mensuels détaillés · B. traçabilité · C. données manquantes · D. méthodes de calcul · E. **déclaration d'usage de l'IA générative** (formulaire du guide, pré-rempli, copie des requêtes) · F. **glossaire des sigles** | Guide § 2.7 et déclaration IA obligatoire |
+| 4e de couverture | Résumé (8 lignes), abstract, mots-clés / keywords | Guide § 2.8 |
+
+**Direction artistique** — le thème du jeu (combinaisons de plongée) sans effet de style
+gratuit : le plan se lit comme un **profil de plongée** (on descend de la stratégie vers les
+résultats, on remonte par la prise de recul et un palier par membre), les titres suivent ce
+parcours (*le cap, l'équipement, la plongée, la remontée*) tout en gardant l'intitulé attendu.
+Sobriété : Arial 11 justifié (guide), palette océan, tableaux à filets horizontaux sans trame,
+**au plus cinq colonnes dans le corps** — les tableaux denses (mensuels, benchmark, RH) sont en
+annexe A ; 4 schémas (`rapport_schemas.py`) ne portent que ce que l'équipe a saisi ou ce
+qu'impose le jeu.
+
+**Mode d'emploi** : choisir la période auditée → onglet *Identité & charte* (nom, logos,
 couleurs) → *Équipe* (membres et rôles) → *Rédaction assistée* (facultatif : un paragraphe de
 contexte suffit à obtenir un brouillon de tous les textes) → relire et compléter la *Partie
-collective* et les *Parties individuelles* (les consignes de l'évaluation sont rappelées sous
-chaque champ) → *Aperçu de l'audit* → *Générer le rapport*. Un **contrôle de complétude** mesure
-l'avancement au regard des attendus ; le **brouillon JSON** (contexte compris) permet à chaque
-membre de reprendre le travail.
+collective* et les *Parties individuelles* (les consignes sont rappelées sous chaque champ) →
+*Aperçu de l'audit* → *Générer le rapport* → dans Word, compléter les passages surlignés et
+**signer la déclaration d'usage de l'IA (annexe E)**. Un **contrôle de complétude** mesure
+l'avancement au regard des attendus ; le **brouillon JSON** (contexte et usages de l'IA compris)
+permet à chaque membre de reprendre le travail.
 
 **✨ Rédaction assistée** (`rapport_redaction.py`, Claude d'Anthropic) : l'équipe décrit son
 année en un paragraphe — stratégie et intentions, faits marquants, organisation, une phrase par
-membre. Le module en tire un **brouillon** des 7 textes de la partie collective et des 7 textes de
-chaque partie individuelle, à partir de ce contexte, des paramètres saisis (entreprise, membres,
-rôles, missions, outils retenus, indicateurs du périmètre de chacun) et des faits de l'audit. Les
-textes remplissent les champs de la page : l'équipe les relit et les corrige avant de générer le
-Word. Deux modes, mêmes consignes et mêmes garde-fous :
+membre. Le module en tire un **brouillon** des 10 textes de la partie collective (introduction,
+problématique, résumé et abstract compris) et des 7 textes de chaque partie individuelle, à
+partir de ce contexte, des paramètres saisis et des faits de l'audit. Les textes remplissent les
+champs de la page : l'équipe les relit et les corrige avant de générer le Word. Le menu
+**« À rédiger »** choisit tout le rapport, la partie collective, les parties individuelles ou
+**un seul membre**. Deux modes, mêmes consignes et mêmes garde-fous :
 
 | Mode | Fonctionnement | Prérequis |
 |---|---|---|
@@ -302,16 +319,31 @@ Word. Deux modes, mêmes consignes et mêmes garde-fous :
 | **Manuel** (sans clé API) | ① copier la demande affichée (ou la télécharger en `.txt`) dans une conversation **claude.ai** ; ② coller la réponse et « 📥 Intégrer la réponse » | Aucun : offre gratuite ou abonnement claude.ai ; ouvert à tous, aucun coût pour l'application |
 
 En mode manuel, la lecture tolère le texte et les balises de code autour du JSON, et reconnaît
-chaque membre à son **nom** (l'équipe a pu changer d'ordre entre la copie et le collage) ; un champ
-rédigé entre-temps n'est pas écrasé.
+chaque membre à son **nom** ; un champ rédigé entre-temps n'est pas écrasé.
+
+**Budget de ressources** (constantes en tête de `rapport_redaction.py`) :
+
+| Limite / gain rapide | Mise en œuvre | Effet mesuré (équipe de 5, contexte de 8 207 caractères) |
+|---|---|---|
+| Demande compacte | JSON sans indentation, consignes individuelles écrites **une fois**, indicateurs dédoublonnés, outils résumés à leur apport, pistes d'analyse génériques retirées, missions et textes existants envoyés **seulement pour les champs demandés** | 40 587 → 30 059 caractères (−26 %) pour 45 champs au lieu de 42 ; ≈ 13 000 → 9 500 jetons |
+| Préfixe mis en cache | Consignes puis **faits de l'audit** (identiques d'une demande à l'autre) en tête, marqués `cache_control` ; le variable (contexte, champs) vient après | ≈ 3 700 jetons relus à 5 % du prix pendant 5 min |
+| Plafond d'entrée | Contexte ≤ `CONTEXTE_MAX` (12 000 caractères) ; demande ≤ `BUDGET_ENTREE` (15 000 jetons estimés) ; au-delà, refus **avant tout appel** | Aucun appel facturé hors budget |
+| Plafond de sortie | `max_tokens` = 1,5 × la longueur demandée + marge de réflexion selon l'effort (`REFLEXION`), au lieu d'un plafond fixe de 64 000 | 29 000 pour tout le rapport, 18 000 pour un membre |
+| Coût affiché | Estimation avant l'appel (hors réflexion / au plafond), consommation et coût réels après (`usage`, cache compris) | Opus 5.5 : ≈ 0,21 $ hors réflexion, 0,62 $ au plus pour tout le rapport |
+| Choix économiques | Modèle (Opus 5.5 par défaut, Sonnet 5.5, Haiku 5.5) et **effort** (*Économe* = `low`) au choix de l'équipe ; rédaction partie par partie | La réflexion est facturée comme la sortie : l'effort est le premier levier |
+
+Les estimations de jetons sont prudentes (3 caractères par jeton, 2 jetons par mot) : seul
+l'endpoint `count_tokens` donne le compte exact. Les tarifs (`MODELES`) sont ceux de l'API
+Anthropic relevés en novembre 2026.
 
 | Garde-fou | Mise en œuvre |
 |---|---|
 | Aucun chiffre inventé | Le modèle ne reçoit que les chiffres de l'audit, **formatés comme dans le Word**, avec consigne de les recopier tels quels ; tout montant, pourcentage ou nombre ≥ 100 absent des sources est **signalé « à vérifier »** sous le bouton |
 | Aucun fait inventé | Ce que les sources ne disent pas (situation concrète, erreur précise, ressenti) devient « [À COMPLÉTER : …] », **surligné en jaune** dans le Word et compté |
-| Le travail de l'équipe est préservé | Par défaut, seuls les champs **vides** sont rédigés ; les textes existants sont transmis au modèle pour rester cohérent, jamais écrasés (case « Remplacer » pour les réécrire) |
+| Le travail de l'équipe est préservé | Par défaut, seuls les champs **vides** sont rédigés ; les textes existants utiles sont transmis au modèle pour rester cohérent, jamais écrasés (case « Remplacer » pour les réécrire) |
 | Réponse structurée | Un texte par champ : JSON imposé par un schéma (automatique) ou décrit par un gabarit (manuel) ; refus des garde-fous, réponse tronquée ou illisible ⇒ message clair, rien n'est écrit |
-| Coût maîtrisé | Mode automatique **réservé aux utilisateurs connectés** (chaque rédaction est un appel facturé) ; invite système mise en cache ; mode manuel sans appel |
+| Usage de l'IA déclaré | Chaque rédaction intégrée est consignée (outil, version, mode, date) ; l'annexe E pré-remplit le formulaire du guide et recopie les consignes et le contexte envoyés |
+| Coût maîtrisé | Mode automatique **réservé aux utilisateurs connectés** ; budget ci-dessus ; mode manuel sans appel |
 
 Mode automatique : modèle par défaut `claude-opus-5-5` (effort `medium`), en flux, avec **repli
 serveur** sur le modèle recommandé par Anthropic si les garde-fous du modèle déclinent la demande
@@ -327,8 +359,10 @@ stratégiques sont présentées comme des **propositions à valider** par l'équ
 lecture seule (aucune écriture en base).
 
 Moteurs : `rapport_engine.py` (consolidation et analyses, pur), `rapport_graphiques.py`
-(matplotlib, API objet), `rapport_docx.py` (python-docx), `rapport_redaction.py` (rédaction
-assistée, API Claude), `depot_donnees.py` (lectures partagées).
+(matplotlib, API objet), `rapport_schemas.py` (schémas : parcours, organigramme, chaîne des
+outils, cycle de décision), `rapport_docx.py` (python-docx), `rapport_redaction.py` (rédaction
+assistée, API Claude), `depot_donnees.py` (lectures partagées). Le paquet système
+`fonts-liberation` (`packages.txt`) fournit aux graphiques une police aux métriques d'Arial.
 
 ## 🧮 Le simulateur
 
@@ -661,7 +695,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `348 passed, 2 skipped`**
+**Résultat actuel : `362 passed, 2 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -679,9 +713,9 @@ python -m pytest -q
 | `test_page_analyse_quantitative.py` | La page d'analyse s'exécute de bout en bout, produit un seuil cohérent et **liste les valeurs à atteindre** |
 | `test_equilibre_centre_decision.py` | Le centre de décision expose un point d'équilibre cohérent avec le volume vendu |
 | `test_rapport_engine.py` | **Rapport professionnel** : consolidation annuelle, priorité des sources (saisie 0 = non saisi), une seule étude « Ventes » de décembre reconstitue l'année, **décomposition prix/volume/mix exacte**, chronologie, constats, aucun constat inventé sans données, brouillon JSON, complétude |
-| `test_rapport_docx.py` | Document Word conforme aux attendus (parties collective et individuelles, annexes), graphiques et tableaux présents, charte appliquée, **zéro « À compléter » quand tout est rempli**, « [À COMPLÉTER : …] » d'un texte rédigé surligné et compté |
-| `test_rapport_redaction.py` | **Rédaction assistée** : seuls les champs vides sont demandés et **aucun texte existant n'est écrasé** ; le modèle reçoit contexte, paramètres et chiffres de l'audit ; un texte par champ imposé par schéma ; **chiffre absent des sources signalé** ; refus, troncature, réponse illisible ⇒ rien n'est écrit ; requête réelle du SDK (transport simulé, sans réseau) et erreurs de l'API traduites ; **mode manuel** : demande = consignes + sources + gabarit JSON, réponse collée lue malgré le texte autour, **membres reconnus à leur nom**, réponse inexploitable ⇒ message clair |
-| `test_page_rapport_professionnel.py` | La page génère et télécharge le rapport de bout en bout ; le brouillon se recharge ; base fraîche gérée sans plantage ; **rédaction assistée** (API simulée) : contexte et chiffres envoyés, 21 champs remplis jusque dans le Word, chiffre inventé signalé, **visiteur bloqué**, refus sans effet ; **mode manuel** (visiteur, sans clé) : demande téléchargée, réponse collée intégrée membre par membre |
+| `test_rapport_docx.py` | Document Word conforme aux attendus, **dans l'ordre du parcours** (introduction et problématique, parties collective et individuelles, conclusion, sources, annexes, 4e de couverture), graphiques et 4 schémas présents, **au plus 5 colonnes dans le corps**, Arial, charte appliquée, **déclaration IA pré-remplie** et requêtes recopiées, glossaire des sigles du document, **zéro « À compléter » quand tout est rempli**, « [À COMPLÉTER : …] » d'un texte rédigé surligné et compté |
+| `test_rapport_redaction.py` | **Rédaction assistée** : seuls les champs vides sont demandés et **aucun texte existant n'est écrasé** ; le modèle reçoit contexte, paramètres et chiffres de l'audit ; un texte par champ imposé par schéma ; **chiffre absent des sources signalé** ; refus, troncature, réponse illisible ⇒ rien n'est écrit ; **budget** : demande compacte (JSON sur une ligne, consigne individuelle unique, sans pistes d'analyse), un seul membre ⇒ seules ses informations, faits de l'audit identiques quel que soit le périmètre (préfixe mis en cache), plafond de sortie calculé, demande hors budget refusée sans appel, coûts estimé et réel (cache compris), déclaration d'usage de l'IA ; requête réelle du SDK (transport simulé, sans réseau) et erreurs de l'API traduites ; **mode manuel** : demande = consignes + sources + gabarit JSON, réponse collée lue malgré le texte autour, **membres reconnus à leur nom**, réponse inexploitable ⇒ message clair |
+| `test_page_rapport_professionnel.py` | La page génère et télécharge le rapport de bout en bout ; le brouillon se recharge ; base fraîche gérée sans plantage ; **rédaction assistée** (API simulée) : contexte et chiffres envoyés, préfixe mis en cache, 24 champs remplis jusque dans le Word, budget affiché avant l'appel et coût réel après, usage de l'IA consigné dans le brouillon, **un seul membre** rédigé à la demande, chiffre inventé signalé, **visiteur bloqué**, refus sans effet ; **mode manuel** (visiteur, sans clé) : demande téléchargée, réponse collée intégrée membre par membre |
 | `test_performance_cache.py` | Une interaction du cockpit ne relit pas toute la base ; le cache ne change pas les résultats ; **une étude resynchronisée est bien relue** |
 | `test_depot_donnees.py` | Lecture tolérante (table absente ⇒ erreur signalée, pas d'exception) et empreintes incluant la date de synchronisation |
 | `test_page_livrable_finance.py` | La page Livrable s'exécute de bout en bout (bilan lu, marges produites) et **dégrade sans planter** si les tables du scraper manquent |
@@ -712,6 +746,7 @@ erp-subakoua/
 ├── cours_engine.py               # Prévision des cours (méthodes comparées par backtest)
 ├── rapport_engine.py             # Rapport professionnel : audit annuel, constats, complétude
 ├── rapport_graphiques.py         # Graphiques commentés du rapport (matplotlib)
+├── rapport_schemas.py            # Schémas du rapport : parcours, organigramme, chaîne des outils, cycle
 ├── rapport_docx.py               # Génération du rapport Word
 ├── rapport_redaction.py          # Rédaction assistée (API Claude) : contexte → brouillon des textes
 ├── depot_donnees.py              # Lectures partagées et empreintes de cache
@@ -734,7 +769,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 348 tests exécutés + 2 ignorés
+├── test_*.py                     # 362 tests exécutés + 2 ignorés
 ├── rapport_jeu_essai.py          # Année de jeu fictive (tests du rapport, benchmark PDM calibrable)
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne

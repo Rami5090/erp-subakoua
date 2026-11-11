@@ -91,15 +91,93 @@ def test_le_message_porte_le_contexte_les_parametres_et_les_chiffres_de_l_audit(
     assert (alex["nom"], alex["role"]) == ("Alex Martin", "Responsable financier")
     assert alex["outils_de_l_erp_montes_ou_pilotes"] == ["Livrable Finance mensuel"]
     assert "Trésorerie (banque, fin de mois)" in alex["indicateurs_du_perimetre"]   # périmètre du rôle
-    assert [o["nom"] for o in parametres["outils_de_gestion_de_projet"]] == ["Matrice RACI"]
+    assert list(parametres["outils_de_gestion_de_projet"]) == ["Matrice RACI"]
     faits = json.loads(_bloc(demande.message, "faits_de_l_audit"))
     s = audit.synthese
     assert faits["synthese"]["chiffre_affaires_total"].startswith(R.fmt_euros(s.ca_total))   # « 15 272 032 € »
     assert faits["synthese"]["part_de_marche_fin"].startswith(R.fmt_pct(s.pdm_fin[1], 2))    # « 15,20 % »
     assert faits["lecture_strategique"] == list(audit.lecture_strategique)
+    assert faits["indicateurs_debut_fin"]["Trésorerie (banque, fin de mois)"].count("→") == 1
     consignes = _bloc(demande.message, "champs_a_rediger")
-    assert "environ 120 mots" in consignes and R.CONSIGNES["synthese"] in consignes
-    assert "membre_2 : Sam Leroy (Responsable production et logistique)" in consignes
+    assert "environ 100 mots" in consignes and R.CONSIGNES["synthese"] in consignes
+    assert "membre_2 : Sam Leroy (Responsable production et logistique) — tous les champs" in consignes
+    assert "membre_1 : Alex Martin (Responsable financier) — champs : outils, faiblesses" in consignes
+
+
+# --------------------------------------------------------------------------- budget de jetons
+def test_la_demande_est_compacte(audit):
+    """Gains rapides : JSON sans indentation, consignes individuelles une seule fois, sans pistes d'analyse."""
+    demande = RR.preparer_demande(audit, _contenu(), CLES)
+    message = demande.message
+
+    for balise in ("parametres_du_rapport", "faits_de_l_audit"):
+        bloc = _bloc(message, balise).strip()
+        assert "\n" not in bloc and '": ' not in bloc               # une ligne, sans espace après « : »
+    assert message.count(R.CONSIGNES["bilan"]) == 1                 # deux membres, une seule consigne
+    assert all(k.analyse not in message for k in audit.constats if k.analyse)
+    # Les outils se résument à leur apport ; un outil absent des choix de l'équipe n'est pas envoyé.
+    outils = json.loads(_bloc(message, "parametres_du_rapport"))["outils_de_l_erp"]
+    assert outils["Livrable Finance mensuel"] == next(o.apport for o in R.OUTILS_ERP if o.nom == "Livrable Finance mensuel")
+
+
+def test_rediger_un_seul_membre_n_envoie_que_ce_qui_lui_sert(audit):
+    complet = RR.preparer_demande(audit, _contenu(), CLES)
+    sam = RR.preparer_demande(audit, _contenu(), CLES, collectif=False, membres_cibles={"sam_leroy"})
+
+    assert [m.cle_session for m in sam.membres] == ["sam_leroy"] and sam.collectif == ()
+    alex, sam_parametres = json.loads(_bloc(sam.message, "parametres_du_rapport"))["membres"]
+    assert set(alex) == {"cle", "nom", "role"}                      # ni missions ni outils d'Alex
+    assert sam_parametres["missions"] == "Capacité et MRP"
+    deja = json.loads(_bloc(sam.message, "textes_deja_rediges"))
+    assert deja == {"collectif": {"strategie": "Stratégie déjà rédigée par l'équipe."}}   # pas les textes d'Alex
+    assert len(sam.message) < len(complet.message)
+    # Préfixe mis en cache : les faits de l'audit sont identiques quel que soit le périmètre demandé.
+    assert sam.faits == complet.faits == RR.preparer_demande(audit, _contenu(contexte="Autre."), CLES).faits
+
+
+def test_le_budget_plafonne_la_sortie_d_apres_les_longueurs_demandees(audit):
+    complet = RR.preparer_demande(audit, _contenu(), CLES)
+    un_membre = RR.preparer_demande(audit, _contenu(), CLES, collectif=False, membres_cibles={"sam_leroy"})
+
+    budget = RR.estimer_budget(complet, "medium")
+    mots = sum(c.mots for c in complet.champs)
+    assert budget.jetons_texte == int(mots * RR.JETONS_PAR_MOT) + RR.JETONS_PAR_CHAMP * complet.nb_champs
+    assert budget.max_tokens == -(-budget.jetons_texte * 3 // 2000) * 1000 + RR.REFLEXION["medium"]
+    assert budget.max_tokens < RR.PLAFOND_SORTIE
+    assert RR.estimer_budget(complet, "low").max_tokens < budget.max_tokens
+    assert RR.estimer_budget(un_membre, "medium").max_tokens < budget.max_tokens
+    assert budget.jetons_entree == RR.estimer_jetons(RR.SYSTEME) + RR.estimer_jetons(complet.message)
+    assert RR.depassements(complet, budget) == []
+    probable, maximum = RR.cout_estime(budget, "claude-opus-5-5")
+    assert probable == pytest.approx((budget.jetons_entree * 4 + budget.jetons_texte * 20) / 1e6)
+    assert maximum == pytest.approx((budget.jetons_entree * 4 + budget.max_tokens * 20) / 1e6)
+    assert RR.cout_estime(budget, "modele-inconnu") is None
+
+
+def test_une_demande_hors_budget_est_refusee_sans_appel(audit):
+    trop_long = RR.preparer_demande(audit, _contenu(contexte="x" * (RR.CONTEXTE_MAX + 1)), CLES)
+    client = _ClientFactice()
+
+    with pytest.raises(RR.ErreurRedaction, match="Contexte trop long"):
+        RR.rediger(trop_long, RR.Configuration(), client=client)
+    assert client.requetes == []                                     # rien n'est facturé
+    gros = RR.Budget(jetons_entree=RR.BUDGET_ENTREE + 1, jetons_texte=1, max_tokens=1)
+    assert "partie par partie" in RR.depassements(RR.preparer_demande(audit, _contenu(), CLES), gros)[0]
+
+
+def test_le_cout_reel_compte_le_cache():
+    redaction = RR.Redaction({}, {}, modele="claude-opus-5-5", jetons_entree=4_000, jetons_sortie=3_000,
+                             jetons_cache_lus=2_000, jetons_cache_ecrits=1_000)
+    assert RR.cout_reel(redaction) == pytest.approx((4_000 * 4 + 1_000 * 4 * 1.25 + 2_000 * 0.20 + 3_000 * 20) / 1e6)
+    assert RR.cout_reel(RR.Redaction({}, {}, modele="claude.ai (mode manuel)")) is None
+
+
+def test_la_declaration_d_usage_de_l_ia_nomme_l_outil_et_le_mode():
+    api = RR.Redaction({}, {}, modele="claude-opus-5-5")
+    manuel = RR.Redaction({}, {}, modele="claude.ai (mode manuel)")
+    assert RR.declaration_usage(api, 24, "11/11/2026") == ("Claude Opus 5.5 (claude-opus-5-5), API Anthropic — "
+                                                          "génération de texte partiel : 24 champ(s) rédigé(s) le 11/11/2026")
+    assert RR.declaration_usage(manuel, 7, "12/11/2026").startswith("Claude (claude.ai, conversation copiée-collée")
 
 
 def test_le_schema_impose_un_texte_par_champ(audit):
@@ -187,7 +265,7 @@ def test_les_membres_d_une_reponse_collee_sont_reconnus_a_leur_nom(audit):
     redaction = RR.lire_reponse_manuelle(colle, demande)
 
     assert redaction.membres == {"sam_leroy": {"bilan": "Bilan de Sam"}, "alex_martin": {"bilan": "Bilan d'Alex"}}
-    assert redaction.notes == ("Textes de « Camille Inconnue » ignorés : membre absent de l'équipe ou champs "
+    assert redaction.notes == ("Textes de « Camille Inconnue » ignorés : membre absent de la demande ou champs "
                                "déjà rédigés.",)
     sans_nom = RR.lire_reponse_manuelle('{"membres": {"membre_2": {"bilan": "Par la clé"}}}', demande)
     assert sans_nom.membres == {"sam_leroy": {"bilan": "Par la clé"}}
@@ -218,8 +296,8 @@ def test_un_chiffre_absent_des_sources_est_signale(audit):
     a_verifier = RR.chiffres_non_verifies(redaction, demande)
 
     assert a_verifier == {
-        "Synthèse de l'année (résumé)": ["99,9 %"],                 # inventé (le CA et la marge sont dans l'audit)
-        "Conclusion de la partie collective": ["7 777"],           # inventé ; l'écart de signe et le marqueur ignorés
+        "Résumé (4e de couverture)": ["99,9 %"],                   # inventé (le CA et la marge sont dans l'audit)
+        "Conclusion du rapport": ["7 777"],                        # inventé ; l'écart de signe et le marqueur ignorés
     }                                                              # « 20 % » vient du contexte, « 12 », « 3 » sont petits
 
 
@@ -272,8 +350,12 @@ def test_rediger_envoie_une_requete_complete_et_rend_les_textes(audit):
     assert params["output_config"] == {"effort": "medium", "format": {"type": "json_schema", "schema": demande.schema}}
     assert params["betas"] == ["server-side-fallback-2026-07-01"] and params["fallbacks"] == "default"
     assert params["system"] == [{"type": "text", "text": RR.SYSTEME, "cache_control": {"type": "ephemeral"}}]
-    assert params["messages"] == [{"role": "user", "content": demande.message}]
-    assert params["max_tokens"] == RR.MAX_TOKENS and "thinking" not in params   # réflexion adaptative par défaut
+    # Préfixe stable (consignes puis faits de l'audit) mis en cache ; la partie variable vient après.
+    assert params["messages"] == [{"role": "user", "content": [
+        {"type": "text", "text": demande.faits, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": demande.variable}]}]
+    assert params["max_tokens"] == RR.estimer_budget(demande, "medium").max_tokens
+    assert "thinking" not in params                                  # réflexion adaptative par défaut
     assert len(redaction.collectif) == len(demande.collectif)
     assert set(redaction.membres) == set(CLES)
     assert (redaction.modele, redaction.jetons_entree, redaction.jetons_sortie) == ("claude-opus-5-5", 9000, 2500)
@@ -363,6 +445,8 @@ def test_la_requete_reelle_du_sdk_et_la_lecture_du_flux(audit):
     assert corps["stream"] is True and corps["fallbacks"] == "default" and corps["model"] == "claude-opus-5-5"
     assert corps["output_config"]["format"]["schema"] == demande.schema
     assert corps["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert corps["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert corps["max_tokens"] == RR.estimer_budget(demande, "medium").max_tokens
     assert redaction.collectif == {c.cle: "Paragraphe rédigé." for c in demande.collectif}
     assert (redaction.jetons_entree, redaction.jetons_sortie) == (9000, 800)
 

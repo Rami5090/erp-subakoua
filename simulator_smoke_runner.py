@@ -274,17 +274,22 @@ def faux_anthropic() -> types.ModuleType:
         def get_final_message(self):
             p = self.params
             sortie = p.get("output_config") or {}
+            contenu = p["messages"][0]["content"]
+            blocs = contenu if isinstance(contenu, list) else [{"type": "text", "text": contenu}]
             LOG["redaction"].append({
                 "model": p.get("model"), "betas": p.get("betas"), "fallbacks": p.get("fallbacks"),
                 "max_tokens": p.get("max_tokens"), "effort": sortie.get("effort"),
                 "format": (sortie.get("format") or {}).get("type"),
                 "system_cache": bool(((p.get("system") or [{}])[0] or {}).get("cache_control")),
-                "message": p["messages"][0]["content"], "schema": sortie["format"]["schema"],
+                "faits_cache": bool(blocs[0].get("cache_control")) and len(blocs) > 1,
+                "message": "\n\n".join(b.get("text", "") for b in blocs), "schema": sortie["format"]["schema"],
             })
             texte = json.dumps(remplir(sortie["format"]["schema"]), ensure_ascii=False)
+            usage = types.SimpleNamespace(input_tokens=4_000, cache_creation_input_tokens=3_000,
+                                          cache_read_input_tokens=0, output_tokens=3_000)
             return types.SimpleNamespace(
                 model=p.get("model"), stop_reason=os.environ.get("SIM_ANTHROPIC_ARRET", "end_turn"),
-                stop_details=None, usage=types.SimpleNamespace(input_tokens=12_000, output_tokens=3_000),
+                stop_details=None, usage=usage,
                 content=[types.SimpleNamespace(type="thinking", thinking=""), types.SimpleNamespace(type="text", text=texte)],
             )
 

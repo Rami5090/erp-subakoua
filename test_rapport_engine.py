@@ -8,6 +8,7 @@ Invariants protégés :
 * la décomposition prix / volume / mix est exacte (somme des effets = écart).
 """
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -201,13 +202,30 @@ def test_controle_de_completude(audit):
     vide = R.controle_completude(audit, R.ContenuRapport())
     assert any(c.critere == "Membres de l'équipe" and c.statut == "manquant" for c in vide)
     plein = R.ContenuRapport(
-        entreprise="N&Co", strategie="mot " * 200, methodes="mot " * 100, prise_de_recul="mot " * 200,
-        conclusion="mot " * 80,
+        entreprise="N&Co", introduction="mot " * 60, presentation="mot " * 40, problematique="mot " * 20,
+        strategie="mot " * 200, methodes="mot " * 100, prise_de_recul="mot " * 200, conclusion="mot " * 80,
+        synthese="mot " * 80, abstract="word " * 80,
         membres=(R.Membre(nom="Alex", role="DAF", outils="ERP", forces="a", faiblesses="b", reussites="c", erreurs="d"),))
     criteres = R.controle_completude(audit, plein, logo=True, nb_graphiques=8)
     assert all(c.statut == "ok" for c in criteres), [c for c in criteres if c.statut != "ok"]
     assert R.taux_completude(criteres) == 1.0
     assert R.taux_completude(vide) < 1.0
+    sans_problematique = R.controle_completude(audit, replace(plein, problematique=""), logo=True, nb_graphiques=8)
+    assert next(c for c in sans_problematique if c.critere.startswith("Introduction")).statut == "partiel"
+
+
+def test_glossaire_des_sigles_utilises():
+    texte = "Le CA et le BFR progressent ; la PDM recule. CAFÉ n'est pas un sigle, ni CApital."
+    assert R.sigles_utilises(texte) == [("BFR", R.SIGLES["BFR"]), ("CA", R.SIGLES["CA"]), ("PDM", R.SIGLES["PDM"])]
+    assert R.sigles_utilises("") == []
+
+
+def test_le_brouillon_garde_les_nouveaux_champs_et_l_usage_de_l_ia():
+    contenu = R.ContenuRapport(introduction="Accroche.", problematique="Question ?", abstract="Abstract.",
+                               usages_ia=("Claude Opus 5.5 (claude-opus-5-5), API Anthropic — 3 champ(s)",))
+    assert R.ContenuRapport.from_json(contenu.to_json()) == contenu
+    ancien = '{"format": "rapport_subakoua", "version": 1, "contenu": {"synthese": "Résumé."}}'
+    assert R.ContenuRapport.from_json(ancien).usages_ia == ()          # brouillon antérieur : toujours lisible
 
 
 def test_perimetre_d_un_role():

@@ -65,8 +65,8 @@ def test_le_rapport_word_est_genere_et_telechargeable(execution):
     assert fichier.startswith("Rapport_professionnel_neoprene_co_")
     document = docx.Document(io.BytesIO((dossier / fichier).read_bytes()))
     titres = [p.text for p in document.paragraphs if p.style.name.startswith("Heading")]
-    assert "7. Alex Martin — Responsable financier" in titres
-    assert "8. Sam Leroy — Responsable production et logistique" in titres
+    assert "5. Alex Martin — Responsable financier" in titres
+    assert "6. Sam Leroy — Responsable production et logistique" in titres
     texte = "\n".join(p.text for p in document.paragraphs)
     assert "Stratégie de volume" in texte
     assert any(n.endswith(".json") for n in noms) and any(n.endswith(".md") for n in noms)
@@ -113,7 +113,7 @@ def test_la_redaction_envoie_le_contexte_et_les_chiffres_de_l_audit(redaction):
     (requete,) = data["redaction"]
     assert (requete["model"], requete["effort"], requete["format"]) == ("claude-opus-5-5", "medium", "json_schema")
     assert requete["fallbacks"] == "default" and requete["betas"] == ["server-side-fallback-2026-07-01"]
-    assert requete["system_cache"] is True
+    assert requete["system_cache"] is True and requete["faits_cache"] is True   # préfixe stable mis en cache
     assert SAISIE_REDACTION["rp_contexte"] in requete["message"]
     assert "15 272 032 €" in requete["message"].replace(" ", " ")  # CA de l'audit, format du Word
     assert list(requete["schema"]["properties"]["membres"]["properties"]) == ["membre_1", "membre_2"]
@@ -122,7 +122,7 @@ def test_la_redaction_envoie_le_contexte_et_les_chiffres_de_l_audit(redaction):
 def test_les_paragraphes_rediges_remplissent_le_rapport_word(redaction):
     data, dossier = redaction
     docx = pytest.importorskip("docx")
-    assert any("21 champ(s) rempli(s)" in s for s in data["success"])   # 7 collectifs + 2 × 7 individuels
+    assert any("24 champ(s) rempli(s)" in s for s in data["success"])   # 10 collectifs + 2 × 7 individuels
     fichier = next(d["file_name"] for d in data["downloads"] if d["file_name"].endswith(".docx"))
     document = docx.Document(io.BytesIO((dossier / fichier).read_bytes()))
     texte = "\n".join(p.text for p in document.paragraphs)
@@ -185,7 +185,7 @@ def test_le_mode_manuel_integre_une_reponse_collee_sans_cle_api(tmp_path):
         "SIM_EDITOR": "0", "SIM_CLICK": "Intégrer la réponse|Générer le rapport Word"})
 
     assert data["errors"] == [] and data["redaction"] == []           # aucun appel à l'API
-    assert any("21 champ(s) rempli(s) par claude.ai (mode manuel)" in s for s in data["success"])
+    assert any("24 champ(s) rempli(s) par claude.ai (mode manuel)" in s for s in data["success"])
     assert any("à vérifier" in w and "88,8 %" in w.replace(" ", " ") for w in data["warnings"])
     demande = (tmp_path / "demande_redaction_rapport.txt").read_text(encoding="utf-8")
     assert SAISIE_REDACTION["rp_contexte"] in demande and '"nom": "Sam Leroy"' in demande
@@ -201,3 +201,29 @@ def test_la_page_degrade_sans_planter_sur_une_base_fraiche(tmp_path):
     assert data["errors"] == []
     assert any("impossible" in w for w in data["warnings"])
     assert any(d["file_name"].endswith(".docx") for d in data["downloads"])
+
+
+def test_le_budget_s_affiche_avant_l_appel_et_le_cout_reel_apres(redaction):
+    data, dossier = redaction
+    import rapport_engine as R
+    (requete,) = data["redaction"]
+    budget = next(c for c in data["captions"] if c.startswith("📏 Budget de cette demande"))
+    assert "jetons envoyés (limite" in budget and "Coût estimé" in budget
+    assert requete["max_tokens"] < 64_000                              # plafond calculé, plus de plafond fixe
+    assert any(c.startswith("Consommation réelle") and "$" in c for c in data["captions"])
+    fichier = next(d["file_name"] for d in data["downloads"] if d["file_name"].endswith(".json"))
+    contenu = R.ContenuRapport.from_json((dossier / fichier).read_bytes())
+    assert len(contenu.usages_ia) == 1 and contenu.usages_ia[0].startswith("Claude Opus 5.5 (claude-opus-5-5)")
+
+
+def test_rediger_un_seul_membre(tmp_path):
+    """Menu « À rédiger » : une partie individuelle seule, sans la partie collective ni l'autre membre."""
+    saisie = {**SAISIE_REDACTION, "rp_red_portee": "Partie individuelle : Sam Leroy"}
+    data = _run_page(tmp_path, saisie=saisie, clic=False, extra_env={
+        "SIM_EDITOR": "1", "SIM_ANTHROPIC": "1", "SIM_CLICK": "Rédiger les paragraphes"})
+
+    assert data["errors"] == []
+    (requete,) = data["redaction"]
+    assert list(requete["schema"]["properties"]) == ["membres"]
+    assert list(requete["schema"]["properties"]["membres"]["properties"]) == ["membre_2"]
+    assert any("7 champ(s) rempli(s)" in s for s in data["success"])

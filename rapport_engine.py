@@ -1608,9 +1608,14 @@ def periode_par_defaut(sources: SourcesERP) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 #: Consignes affichées dans l'interface et, si le champ est vide, dans le document.
 CONSIGNES: dict[str, str] = {
-    "synthese": "En 6 à 10 lignes : la stratégie retenue, les trois résultats clés (CA, résultat, part de marché) "
-                "et le principal enseignement de l'année.",
-    "presentation": "Présentez l'entreprise (produits, marché, concurrents), l'équipe et la répartition des rôles.",
+    "introduction": "Accroche (l'enjeu de l'exercice) puis cadre : la simulation Subakoua, la période auditée et la "
+                    "mission confiée à l'équipe. L'entreprise est présentée au paragraphe suivant.",
+    "problematique": "La question à laquelle le rapport répond, en une ou deux phrases (ex. : « Dans quelle mesure "
+                     "nos choix … nous ont-ils permis de … ? »).",
+    "synthese": "Résumé du rapport en 8 lignes au plus (4e de couverture) : la stratégie retenue, les trois résultats "
+                "clés (CA, résultat, part de marché) et le principal enseignement de l'année.",
+    "abstract": "Traduction anglaise fidèle du résumé (8 lignes au plus), sans information supplémentaire.",
+    "presentation": "Présentez l'entreprise (activité, gamme, marché, concurrents), l'équipe et la répartition des rôles.",
     "strategie": "Expliquez la ou les stratégies mises en œuvre : positionnement (prix, qualité, gamme), politique "
                  "commerciale, industrielle, RH et financière. Justifiez chaque choix (pourquoi ? avec quelles "
                  "informations ?) et expliquez les inflexions décidées en cours d'année.",
@@ -1621,7 +1626,8 @@ CONSIGNES: dict[str, str] = {
     "prise_de_recul": "Expliquez vos résultats (ce qui a fonctionné, ce qui a échoué, pourquoi), comparez-les à vos "
                       "objectifs et aux concurrents, et dites ce que vous feriez différemment. Appuyez-vous sur les "
                       "constats chiffrés de l'audit.",
-    "conclusion": "Bilan global, enseignements clés et compétences mobilisées (lien avec la formation).",
+    "conclusion": "Rappelez les principaux résultats, proposez des pistes d'amélioration, dites ce que l'équipe retire "
+                  "de l'exercice (compétences mobilisées, lien avec la formation) et envisagez des prolongements.",
     "role": "Votre fonction dans l'équipe, votre périmètre de décision et vos missions (dont la mission spécifique "
             "décrite dans les documents du jeu).",
     "outils_membre": "Les outils que vous avez montés : objectif, fonctionnement, apport à la décision.",
@@ -1637,15 +1643,19 @@ CONSIGNES: dict[str, str] = {
 #: « [À COMPLÉTER] » ou « [À COMPLÉTER : ce qu'il faut préciser] ». Surligné dans le Word.
 A_COMPLETER = re.compile(r"\[À COMPLÉTER(?:\s*:[^\]]*)?\]", re.IGNORECASE)
 
-#: Champs rédigés de la partie collective : (champ, libellé, nombre de mots visé).
+#: Champs rédigés de la partie collective, dans l'ordre de lecture du rapport :
+#: (champ, libellé, nombre de mots visé).
 CHAMPS_COLLECTIFS: tuple[tuple[str, str, int], ...] = (
-    ("synthese", "Synthèse de l'année (résumé)", 120),
+    ("introduction", "Introduction : accroche et cadre de l'exercice", 90),
     ("presentation", "Présentation de l'entreprise et de l'équipe", 100),
+    ("problematique", "Problématique du rapport", 35),
     ("strategie", "Les stratégies mises en œuvre", 150),
-    ("outils", "Les outils (complément à la liste des outils de l'ERP)", 60),
+    ("outils", "Les outils (complément à la chaîne des outils de l'ERP)", 60),
     ("methodes", "Les méthodes de travail et la gestion de projet", 80),
     ("prise_de_recul", "Explication et prise de recul sur les résultats", 150),
-    ("conclusion", "Conclusion de la partie collective", 60),
+    ("conclusion", "Conclusion du rapport", 120),
+    ("synthese", "Résumé (4e de couverture)", 100),
+    ("abstract", "Abstract (résumé en anglais, 4e de couverture)", 100),
 )
 #: Champs rédigés de chaque partie individuelle : (champ du membre, libellé, clé de consigne).
 CHAMPS_INDIVIDUELS: tuple[tuple[str, str, str], ...] = (
@@ -1684,11 +1694,14 @@ class ContenuRapport:
     etablissement: str = ""
     enseignants: str = ""
     date: str = ""
-    #: Paragraphe de contexte de l'équipe : entrée de la rédaction assistée, gardé
-    #: dans le brouillon JSON mais absent du Word.
+    #: Paragraphe de contexte de l'équipe : entrée de la rédaction assistée. Gardé dans le
+    #: brouillon JSON ; recopié dans l'annexe « usage de l'IA » quand la rédaction a servi.
     contexte: str = ""
-    synthese: str = ""
+    introduction: str = ""
     presentation: str = ""
+    problematique: str = ""
+    synthese: str = ""
+    abstract: str = ""
     strategie: str = ""
     outils: str = ""
     outils_erp: tuple[str, ...] = tuple(o.nom for o in OUTILS_ERP)
@@ -1697,6 +1710,9 @@ class ContenuRapport:
     prise_de_recul: str = ""
     conclusion: str = ""
     membres: tuple[Membre, ...] = ()
+    #: Usages de l'IA générative enregistrés par la rédaction assistée (outil, mode, date) :
+    #: ils pré-remplissent la déclaration exigée en annexe par le guide du mémoire.
+    usages_ia: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -1727,7 +1743,7 @@ class ContenuRapport:
                             brut["outils_erp"] = tuple(str(x) for x in brut["outils_erp"] or ())
                         membres.append(Membre(**{k: (v if k == "outils_erp" else str(v or "")) for k, v in brut.items()}))
                 valeurs["membres"] = tuple(membres)
-            elif cle in ("outils_erp", "outils_gp"):
+            elif cle in ("outils_erp", "outils_gp", "usages_ia"):
                 valeurs[cle] = tuple(str(x) for x in valeur or ())
             else:
                 valeurs[cle] = "" if valeur is None else str(valeur)
@@ -1749,6 +1765,40 @@ class ContenuRapport:
 
 def nombre_mots(texte: Any) -> int:
     return len(re.findall(r"\w+", str(texte or "")))
+
+
+#: Sigles développés dans le glossaire du rapport (guide du mémoire : « évitez les sigles ou
+#: développez-les »). Seuls ceux qui apparaissent dans le document sont repris.
+SIGLES: dict[str, str] = {
+    "BFR": "Besoin en fonds de roulement",
+    "BFRE": "Besoin en fonds de roulement d'exploitation",
+    "BUT": "Bachelor universitaire de technologie",
+    "CA": "Chiffre d'affaires",
+    "CAF": "Capacité d'autofinancement",
+    "ERP": "Progiciel de gestion intégré (Enterprise Resource Planning)",
+    "GP": "Gestion de projet",
+    "GSS": "Grandes surfaces spécialisées",
+    "HT": "Hors taxes",
+    "IA": "Intelligence artificielle",
+    "IAg": "Intelligence artificielle générative",
+    "KPI": "Indicateur clé de performance (Key Performance Indicator)",
+    "MLT": "Management de la logistique et des transports",
+    "MRP": "Calcul des besoins en matières (Material Requirements Planning)",
+    "MRP2": "Planification des ressources de production (Manufacturing Resource Planning)",
+    "PDM": "Part de marché",
+    "PDP": "Plan directeur de production",
+    "RACI": "Matrice des responsabilités : Réalise, Approuve, est Consulté, est Informé",
+    "REX": "Retour d'expérience",
+    "RH": "Ressources humaines",
+    "SAE": "Situation d'apprentissage et d'évaluation",
+}
+
+
+def sigles_utilises(texte: str) -> list[tuple[str, str]]:
+    """(sigle, développement) des sigles connus présents dans ``texte``, par ordre alphabétique."""
+    texte = str(texte or "")
+    return sorted(((s, d) for s, d in SIGLES.items() if re.search(rf"(?<![\w-]){re.escape(s)}(?![\w-])", texte)),
+                  key=lambda x: x[0].casefold())
 
 
 #: Fonctions -> familles d'indicateurs mises en avant dans la partie individuelle.
@@ -1793,6 +1843,10 @@ def controle_completude(audit: AuditAnnuel, contenu: ContenuRapport, logo: bool 
         out.append(Critere(partie, critere, statut, f"{n} mot(s) — viser au moins {mini}"))
 
     collectif = "Partie collective"
+    n_intro, n_pb = nombre_mots(contenu.introduction) + nombre_mots(contenu.presentation), nombre_mots(contenu.problematique)
+    out.append(Critere(collectif, "Introduction (accroche, contexte, problématique, plan)",
+                       "ok" if n_intro >= 80 and n_pb >= 8 else ("partiel" if n_intro or n_pb else "manquant"),
+                       f"{n_intro} mot(s) d'introduction et de contexte, problématique : {n_pb} mot(s)"))
     texte(collectif, "Explication de la (des) stratégie(s) mise(s) en œuvre", contenu.strategie, 150)
     nb_outils = len(contenu.outils_erp) + (1 if nombre_mots(contenu.outils) >= 20 else 0)
     out.append(Critere(collectif, "Restitution des outils", "ok" if nb_outils else "manquant",
@@ -1809,8 +1863,12 @@ def controle_completude(audit: AuditAnnuel, contenu: ContenuRapport, logo: bool 
     out.append(Critere(collectif, "Analyse (constats et lecture stratégique)",
                        "ok" if len(audit.constats) >= 5 else ("partiel" if audit.constats else "manquant"),
                        f"{len(audit.constats)} constat(s), {len(audit.lecture_strategique)} élément(s) de lecture stratégique"))
-    texte(collectif, "Conclusion", contenu.conclusion, 60)
+    texte(collectif, "Conclusion (résultats, pistes d'amélioration, prolongements)", contenu.conclusion, 80)
     forme = "Forme"
+    n_resume, n_abstract = nombre_mots(contenu.synthese), nombre_mots(contenu.abstract)
+    out.append(Critere(forme, "Résumé et abstract (4e de couverture)",
+                       "ok" if n_resume >= 50 and n_abstract >= 40 else ("partiel" if n_resume or n_abstract else "manquant"),
+                       f"résumé : {n_resume} mot(s), abstract : {n_abstract} mot(s) — 8 lignes au plus chacun"))
     out.append(Critere(forme, "Graphiques commentés", "ok" if nb_graphiques >= 3 else ("partiel" if nb_graphiques else "manquant"),
                        f"{nb_graphiques} graphique(s)"))
     out.append(Critere(forme, "Tableaux", "ok" if s.ca_mois or s.ventes_mois else "manquant", "Tableau de bord mensuel et tableau produits"))

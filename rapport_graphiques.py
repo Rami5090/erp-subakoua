@@ -148,7 +148,9 @@ _LARGEUR_POUCES = 6.3     # 16 cm : largeur utile d'une page A4 avec marges de 2
 _HAUTEUR_POUCES = 2.75
 _DPI = 220
 _VERROU = threading.Lock()
-_POLICES = ["Carlito", "Calibri", "Liberation Sans", "Arial", "DejaVu Sans"]
+#: Arial, comme le corps du rapport (guide du mémoire : Arial, Times ou Verdana) ; Liberation Sans
+#: en a les mêmes métriques (paquet « fonts-liberation » sur le serveur).
+_POLICES = ["Arial", "Liberation Sans", "Carlito", "DejaVu Sans"]
 
 
 def _rc() -> dict:
@@ -172,12 +174,14 @@ def _rc() -> dict:
     }
 
 
-def _rendre(dessin: Callable[["Figure"], None], hauteur: float = _HAUTEUR_POUCES) -> bytes:
+def _rendre(dessin: Callable[["Figure"], None], hauteur: float = _HAUTEUR_POUCES, ajuster: bool = True) -> bytes:
+    """PNG de la figure ; ``ajuster=False`` garde la mise en page du dessin (schémas en pleine page)."""
     with _VERROU, matplotlib.rc_context(_rc()):
         fig = Figure(figsize=(_LARGEUR_POUCES, hauteur), dpi=_DPI, facecolor="#FFFFFF")
         FigureCanvasAgg(fig)
         dessin(fig)
-        fig.tight_layout(pad=0.6)
+        if ajuster:
+            fig.tight_layout(pad=0.6)
         tampon = io.BytesIO()
         fig.savefig(tampon, format="png", dpi=_DPI, facecolor="#FFFFFF")
         return tampon.getvalue()
@@ -543,6 +547,56 @@ def graphique_concurrence(audit: AuditAnnuel, charte: Charte) -> Graphique | Non
                      "Source : études de veille concurrentielle")
 
 
+def graphique_positionnement(audit: AuditAnnuel, charte: Charte) -> Graphique | None:
+    """Carte de positionnement : prix moyen et part de marché de chaque entreprise du benchmark."""
+    points = [(int(_float(r.get("entreprise")) or 0), _float(r.get("prix")), _float(r.get("part_marche")))
+              for r in audit.concurrence]
+    points = [(e, p, m) for e, p, m in points if e and p is not None and m is not None]
+    if len(points) < 3 or not any(e == audit.numero for e, _, _ in points):
+        return None
+    couleur = couleur_lisible(charte.primaire)
+    prix = sorted(p for _, p, _ in points)
+    parts = sorted(m for _, _, m in points)
+    mediane_prix = prix[len(prix) // 2] if len(prix) % 2 else (prix[len(prix) // 2 - 1] + prix[len(prix) // 2]) / 2
+    mediane_pdm = parts[len(parts) // 2] if len(parts) % 2 else (parts[len(parts) // 2 - 1] + parts[len(parts) // 2]) / 2
+    nous = next((p, m) for e, p, m in points if e == audit.numero)
+
+    def dessin(fig: Figure) -> None:
+        ax = fig.add_subplot(111)
+        ax.axvline(mediane_prix, color=GRILLE, linewidth=1.0, linestyle=(0, (4, 3)), zorder=1)
+        ax.axhline(mediane_pdm, color=GRILLE, linewidth=1.0, linestyle=(0, (4, 3)), zorder=1)
+        for e, p, m in points:
+            propre = e == audit.numero
+            ax.scatter([p], [m], s=70 if propre else 34, color=couleur if propre else COULEUR_NEUTRE,
+                       edgecolors="#FFFFFF", linewidths=1.0, zorder=3 if propre else 2)
+            ax.annotate(f"Entreprise {e} (nous)" if propre else f"E{e}", (p, m), xytext=(6, 0),
+                        textcoords="offset points", va="center", fontsize=7.5 if propre else 7,
+                        color=ENCRE if propre else ENCRE_SECONDAIRE, fontweight="bold" if propre else "normal")
+        ecart_p = (max(prix) - min(prix)) or max(prix) * 0.1 or 1.0
+        ax.set_xlim(min(prix) - ecart_p * 0.12, max(prix) + ecart_p * 0.3)
+        ecart_m = (max(parts) - min(parts)) or 1.0
+        ax.set_ylim(max(0.0, min(parts) - ecart_m * 0.15), max(parts) + ecart_m * 0.15)
+        ax.xaxis.set_major_formatter(_axe_euros(max(prix)))
+        ax.yaxis.set_major_formatter(_axe_pct())
+        ax.xaxis.set_major_locator(_graduations())
+        ax.yaxis.set_major_locator(_graduations())
+        ax.set_xlabel("Prix moyen de vente", fontsize=7.5)
+        ax.set_ylabel("Part de marché", fontsize=7.5)
+        ax.tick_params(length=0)
+        ax.spines["left"].set_visible(True)
+        ax.text(1.0, 1.0, "pointillés : médianes du marché", transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=6.5, color=ENCRE_SECONDAIRE, style="italic")
+
+    position_prix = "au-dessus de" if nous[0] > mediane_prix else ("en dessous de" if nous[0] < mediane_prix else "égal à")
+    position_pdm = "au-dessus de" if nous[1] > mediane_pdm else ("en dessous de" if nous[1] < mediane_pdm else "égale à")
+    commentaire = (f"En {mois_court(audit.concurrence_periode or audit.fin)}, notre prix moyen ({fmt_euros(nous[0])}) est "
+                   f"{position_prix} la médiane du marché ({fmt_euros(mediane_prix)}) et notre part de marché "
+                   f"({fmt_pct(nous[1], 2)}) {position_pdm} la médiane ({fmt_pct(mediane_pdm, 2)}) : la carte situe le "
+                   "positionnement choisi face aux concurrents.")
+    return Graphique("positionnement", "Carte de positionnement : prix et part de marché", _rendre(dessin, 3.0),
+                     commentaire, "Source : études de veille concurrentielle")
+
+
 def graphique_decomposition(audit: AuditAnnuel, charte: Charte) -> Graphique | None:
     d = audit.decomposition
     if d is None or abs(d.ecart) < 1:
@@ -588,6 +642,7 @@ GRAPHIQUES: tuple[Callable[[AuditAnnuel, Charte], Graphique | None], ...] = (
     graphique_decomposition,
     graphique_pdm,
     graphique_concurrence,
+    graphique_positionnement,
     graphique_resultat,
     graphique_tresorerie,
     graphique_ateliers,
