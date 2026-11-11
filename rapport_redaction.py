@@ -20,6 +20,14 @@ traçable) :
   avant de générer le Word ; par défaut, un champ déjà rédigé n'est pas
   remplacé — il est transmis au modèle pour que le reste reste cohérent.
 
+Deux modes, mêmes consignes et mêmes garde-fous :
+
+* **automatique** (`rediger`) : appel à l'API Claude, qui demande une clé API et
+  des crédits ; le format JSON est imposé par un schéma ;
+* **manuel** (`texte_manuel` puis `lire_reponse_manuelle`) : sans clé API, l'équipe
+  colle la demande dans une conversation claude.ai (offre gratuite ou abonnement),
+  puis colle la réponse dans la page ; la lecture tolère le texte autour du JSON.
+
 Tout est pur (testable sans réseau) sauf `rediger`, dont le client est injectable.
 """
 from __future__ import annotations
@@ -27,6 +35,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
@@ -389,6 +398,7 @@ class Redaction:
     modele: str = ""
     jetons_entree: int | None = None
     jetons_sortie: int | None = None
+    notes: tuple[str, ...] = ()             # remarques de lecture (mode manuel), affichées à l'équipe
 
     def textes(self) -> list[str]:
         return [*self.collectif.values(), *(t for champs in self.membres.values() for t in champs.values())]
@@ -402,25 +412,113 @@ def _nettoyer(valeur: Any) -> str:
     return re.sub(r"\[\s*à\s+compléter", "[À COMPLÉTER", texte, flags=re.IGNORECASE)
 
 
-def analyser_reponse(texte: str, demande: Demande) -> Redaction:
-    """Textes de la réponse JSON, pour les seuls champs demandés."""
+def _nom_normalise(nom: Any) -> str:
+    brut = unicodedata.normalize("NFKD", str(nom or "")).encode("ascii", "ignore").decode()
+    return " ".join(brut.casefold().split())
+
+
+def _charger(texte: str, conseil: str) -> Mapping[str, Any]:
     try:
-        brut = json.loads(texte)
+        # strict=False : un retour à la ligne brut dans un texte (réponse collée) reste lisible.
+        brut = json.loads(texte, strict=False)
     except (TypeError, ValueError) as exc:
-        raise ErreurRedaction("Réponse illisible : le modèle n'a pas renvoyé l'objet JSON attendu. "
-                              "Relancez la rédaction.") from exc
+        raise ErreurRedaction(f"Réponse illisible : l'objet JSON attendu est invalide ({exc}). {conseil}") from exc
     if not isinstance(brut, Mapping):
-        raise ErreurRedaction("Réponse illisible : un objet JSON était attendu. Relancez la rédaction.")
+        raise ErreurRedaction(f"Réponse illisible : un objet JSON était attendu. {conseil}")
+    return brut
+
+
+def _lire(brut: Mapping[str, Any], demande: Demande, par_nom: bool) -> Redaction:
+    """Textes des seuls champs demandés. Avec ``par_nom``, un membre est reconnu à son « nom »
+    (réponse collée : l'équipe a pu changer d'ordre entre la copie et le collage)."""
     bloc = brut.get("collectif") if isinstance(brut.get("collectif"), Mapping) else {}
     collectif = {c.cle: t for c in demande.collectif if (t := _nettoyer(bloc.get(c.cle)))}
     bloc_membres = brut.get("membres") if isinstance(brut.get("membres"), Mapping) else {}
+    par_cle = {m.cle_json: m for m in demande.membres}
+    par_nom_normalise = {_nom_normalise(m.nom): m for m in demande.membres if m.nom}
     membres: dict[str, dict[str, str]] = {}
-    for m in demande.membres:
-        champs = bloc_membres.get(m.cle_json) if isinstance(bloc_membres.get(m.cle_json), Mapping) else {}
-        textes = {c.cle: t for c in m.champs if (t := _nettoyer(champs.get(c.cle)))}
+    notes: list[str] = []
+    for cle, champs in bloc_membres.items():
+        if not isinstance(champs, Mapping):
+            continue
+        nom = champs.get("nom")
+        if par_nom and isinstance(nom, str) and nom.strip():
+            cible = par_nom_normalise.get(_nom_normalise(nom))
+            if cible is None:
+                notes.append(f"Textes de « {nom.strip()} » ignorés : membre absent de l'équipe ou champs déjà rédigés.")
+                continue
+        else:
+            cible = par_cle.get(str(cle))
+        if cible is None:
+            continue
+        textes = {c.cle: t for c in cible.champs if (t := _nettoyer(champs.get(c.cle)))}
         if textes:
-            membres[m.cle_session] = textes
-    return Redaction(collectif, membres)
+            membres.setdefault(cible.cle_session, {}).update(textes)
+    return Redaction(collectif, membres, notes=tuple(notes))
+
+
+def analyser_reponse(texte: str, demande: Demande) -> Redaction:
+    """Textes de la réponse JSON de l'API, pour les seuls champs demandés."""
+    return _lire(_charger(texte, "Relancez la rédaction."), demande, par_nom=False)
+
+
+# --------------------------------------------------------------------------- mode manuel (sans clé API)
+def gabarit_reponse(demande: Demande) -> dict[str, Any]:
+    """Forme exacte de la réponse attendue, avec le nom de chaque membre à recopier."""
+    gabarit: dict[str, Any] = {}
+    if demande.collectif:
+        gabarit["collectif"] = {c.cle: "…" for c in demande.collectif}
+    if demande.membres:
+        gabarit["membres"] = {m.cle_json: {"nom": m.nom, **{c.cle: "…" for c in m.champs}}
+                              for m in demande.membres}
+    return gabarit
+
+
+def texte_manuel(demande: Demande) -> str:
+    """Demande complète à coller dans une conversation claude.ai (mode manuel, sans clé API).
+
+    Mêmes consignes et mêmes sources que l'appel à l'API ; le format JSON, que l'API impose
+    par un schéma, est ici décrit par un gabarit à remplir.
+    """
+    gabarit = json.dumps(gabarit_reponse(demande), ensure_ascii=False, indent=2)
+    return (
+        f"{demande.systeme}\n\n---\n\n{demande.message}\n\n"
+        "Format de la réponse : réponds uniquement par un objet JSON valide, sans texte avant ni après, "
+        "avec exactement les clés ci-dessous. Remplace chaque « … » par le texte du champ, recopie tel quel "
+        "le « nom » de chaque membre, et sépare les paragraphes d'un texte par \\n.\n"
+        f"{gabarit}"
+    )
+
+
+_BLOC_DE_CODE = re.compile(r"```[a-zA-Z]*\s*(.*?)```", re.DOTALL)
+
+
+def extraire_json(texte: str) -> str:
+    """Objet JSON d'une réponse collée : bloc de code ```json, ou du premier « { » au dernier « } »."""
+    texte = str(texte or "").strip()
+    for bloc in _BLOC_DE_CODE.findall(texte):
+        if "{" in bloc:
+            texte = bloc
+            break
+    debut, fin = texte.find("{"), texte.rfind("}")
+    if debut < 0 or fin <= debut:
+        raise ErreurRedaction("Aucun objet JSON dans la réponse collée : demandez à Claude de répondre "
+                              "uniquement par l'objet JSON demandé, puis copiez toute sa réponse.")
+    return texte[debut:fin + 1]
+
+
+def lire_reponse_manuelle(texte: str, demande: Demande) -> Redaction:
+    """Réponse de claude.ai collée par l'équipe → textes des champs demandés."""
+    if not str(texte or "").strip():
+        raise ErreurRedaction("Collez d'abord la réponse de Claude.")
+    if demande.nb_champs == 0:
+        raise ErreurRedaction("Rien à intégrer : les champs sélectionnés sont déjà rédigés.")
+    brut = _charger(extraire_json(texte), "Vérifiez que toute la réponse a été copiée.")
+    redaction = _lire(brut, demande, par_nom=True)
+    if not redaction.textes():
+        raise ErreurRedaction("La réponse collée ne contient aucun des champs demandés : copiez la demande "
+                              "affichée (étape ①) dans une nouvelle conversation, puis collez la nouvelle réponse.")
+    return replace(redaction, modele="claude.ai (mode manuel)")
 
 
 # --------------------------------------------------------------------------- vérifications

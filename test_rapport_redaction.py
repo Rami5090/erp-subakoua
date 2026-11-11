@@ -147,6 +147,64 @@ def test_une_reponse_illisible_leve_une_erreur_claire(audit):
         RR.analyser_reponse("[1, 2]", demande)
 
 
+# --------------------------------------------------------------------------- mode manuel (sans clé API)
+def test_la_demande_manuelle_reprend_les_consignes_les_sources_et_le_gabarit(audit):
+    demande = RR.preparer_demande(audit, _contenu(), CLES)
+    texte = RR.texte_manuel(demande)
+
+    assert texte.startswith(RR.SYSTEME) and demande.message in texte
+    gabarit = json.dumps(RR.gabarit_reponse(demande), ensure_ascii=False, indent=2)
+    assert texte.endswith(gabarit)
+    attendu = json.loads(gabarit)
+    assert list(attendu["collectif"]) == [c.cle for c in demande.collectif]
+    assert attendu["membres"]["membre_1"]["nom"] == "Alex Martin"
+    assert "forces" not in attendu["membres"]["membre_1"]           # déjà rédigé : pas redemandé
+    assert set(attendu["membres"]["membre_2"]) == {"nom", *(c for c, _, _ in R.CHAMPS_INDIVIDUELS)}
+
+
+def test_une_reponse_collee_est_lue_malgre_le_texte_autour(audit):
+    demande = RR.preparer_demande(audit, _contenu(), CLES, individuel=False)
+    colle = ("Voici les textes demandés :\n```json\n"
+             '{"collectif": {"synthese": "Premier paragraphe.\nSecond paragraphe.", "conclusion": "Fin."}}\n'
+             "```\nN'hésitez pas à me demander des ajustements.")   # retour à la ligne brut dans le texte
+
+    redaction = RR.lire_reponse_manuelle(colle, demande)
+
+    assert redaction.collectif == {"synthese": "Premier paragraphe.\nSecond paragraphe.", "conclusion": "Fin."}
+    assert redaction.modele == "claude.ai (mode manuel)"
+    assert RR.extraire_json('```text\nsans objet\n```\n```json\n{"a": 1}\n```') == '{"a": 1}'
+    assert RR.extraire_json('Réponse : {"a": {"b": 2}} — voilà.') == '{"a": {"b": 2}}'
+
+
+def test_les_membres_d_une_reponse_collee_sont_reconnus_a_leur_nom(audit):
+    demande = RR.preparer_demande(audit, _contenu(), CLES, collectif=False)
+    colle = json.dumps({"membres": {
+        "membre_1": {"nom": "  sam LEROY ", "bilan": "Bilan de Sam"},          # ordre inversé, casse, espaces
+        "membre_2": {"nom": "Alex Martín", "bilan": "Bilan d'Alex"},           # accent ajouté
+        "membre_3": {"nom": "Camille Inconnue", "bilan": "Ignoré"},
+    }}, ensure_ascii=False)
+
+    redaction = RR.lire_reponse_manuelle(colle, demande)
+
+    assert redaction.membres == {"sam_leroy": {"bilan": "Bilan de Sam"}, "alex_martin": {"bilan": "Bilan d'Alex"}}
+    assert redaction.notes == ("Textes de « Camille Inconnue » ignorés : membre absent de l'équipe ou champs "
+                               "déjà rédigés.",)
+    sans_nom = RR.lire_reponse_manuelle('{"membres": {"membre_2": {"bilan": "Par la clé"}}}', demande)
+    assert sans_nom.membres == {"sam_leroy": {"bilan": "Par la clé"}}
+
+
+@pytest.mark.parametrize("colle, attendu", [
+    ("   ", "Collez d'abord la réponse"),
+    ("Je ne peux pas rédiger ce rapport.", "Aucun objet JSON"),
+    ('{"collectif": {"synthese": "x",}}', "objet JSON attendu est invalide"),
+    ('{"collectif": {"inconnu": "x"}, "membres": {}}', "aucun des champs demandés"),
+])
+def test_une_reponse_collee_inexploitable_donne_un_message_clair(audit, colle, attendu):
+    demande = RR.preparer_demande(audit, _contenu(), CLES)
+    with pytest.raises(RR.ErreurRedaction, match=re.escape(attendu)):
+        RR.lire_reponse_manuelle(colle, demande)
+
+
 # --------------------------------------------------------------------------- vérifications
 def test_un_chiffre_absent_des_sources_est_signale(audit):
     demande = RR.preparer_demande(audit, _contenu(), CLES, individuel=False)

@@ -289,13 +289,29 @@ def _contenu_courant(contexte_equipe: str) -> tuple[R.ContenuRapport, list[str]]
     ), cles
 
 
+MODE_API = "Automatique (API Claude)"
+MODE_MANUEL = "Manuel : claude.ai, sans clé API"
+
+
+def _appliquer_redaction(redaction: RR.Redaction, demande: RR.Demande, remplacer: bool) -> None:
+    """Écrit les textes produits dans les champs, avant leur création, et garde le bilan affiché."""
+    ecritures = RR.mises_a_jour(redaction, st.session_state, remplacer)
+    for cle, texte_redige in ecritures.items():
+        st.session_state[cle] = texte_redige
+    st.session_state["rp_redaction_bilan"] = {
+        "champs": len(ecritures), "modele": redaction.modele, "notes": list(redaction.notes),
+        "a_completer": RR.passages_a_completer(redaction),
+        "a_verifier": RR.chiffres_non_verifies(redaction, demande),
+    }
+
+
 config_redaction = RR.lire_configuration(st.secrets, os.environ)
 redaction_possible = is_editor() and RR.sdk_disponible()
 with tab_redaction:
-    st.info("Décrivez votre année en un paragraphe : Claude (API d'Anthropic) en rédige un **brouillon** des textes "
-            "du rapport — partie collective et parties individuelles — à partir de ce contexte, des paramètres "
-            "saisis (entreprise, équipe, rôles, outils) et des chiffres de l'audit. Relisez et corrigez ensuite "
-            "chaque champ dans les onglets « 🧭 Partie collective » et « 🙋 Parties individuelles ».")
+    st.info("Décrivez votre année en un paragraphe : Claude en rédige un **brouillon** des textes du rapport — "
+            "partie collective et parties individuelles — à partir de ce contexte, des paramètres saisis "
+            "(entreprise, équipe, rôles, outils) et des chiffres de l'audit. Relisez et corrigez ensuite chaque "
+            "champ dans les onglets « 🧭 Partie collective » et « 🙋 Parties individuelles ».")
     contexte = _texte(st.text_area(
         "Contexte de l'année (un paragraphe)", key="rp_contexte", height=220,
         placeholder="Ex. : Notre stratégie : des prix sous le marché pour gagner du volume, centrée sur l'Integral 7. "
@@ -313,51 +329,97 @@ with tab_redaction:
     remplacer_textes = bool(o3.checkbox(
         "Remplacer les textes déjà rédigés", value=False, key="rp_red_remplacer",
         help="Décoché : seuls les champs vides sont rédigés ; les textes existants servent de contexte."))
-    if not is_editor():
-        st.info("🔒 Réservé aux utilisateurs connectés : chaque rédaction est un appel facturé à l'API Claude.")
-    elif not RR.sdk_disponible():
-        st.warning("Rédaction assistée indisponible : installez le paquet « anthropic » "
-                   "(pip install -r requirements.txt).")
-    clic_redaction = st.button("✨ Rédiger les paragraphes", type="primary", disabled=not redaction_possible)
-    if clic_redaction and not redaction_possible:
-        st.error("Rédaction assistée réservée aux utilisateurs connectés.")
-    elif clic_redaction and not contexte.strip():
-        st.warning("Rédigez d'abord le paragraphe de contexte : c'est la source principale du brouillon.")
-    elif clic_redaction:
-        contenu_saisi, cles_membres = _contenu_courant(contexte)
-        demande = RR.preparer_demande(audit, contenu_saisi, cles_membres, collectif=rediger_collectif,
-                                      individuel=rediger_individuel, remplacer=remplacer_textes)
-        if demande.nb_champs == 0:
+    mode_redaction = st.radio(
+        "Mode de rédaction", [MODE_API, MODE_MANUEL], index=0 if config_redaction.api_key else 1,
+        horizontal=True, key="rp_red_mode",
+        help="Automatique : l'application appelle l'API Claude (clé API et crédits nécessaires). Manuel : vous "
+             "copiez la demande dans une conversation claude.ai (offre gratuite ou abonnement), puis collez sa "
+             "réponse ici — sans clé ni coût pour l'application.")
+
+    if mode_redaction == MODE_API:
+        if not is_editor():
+            st.info("🔒 Réservé aux utilisateurs connectés : chaque rédaction est un appel facturé à l'API Claude. "
+                    "Le mode manuel reste disponible.")
+        elif not RR.sdk_disponible():
+            st.warning("Rédaction automatique indisponible : installez le paquet « anthropic » "
+                       "(pip install -r requirements.txt), ou utilisez le mode manuel.")
+        clic_redaction = st.button("✨ Rédiger les paragraphes", type="primary", disabled=not redaction_possible)
+        if clic_redaction and not redaction_possible:
+            st.error("Rédaction automatique réservée aux utilisateurs connectés.")
+        elif clic_redaction and not contexte.strip():
+            st.warning("Rédigez d'abord le paragraphe de contexte : c'est la source principale du brouillon.")
+        elif clic_redaction:
+            contenu_saisi, cles_membres = _contenu_courant(contexte)
+            demande = RR.preparer_demande(audit, contenu_saisi, cles_membres, collectif=rediger_collectif,
+                                          individuel=rediger_individuel, remplacer=remplacer_textes)
+            if demande.nb_champs == 0:
+                st.info("Rien à rédiger : les champs sélectionnés sont déjà remplis "
+                        "(cochez « Remplacer les textes déjà rédigés » pour les réécrire).")
+            else:
+                redaction = None
+                with st.spinner(f"Rédaction de {demande.nb_champs} champ(s) par Claude…"):
+                    try:
+                        redaction = RR.rediger(demande, config_redaction)
+                    except RR.ErreurRedaction as exc:
+                        st.error(str(exc))
+                if redaction is not None:
+                    _appliquer_redaction(redaction, demande, remplacer_textes)
+        st.caption(f"Modèle : {config_redaction.modele} · effort {config_redaction.effort}. Le contexte, les "
+                   "paramètres du rapport et les chiffres de l'audit sont envoyés à l'API d'Anthropic ; rien "
+                   "n'est écrit en base.")
+    else:
+        # Mode manuel : aucun appel ni coût pour l'application, donc ouvert à tous. La demande est
+        # reconstruite à chaque exécution ; la réponse collée est lue contre elle (membres reconnus
+        # par leur nom, champs rédigés depuis la copie jamais écrasés).
+        demande_manuelle = None
+        if contexte.strip():
+            contenu_saisi, cles_membres = _contenu_courant(contexte)
+            demande_manuelle = RR.preparer_demande(audit, contenu_saisi, cles_membres, collectif=rediger_collectif,
+                                                   individuel=rediger_individuel, remplacer=remplacer_textes)
+        st.markdown("**① Copiez la demande** (bouton en haut à droite du cadre) dans une nouvelle conversation "
+                    "sur claude.ai, puis envoyez-la.")
+        if demande_manuelle is None:
+            st.info("Rédigez d'abord le paragraphe de contexte ci-dessus : il fait partie de la demande.")
+        elif demande_manuelle.nb_champs == 0:
             st.info("Rien à rédiger : les champs sélectionnés sont déjà remplis "
                     "(cochez « Remplacer les textes déjà rédigés » pour les réécrire).")
         else:
-            redaction = None
-            with st.spinner(f"Rédaction de {demande.nb_champs} champ(s) par Claude…"):
+            texte_demande = RR.texte_manuel(demande_manuelle)
+            st.code(texte_demande, language=None, wrap_lines=True, height=260)
+            st.download_button("⬇️ Télécharger la demande (.txt)", data=texte_demande.encode("utf-8"),
+                               file_name="demande_redaction_rapport.txt", mime="text/plain")
+            st.caption(f"{demande_manuelle.nb_champs} champ(s) à rédiger. Si vous modifiez ensuite l'équipe ou "
+                       "les options, copiez de nouveau la demande.")
+        st.markdown("**② Collez la réponse de Claude**, puis intégrez-la : les champs vides sont remplis, vos "
+                    "textes conservés (sauf « Remplacer »).")
+        reponse_collee = _texte(st.text_area(
+            "Réponse de Claude", key="rp_red_reponse", height=180,
+            placeholder='Collez ici toute la réponse : {"collectif": {…}, "membres": {…}}'))
+        if st.button("📥 Intégrer la réponse"):
+            if demande_manuelle is None:
+                st.warning("Rédigez d'abord le paragraphe de contexte, puis copiez la demande (étape ①).")
+            else:
                 try:
-                    redaction = RR.rediger(demande, config_redaction)
+                    redaction = RR.lire_reponse_manuelle(reponse_collee, demande_manuelle)
                 except RR.ErreurRedaction as exc:
                     st.error(str(exc))
-            if redaction is not None:
-                ecritures = RR.mises_a_jour(redaction, st.session_state, remplacer_textes)
-                for _cle, _texte_redige in ecritures.items():
-                    st.session_state[_cle] = _texte_redige
-                st.session_state["rp_redaction_bilan"] = {
-                    "champs": len(ecritures), "modele": redaction.modele,
-                    "a_completer": RR.passages_a_completer(redaction),
-                    "a_verifier": RR.chiffres_non_verifies(redaction, demande),
-                }
+                else:
+                    _appliquer_redaction(redaction, demande_manuelle, remplacer_textes)
+        st.caption("Mode manuel : la demande (contexte, paramètres et chiffres de l'audit) passe par votre "
+                   "conversation claude.ai ; l'application n'appelle aucune API et rien n'est écrit en base.")
+
     bilan_redaction = st.session_state.get("rp_redaction_bilan")
     if isinstance(bilan_redaction, dict):
         st.success(f"✨ Dernière rédaction : {bilan_redaction.get('champs', 0)} champ(s) rempli(s) par "
                    f"{bilan_redaction.get('modele') or 'Claude'}. Relisez-les dans les onglets « 🧭 Partie "
                    "collective » et « 🙋 Parties individuelles ».")
+        for _note in bilan_redaction.get("notes") or []:
+            st.info(_note)
         if bilan_redaction.get("a_completer"):
             st.info(f"{bilan_redaction['a_completer']} passage(s) « [À COMPLÉTER : …] » attendent une information "
                     "que seule l'équipe peut apporter (surlignés en jaune dans le Word).")
         for _champ, _nombres in (bilan_redaction.get("a_verifier") or {}).items():
             st.warning(f"Chiffre(s) absent(s) des données de l'audit, à vérifier — {_champ} : {', '.join(_nombres)}")
-    st.caption(f"Modèle : {config_redaction.modele} · effort {config_redaction.effort}. Le contexte, les paramètres "
-               "du rapport et les chiffres de l'audit sont envoyés à l'API d'Anthropic ; rien n'est écrit en base.")
 
 # --------------------------------------------------------------------------- partie collective
 with tab_coll:

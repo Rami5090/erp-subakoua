@@ -166,6 +166,35 @@ def test_un_refus_du_modele_n_ecrit_aucun_texte(tmp_path):
     assert contenu.synthese == "" and all(m.bilan == "" for m in contenu.membres)   # rien n'a été écrit
 
 
+def test_le_mode_manuel_integre_une_reponse_collee_sans_cle_api(tmp_path):
+    """Visiteur, sans clé API : la demande se copie (ou se télécharge), la réponse de claude.ai se colle."""
+    import rapport_engine as R
+    individuels = [c for c, _, _ in R.CHAMPS_INDIVIDUELS]
+    reponse = {
+        "collectif": {c: f"Texte collé pour {c}." for c, _, _ in R.CHAMPS_COLLECTIFS},
+        "membres": {  # ordre inversé : chaque membre est reconnu à son nom
+            "membre_1": {"nom": "Sam Leroy", **{c: f"Texte de Sam pour {c}." for c in individuels}},
+            "membre_2": {"nom": "Alex Martin", **{c: f"Texte d'Alex pour {c}." for c in individuels}},
+        },
+    }
+    reponse["collectif"]["synthese"] += " Part de marché de 88,8 %."
+    colle = "Voici les textes :\n```json\n" + json.dumps(reponse, ensure_ascii=False, indent=2) + "\n```\nBon courage !"
+    saisie = {**SAISIE_REDACTION, "rp_red_mode": "Manuel : claude.ai, sans clé API", "rp_red_reponse": colle}
+
+    data = _run_page(tmp_path, saisie=saisie, extra_env={
+        "SIM_EDITOR": "0", "SIM_CLICK": "Intégrer la réponse|Générer le rapport Word"})
+
+    assert data["errors"] == [] and data["redaction"] == []           # aucun appel à l'API
+    assert any("21 champ(s) rempli(s) par claude.ai (mode manuel)" in s for s in data["success"])
+    assert any("à vérifier" in w and "88,8 %" in w.replace(" ", " ") for w in data["warnings"])
+    demande = (tmp_path / "demande_redaction_rapport.txt").read_text(encoding="utf-8")
+    assert SAISIE_REDACTION["rp_contexte"] in demande and '"nom": "Sam Leroy"' in demande
+    fichier = next(d["file_name"] for d in data["downloads"] if d["file_name"].endswith(".json"))
+    contenu = R.ContenuRapport.from_json((tmp_path / fichier).read_bytes())
+    assert contenu.synthese.startswith("Texte collé pour synthese.")
+    assert [m.bilan for m in contenu.membres] == ["Texte d'Alex pour bilan.", "Texte de Sam pour bilan."]
+
+
 def test_la_page_degrade_sans_planter_sur_une_base_fraiche(tmp_path):
     """Tables du scraper absentes : la page le dit et produit quand même la trame du rapport."""
     data = _run_page(tmp_path, saisie={}, extra_env={"SIM_SANS_EXTRACTIONS": "1"})
