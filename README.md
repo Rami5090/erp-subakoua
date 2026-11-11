@@ -416,6 +416,54 @@ chaque prédiction n'utilisant que des données strictement antérieures au poin
 - **Concurrence** : les fragments concurrents sont **fusionnés**, l'entreprise pilotée exclue du
   décompte.
 
+### Part de marché du centre de décision — scénario de base et scénario candidat
+
+La *PDM de référence* est la part **observée** à l'ancrage (M-1). La *PDM potentielle* ne s'en écarte
+que de l'écart d'utilité entre le **scénario candidat** et le **scénario de base**, rétréci selon la
+confiance de la calibration (mise à jour en logit). Le scénario de base est posé dans
+`competitors.attrs["baseline_scenario"]` sur une **copie** du cadre concurrentiel mis en cache
+(`anchor_competitors`), jamais sur l'objet du cache : sans cet ancrage, le candidat servirait de
+référence à lui-même et la PDM ne bougerait jamais.
+
+**Scénario de base** — leviers **observés** de l'entreprise à l'ancrage (`resolve_own_levers`, calculé
+dans la préparation mise en cache `_preparer_pdm`) : ligne propre du benchmark, sinon dernière
+observation complète de l'historique, sinon valeur par défaut signalée.
+
+**Scénario candidat** (`build_simulator_candidate`) — la base, dont **seuls les leviers pilotés par le
+simulateur** changent, avec la même sémantique :
+
+| Levier du modèle | Base (observée) | Candidat |
+|---|---|---|
+| Prix | prix observé du produit du segment | base × prix saisi ÷ prix M-1, **du produit du segment** |
+| Publicité de marque | publicité de marque observée | base × budget saisi ÷ budget M-1 — **marque seule**, sans les PLV |
+| Publicité produit | publicité observée du produit du segment | base × PLV saisie ÷ PLV M-1, **du produit du segment** (et non la moyenne) |
+| Qualité | qualité observée | **inchangée** : ce n'est pas un levier du simulateur |
+
+La variation est **relative** à la valeur M-1, qui est aussi la valeur initiale du widget : l'écart
+entre valeur décidée et valeur observée (prix moyen constaté, période du benchmark, unités…) est ainsi
+neutralisé. Une publicité nulle en M-1 ou à l'observation se transpose en écart absolu, borné à zéro.
+
+- **Invariant** : sans décision nouvelle, **PDM potentielle = PDM de référence**, même quand les
+  décisions M-1 diffèrent de l'observation.
+- **Produit du segment** : reconnu sur les ventes réelles par produit (période du benchmark, sinon
+  dernière période réelle au plus tard à l'ancrage). S'il n'est pas identifiable, seule la publicité de
+  marque est transmise (avertissement affiché) et l'effet porte sur toute la gamme.
+- **Pas de plafond marketing** dans le cockpit : la dépense est la décision elle-même. Seul un atelier
+  chargé mais vide de machines rend le scénario irréalisable.
+
+> ⚠️ **À valider sur données réelles avant de décider.** La calibration est descriptive, non causale.
+> Le volet *🔎 Détail du calcul de PDM* du tableau de bord affiche la base observée et sa source, la
+> décision M-1, la saisie, le candidat et les coefficients calibrés. Avant de s'appuyer sur les chiffres :
+>
+> 1. le produit du segment est le bon, et aucune base ne provient d'une « valeur par défaut » ;
+> 2. la base observée est proche des décisions M-1 — un écart important signale une source à vérifier
+>    (période du benchmark, prix moyen constaté, unités) ;
+> 3. le coefficient de prix est **négatif** et la confiance au moins *modérée* — un coefficient positif
+>    traduit des effets confondus dans l'échantillon, pas une élasticité : ne pas s'en servir pour fixer
+>    un prix ;
+> 4. leviers inchangés ⇒ PDM potentielle = PDM de référence ;
+> 5. a posteriori, la PDM potentielle annoncée pour un mois est confrontée à la PDM observée ensuite.
+
 ### Finance — `finance_engine.py`
 
 Moteur **sans Streamlit ni SQL**, intégralement en `Decimal` : compte de résultat prévisionnel,
@@ -561,13 +609,15 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `272 passed, 2 skipped`**
+**Résultat actuel : `289 passed, 2 skipped`**
 
 | Fichier | Couverture |
 |---|---|
 | `test_forecast_engine.py` | Saisonnalité, prévision 12 mois, **absence de fuite temporelle**, concurrence |
 | `test_optimizer_engine.py` | Calibration, prédiction de part, grille respectant le budget |
 | `test_optimizer_capacity_limits.py` | Fusion des données concurrentes, **capacité appliquée comme plafond** |
+| `test_pdm_candidat.py` | **Scénario candidat de la PDM** : base observée intacte sans décision nouvelle, prix du segment en variation relative, publicité de marque seule, PLV du seul produit du segment, qualité inchangée, **ancrage posé sur une copie**, effet d'une baisse de prix selon le signe du coefficient, produit du segment reconnu sur les ventes réelles |
+| `test_pdm_centre_decision.py` | PDM du centre de décision de bout en bout (benchmark mensuel calibrable) : **sans changement de levier, PDM potentielle = PDM de référence** ; baisse du prix du segment ⇒ PDM selon le coefficient calibré ; leviers d'un autre produit sans effet ; cache sans effet sur le résultat |
 | `test_break_even_engine.py` | **Point d'équilibre exact**, imputation des charges fixes, mix sous contrainte de capacité, **équilibre hors de portée signalé**, objectif marge/volume, **valeurs à atteindre** (plancher de prix, plafond de coût, machines à ajouter) |
 | `test_cours_engine.py` | **Prévision des cours** : méthode choisie par backtest, série triée chronologiquement, historique insuffisant sans prévision, cours négatif ramené à zéro |
 | `test_table_prix_marche.py` | Lecture des tables du module expert-comptable **par contenu** (onglet dictionnaire *ou* liste de tableaux — structure réelle du portail) |
@@ -591,7 +641,8 @@ python -m pytest -q
 **Invariants protégés par les tests :** aucune fuite temporelle · aucune URL inventée · aucun
 payload non lisible traité comme acquis · le rôle ne provient jamais de l'URL · le dépassement de
 capacité plafonne au lieu d'éliminer le scénario · **on ne cède jamais plus de machines qu'on n'en
-possède, et le parc ne descend jamais sous zéro**.
+possède, et le parc ne descend jamais sous zéro** · **sans décision nouvelle, la PDM potentielle égale
+la PDM de référence**.
 
 ## 📁 Structure du dépôt
 
@@ -626,8 +677,8 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 272 tests exécutés + 2 ignorés
-├── rapport_jeu_essai.py          # Année de jeu fictive pour les tests du rapport
+├── test_*.py                     # 289 tests exécutés + 2 ignorés
+├── rapport_jeu_essai.py          # Année de jeu fictive (tests du rapport, benchmark PDM calibrable)
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne
 │

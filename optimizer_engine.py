@@ -594,3 +594,125 @@ def resolve_own_levers(own: Mapping[str, Any] | None, history: pd.DataFrame | No
     out["sources"] = sources
     out["uses_defaults"] = [k for k, v in sources.items() if v.startswith("valeur par défaut")]
     return out
+
+
+def detect_segment_product_from_sales(
+    sales_history: pd.DataFrame | None,
+    segment_units: float | None,
+    benchmark_period: str | None,
+    anchor_period: str,
+) -> str | None:
+    """Produit du segment, reconnu sur l'historique des ventes propres par produit.
+
+    La ligne propre du benchmark ne donne que les ventes du segment, sans détail par
+    produit : ``detect_segment_product`` appliqué à cette ligne ne trouve jamais rien.
+    Comme l'Optimiseur, on compare donc ces ventes aux ventes réelles par produit :
+    d'abord celles de la période du benchmark (d'où proviennent les ventes du segment),
+    puis celles de la dernière période réelle au plus tard à l'ancrage. ``None`` si aucun
+    produit ne correspond sans ambiguïté.
+    """
+    from forecast_engine import period_index
+
+    if sales_history is None or sales_history.empty or not segment_units:
+        return None
+    rows: list[pd.Series] = []
+    if benchmark_period and "periode" in sales_history.columns:
+        same_period = sales_history.loc[sales_history["periode"] == benchmark_period]
+        if not same_period.empty:
+            rows.append(same_period.iloc[-1])
+    if "index" in sales_history.columns:
+        up_to_anchor = sales_history.loc[sales_history["index"] <= period_index(anchor_period)]
+        if not up_to_anchor.empty:
+            rows.append(up_to_anchor.sort_values("index").iloc[-1])
+    for row in rows:
+        product = detect_segment_product(row, segment_units)
+        if product is not None:
+            return product
+    return None
+
+
+def _transpose_variation(observed: float, decided: float, reference: float) -> float:
+    """Applique à la valeur observée la variation décidée par rapport à la référence M-1.
+
+    Variation relative (observé × décidé / référence) lorsque l'observé et la référence
+    sont positifs : un écart de niveau, ou d'unité, entre la décision et l'observation
+    est ainsi neutralisé. Sinon (observation ou référence nulle), écart absolu borné à
+    zéro. Dans les deux cas, un levier laissé à sa référence rend exactement l'observé.
+    """
+    if observed > 0 and reference > 0:
+        return observed * (decided / reference)
+    return max(0.0, observed + (decided - reference))
+
+
+def build_simulator_candidate(
+    baseline: Mapping[str, float],
+    segment_product: str | None,
+    decided: Mapping[str, Any],
+    reference: Mapping[str, Any],
+) -> tuple[dict[str, float], list[str]]:
+    """Scénario candidat du simulateur, construit à partir du scénario de base.
+
+    ``baseline`` porte les leviers OBSERVÉS à l'ancrage (``resolve_own_levers``) : prix et
+    publicité du produit du segment, publicité de marque, qualité. ``decided`` et
+    ``reference`` portent les leviers saisis dans le simulateur et leurs valeurs M-1
+    (valeurs initiales des widgets) : ``{"prix": {produit: €}, "pub_marque": €,
+    "pub_produit": {produit: €}}``.
+
+    Seuls les leviers pilotés par le simulateur sont remplacés, avec la sémantique du
+    scénario de base :
+
+    * prix : celui du produit du segment, en variation relative par rapport au prix M-1
+      — l'écart entre prix décidé et prix observé est neutralisé ;
+    * publicité de marque : le budget de marque seul (sans les publicités produits) ;
+    * publicité produit : celle du produit du segment (et non la moyenne de la gamme) ;
+    * qualité : inchangée, ce n'est pas un levier du simulateur.
+
+    Les publicités sont transposées comme le prix (``_transpose_variation``). Un levier
+    laissé à sa valeur M-1 rend donc exactement la valeur observée : sans décision
+    nouvelle, la PDM potentielle est égale à la PDM de référence.
+
+    Retourne le scénario et les notes à afficher quand un levier n'a pu être transmis.
+    """
+    scenario = {key: float(baseline[key]) for key in ("price", "quality", "brand_ads", "product_ads")}
+    notes: list[str] = []
+
+    brand_decided, brand_ref = _num(decided.get("pub_marque")), _num(reference.get("pub_marque"))
+    if brand_decided is not None and brand_ref is not None:
+        scenario["brand_ads"] = _transpose_variation(scenario["brand_ads"], brand_decided, brand_ref)
+
+    if segment_product is None:
+        notes.append(
+            "Produit du segment non identifiable : le prix et la publicité produit saisis ne sont pas "
+            "transmis au calcul de PDM (seule la publicité de marque l'est)."
+        )
+        return scenario, notes
+
+    price_decided = _num((decided.get("prix") or {}).get(segment_product))
+    price_ref = _num((reference.get("prix") or {}).get(segment_product))
+    if price_decided is not None and price_ref is not None and price_decided > 0 and price_ref > 0:
+        scenario["price"] = scenario["price"] * (price_decided / price_ref)
+    elif price_decided != price_ref:
+        notes.append(
+            f"Prix de « {segment_product} » inexploitable (saisi : {price_decided}, M-1 : {price_ref}) : "
+            "la variation de prix n'est pas transmise au calcul de PDM."
+        )
+
+    ads_decided = _num((decided.get("pub_produit") or {}).get(segment_product))
+    ads_ref = _num((reference.get("pub_produit") or {}).get(segment_product))
+    if ads_decided is not None and ads_ref is not None:
+        scenario["product_ads"] = _transpose_variation(scenario["product_ads"], ads_decided, ads_ref)
+    return scenario, notes
+
+
+def anchor_competitors(competitors: pd.DataFrame, baseline: Mapping[str, float]) -> pd.DataFrame:
+    """Copie du cadre concurrentiel portant le scénario de base comme ancrage de la PDM.
+
+    ``evaluate_scenario`` lit l'ancrage dans ``competitors.attrs["baseline_scenario"]``.
+    Sans lui, le candidat sert de référence à lui-même : l'écart d'utilité est nul et la
+    PDM potentielle reste égale à la PDM de référence, quels que soient les leviers.
+    L'attribut est posé sur une COPIE : le cadre reçu, souvent issu d'un cache, n'est
+    jamais modifié.
+    """
+    anchored = competitors.copy()
+    anchored.attrs["baseline_scenario"] = dict(baseline)
+    return anchored

@@ -72,7 +72,10 @@ from optimizer_engine import (
     calibrate_descriptive_response,
     predict_anchored_share,
     resolve_reference_share,
-    detect_segment_product,
+    detect_segment_product_from_sales,
+    resolve_own_levers,
+    build_simulator_candidate,
+    anchor_competitors,
     evaluate_scenario,
     apply_fleet_decisions,
     CapacityProfile,
@@ -145,6 +148,14 @@ SIM_STATE_PREFIXES = (
     "slider_",
 )
 
+#: Valeurs par défaut des leviers marketing du simulateur (clé produit courte),
+#: retenues quand la ligne M-1 ne les renseigne pas. Elles fixent la valeur
+#: initiale des widgets ET la référence M-1 des variations transmises au calcul
+#: de PDM : une seule source garantit qu'un levier non modifié n'y crée aucun écart.
+DEFAUTS_PRIX_SIMULATEUR = {"s3": 115.0, "i3": 190.0, "s5": 220.0, "i5": 280.0, "i7": 375.0}
+DEFAUTS_PLV_SIMULATEUR = {"s3": 3100.0, "i3": 4100.0, "s5": 3200.0, "i5": 4200.0, "i7": 3500.0}
+DEFAUT_BUDGET_MARQUE_SIMULATEUR = 60500.0
+
 def reinitialiser_decisions_simulation():
     for _key in stale_keys(list(st.session_state.keys()), SIM_STATE_PREFIXES):
         del st.session_state[_key]
@@ -164,10 +175,11 @@ def _preparer_pdm(_engine, empreinte_etudes: str, empreinte_donnees: str, period
     """Partie coûteuse du calcul de PDM, indépendante des leviers du simulateur.
 
     Lecture complète de `erp_donnees` et `erp_etudes`, snapshot concurrentiel,
-    calibration et prévision 12 mois : tout cela ne dépend que des données et
-    de la période de référence. Mis en cache sous l'empreinte des deux tables,
-    ce travail n'est plus refait à chaque interaction avec un levier : seule
-    l'évaluation du scénario candidat l'est (voir `_compute_pdm_scenario`).
+    calibration, prévision 12 mois et scénario de base (leviers observés à
+    l'ancrage) : tout cela ne dépend que des données et de la période de
+    référence. Mis en cache sous l'empreinte des deux tables, ce travail n'est
+    plus refait à chaque interaction avec un levier : seule l'évaluation du
+    scénario candidat l'est (voir `_compute_pdm_scenario`).
 
     Retour : ``messages`` (affichés par l'appelant), ``warnings``, ``erreur``
     (arrêt du calcul) et les objets nécessaires à l'évaluation.
@@ -251,22 +263,93 @@ def _preparer_pdm(_engine, empreinte_etudes: str, empreinte_donnees: str, period
         prep["warnings"].append("PDM de référence indisponible")
         segment_share = 0.0
 
-    # 8. Produit du segment, prévision 12 mois servant de demande de base
-    segment_product = detect_segment_product(competitive.get("own") or {}, segment_units)
+    # 8. Produit du segment — reconnu sur les ventes réelles par produit, car la ligne
+    #    propre du benchmark n'en donne pas le détail — et prévision 12 mois servant
+    #    de demande de base.
     sales = extract_own_sales_history(period_data, study_data=study_data)
+    segment_product = detect_segment_product_from_sales(sales, segment_units, competitive.get("period"), periode_m1)
     struct = extract_structural_seasonality(period_data, study_data=study_data)
     forecast_df, _ = rolling_forecast_12m(sales, struct, periode_m1, horizon=12)
 
+    # 9. Scénario de base : leviers OBSERVÉS de l'entreprise à l'ancrage (benchmark,
+    #    sinon dernière observation complète de l'historique), comme dans l'Optimiseur.
+    #    C'est l'ancrage de la PDM de référence ; le candidat du simulateur s'en déduit
+    #    (voir `_compute_pdm_scenario`).
+    leviers_observes = resolve_own_levers(competitive.get("own"), hist, own_company, periode_m1)
+    baseline_scenario = {
+        "price": float(leviers_observes["prix"]),
+        "quality": float(leviers_observes["qualite"]),
+        "brand_ads": float(leviers_observes["publicite_marque"]),
+        "product_ads": float(leviers_observes["publicite_produit"]),
+    }
+    # La qualité, inchangée dans le candidat, s'annule dans l'écart d'utilité : une
+    # valeur par défaut y est sans effet. Pour les autres leviers, elle fausse l'ampleur.
+    a_verifier = [k for k in leviers_observes["uses_defaults"] if k != "qualite"]
+    if a_verifier:
+        prep["warnings"].append(
+            "Leviers observés introuvables pour " + ", ".join(a_verifier)
+            + " : valeurs par défaut prises comme base (à vérifier) — l'ampleur des variations de PDM est incertaine."
+        )
+
     prep.update({
         "pdm_reference": segment_share * 100.0,
+        "pdm_reference_source": ref.get("source"),
         "segment_share": segment_share,
         "segment_units": segment_units,
         "segment_product": segment_product,
         "calibration": cal,
         "competitors": competitors,
         "forecast_df": forecast_df,
+        "baseline_scenario": baseline_scenario,
+        "baseline_sources": leviers_observes["sources"],
     })
     return prep
+
+
+_LIBELLES_COEFFICIENTS_PDM = {
+    "prix": "Prix",
+    "qualite": "Qualité",
+    "log_publicite_marque": "Publicité de marque (log)",
+    "log_publicite_produit": "Publicité produit (log)",
+}
+
+
+def _diagnostic_pdm(baseline, scenario, sources, segment_product, leviers, leviers_m1, cal) -> dict:
+    """Tableaux de contrôle du calcul de PDM : base observée → candidat, et coefficients calibrés.
+
+    Ils permettent de valider le calcul sur données réelles : la base observée doit
+    correspondre aux décisions M-1 (sinon, vérifier sa source), et l'effet d'une
+    variation de levier suit le signe de son coefficient.
+    """
+    seg = segment_product
+    libelle_seg = seg or "segment non identifié"
+
+    def ligne(levier, cle, source, m1, saisi):
+        return {
+            "Levier": levier, "Base observée": baseline[cle], "Source de la base": sources.get(source, "—"),
+            "Décision M-1": m1, "Simulateur": saisi, "Candidat": scenario[cle],
+        }
+
+    detail = [
+        ligne(f"Prix ({libelle_seg})", "price", "prix",
+              (leviers_m1.get("prix") or {}).get(seg), (leviers.get("prix") or {}).get(seg)),
+        ligne("Publicité de marque", "brand_ads", "publicite_marque",
+              leviers_m1.get("pub_marque"), leviers.get("pub_marque")),
+        ligne(f"Publicité produit ({libelle_seg})", "product_ads", "publicite_produit",
+              (leviers_m1.get("pub_produit") or {}).get(seg), (leviers.get("pub_produit") or {}).get(seg)),
+        ligne("Qualité (pas un levier du simulateur)", "quality", "qualite", None, None),
+    ]
+    coefficients = [
+        {
+            "Variable": _LIBELLES_COEFFICIENTS_PDM.get(nom, nom),
+            "Coefficient": float(beta),
+            "Effet d'une hausse": "PDM ↑" if beta > 0 else ("PDM ↓" if beta < 0 else "aucun"),
+        }
+        for nom, beta in zip(cal.feature_names, cal.coefficients)
+    ]
+    resume = (f"calibration {cal.confidence} · {cal.n_obs} observations sur {cal.n_periods} période(s) · "
+              f"R² descriptif {cal.r2:.2f}")
+    return {"detail_leviers": detail, "coefficients": coefficients, "calibration_resume": resume}
 
 
 def _compute_pdm_scenario(
@@ -275,13 +358,12 @@ def _compute_pdm_scenario(
     tour_id_precedent: int,
     periode_actuelle: str,
     periode_m1: str,
-    donnees_mkg: dict,
+    leviers: dict,
+    leviers_m1: dict,
     ordres_prod_dict: dict,
     nb_m_dec_sim: int,
     nb_m_ass_sim: int,
     nb_m_cond_sim: int,
-    budget_mkg_prev: float,
-    budgets_p_dict: dict,
     own_company: int = 3,
 ) -> dict:
     """Calcule la PDM potentielle et réalisable pour le scénario courant du simulateur.
@@ -290,13 +372,21 @@ def _compute_pdm_scenario(
     l'empreinte des données ; seule l'évaluation du scénario candidat est
     refaite à chaque interaction.
 
+    ``leviers`` : leviers marketing saisis dans le simulateur ; ``leviers_m1`` :
+    leurs valeurs M-1 (valeurs initiales des widgets). Format :
+    ``{"prix": {produit: €}, "pub_marque": €, "pub_produit": {produit: €}}``.
+    Le candidat est le scénario de base observé dont seuls ces leviers changent,
+    en variation par rapport à M-1 (`build_simulator_candidate`) : sans décision
+    nouvelle, la PDM potentielle est égale à la PDM de référence.
+
     Retourne un dict avec:
     - pdm_potentielle: PDM avant contrainte de capacité
     - pdm_realisable: PDM après contrainte de capacité
-    - pdm_reference: PDM de référence (ancrage)
+    - pdm_reference: PDM de référence (ancrage), et sa source
     - calibration_confidence: niveau de confiance de la calibration
     - capacity_bottlenecks: ateliers en surcapacité
     - service_rate: taux de service (demande servie / demande totale)
+    - segment_product, detail_leviers, coefficients, calibration_resume: contrôle du calcul
     - warnings: liste d'avertissements
     """
     warnings = []
@@ -328,52 +418,59 @@ def _compute_pdm_scenario(
         warnings.append(prep["erreur"])
         return result
     result["pdm_reference"] = prep["pdm_reference"]
+    result["pdm_reference_source"] = prep.get("pdm_reference_source")
 
     try:
-        # Scénario candidat construit depuis les entrées du simulateur.
-        # NB : le scénario de base (leviers observés en M-1) n'est pas transmis
-        # comme ancrage à `evaluate_scenario` (contrairement à l'Optimiseur) ;
-        # le calcul d'un scénario de base, dont le résultat n'était jamais lu,
-        # a été supprimé : il coûtait une évaluation complète par interaction.
-        prix_i5 = donnees_mkg.get('Prix_I5', 280.0)
-        pub_prod_moy = sum(budgets_p_dict.values()) / max(1, len(budgets_p_dict)) if budgets_p_dict else 0.0
-        scenario = {
-            "price": float(prix_i5),  # prix produit segment par défaut
-            "quality": 50.0,          # défaut, à lire depuis le simulateur
-            "brand_ads": budget_mkg_prev,
-            "product_ads": pub_prod_moy,
-        }
+        # Candidat = scénario de base (leviers OBSERVÉS à l'ancrage, voir `_preparer_pdm`)
+        # dont seuls les leviers pilotés par le simulateur sont remplacés, en variation
+        # par rapport à leur valeur M-1 : prix et publicité du produit du segment,
+        # publicité de marque seule. La qualité, qui n'est pas un levier du simulateur,
+        # reste celle de la base.
+        baseline = prep["baseline_scenario"]
+        segment_product = prep["segment_product"]
+        scenario, notes = build_simulator_candidate(baseline, segment_product, leviers, leviers_m1)
+        warnings.extend(notes)
+        # L'ancrage est posé sur une COPIE du cadre concurrentiel : l'objet renvoyé par
+        # le cache de `_preparer_pdm` n'est jamais modifié.
+        competitors = anchor_competitors(prep["competitors"], baseline)
         cap = CapacityProfile(
             machines={"Decoupe": nb_m_dec_sim, "Assemblage": nb_m_ass_sim, "Conditionnement": nb_m_cond_sim},
             times={p: dict(v) for p, v in DEFAULT_TIMES.items()},
             capacity_min=CAPACITY_MIN_PER_MACHINE,
             source="simulateur",
         )
+        # Le cockpit n'a pas de plafond marketing : la dépense est la décision elle-même et
+        # ses effets passent par la projection financière. Seul un atelier chargé mais vide
+        # de machines peut donc rendre le scénario irréalisable.
         cand_eval = evaluate_scenario(
             prep["forecast_df"],
-            prep["segment_product"],
+            segment_product,
             prep["segment_share"],
             prep["segment_units"],
             prep["calibration"],
-            prep["competitors"],
+            competitors,
             scenario,
-            budget_mkg_prev,
+            float("inf"),
             cap,
         )
 
-        result["pdm_potentielle"] = cand_eval.get("potential_share", 0.0) * 100.0
-        result["pdm_realisable"] = cand_eval.get("predicted_share", 0.0) * 100.0
+        result["pdm_potentielle"] = (cand_eval.get("potential_share") or 0.0) * 100.0
+        result["pdm_realisable"] = (cand_eval.get("predicted_share") or 0.0) * 100.0
         result["capacity_bottlenecks"] = cand_eval.get("capacity_bottlenecks", [])
         result["service_rate"] = cand_eval.get("service_rate", 1.0)
         result["calibration_confidence"] = prep["calibration"].confidence
+        result["segment_product"] = segment_product
+        result.update(_diagnostic_pdm(
+            baseline, scenario, prep["baseline_sources"], segment_product, leviers, leviers_m1, prep["calibration"],
+        ))
 
         if cand_eval.get("max_demand_capacity_utilization", 0) > 1.0:
             warnings.append(f"Demande > capacité : {cand_eval.get('capacity_bottlenecks')}")
 
         if not cand_eval.get("feasible", True):
             warnings.append(
-                "Scénario irréalisable : budget de publicité dépassé, ou atelier vide "
-                "(capacité nulle alors qu'il est chargé) — cas typique d'une cession de machines."
+                "Scénario irréalisable : atelier vide (capacité nulle alors qu'il est chargé) "
+                "— cas typique d'une cession de machines."
             )
 
     except Exception as e:
@@ -2419,25 +2516,31 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
     with tab_sim_marche:
         st.subheader("1. Marché, prix & ventes")
         st.caption("Leviers cœur : prix de vente, budget de marque, PLV et volumes vendus.")
+        # Valeurs M-1 des leviers marketing : valeur initiale des widgets ET référence des
+        # variations transmises au calcul de PDM (un levier non modifié n'y crée aucun écart).
+        prix_m1 = {PRODUCT_KEY_TO_NAME[k]: ref_number(donnees_mkg, f"Prix_{k.upper()}", v) for k, v in DEFAUTS_PRIX_SIMULATEUR.items()}
+        plv_m1 = {PRODUCT_KEY_TO_NAME[k]: ref_number(donnees_mkg, f"Pub_{k.upper()}", v) for k, v in DEFAUTS_PLV_SIMULATEUR.items()}
+        budget_marque_m1 = ref_number(donnees_mkg, "Budget_Marque", DEFAUT_BUDGET_MARQUE_SIMULATEUR)
         with st.container(border=True):
             st.markdown("**💰 Prix catalogue**")
             c_m1, c_m2, c_m3, c_m4, c_m5 = st.columns(5)
-            prix_s3 = c_m1.number_input("Shorty 3 (€)", key="sim_pm_s3", value=ref_number(donnees_mkg, 'Prix_S3', 115.0))
-            prix_i3 = c_m2.number_input("Integral 3 (€)", key="sim_pm_i3", value=ref_number(donnees_mkg, 'Prix_I3', 190.0))
-            prix_s5 = c_m3.number_input("Shorty 5 (€)", key="sim_pm_s5", value=ref_number(donnees_mkg, 'Prix_S5', 220.0))
-            prix_i5 = c_m4.number_input("Integral 5 (€)", key="sim_pm_i5", value=ref_number(donnees_mkg, 'Prix_I5', 280.0))
-            prix_i7 = c_m5.number_input("Integral 7 (€)", key="sim_pm_i7", value=ref_number(donnees_mkg, 'Prix_I7', 375.0))
+            prix_s3 = c_m1.number_input("Shorty 3 (€)", key="sim_pm_s3", value=prix_m1["Shorty 3"])
+            prix_i3 = c_m2.number_input("Integral 3 (€)", key="sim_pm_i3", value=prix_m1["Integral 3"])
+            prix_s5 = c_m3.number_input("Shorty 5 (€)", key="sim_pm_s5", value=prix_m1["Shorty 5"])
+            prix_i5 = c_m4.number_input("Integral 5 (€)", key="sim_pm_i5", value=prix_m1["Integral 5"])
+            prix_i7 = c_m5.number_input("Integral 7 (€)", key="sim_pm_i7", value=prix_m1["Integral 7"])
 
         with st.container(border=True):
             st.markdown("**📣 Marketing**")
-            budget_pub_marque = sim_number("Budget Pub Marque HT (€)", "sim_pm_pub_marque", ref_number(donnees_mkg, 'Budget_Marque', 60500.0), step=500.0)
+            budget_pub_marque = sim_number("Budget Pub Marque HT (€)", "sim_pm_pub_marque", budget_marque_m1, step=500.0)
             c_pub1, c_pub2, c_pub3, c_pub4, c_pub5 = st.columns(5)
-            pub_s3 = c_pub1.number_input("PLV S3 (€)", key="sim_pub_s3", value=ref_number(donnees_mkg, 'Pub_S3', 3100.0), step=100.0)
-            pub_i3 = c_pub2.number_input("PLV I3 (€)", key="sim_pub_i3", value=ref_number(donnees_mkg, 'Pub_I3', 4100.0), step=100.0)
-            pub_s5 = c_pub3.number_input("PLV S5 (€)", key="sim_pub_s5", value=ref_number(donnees_mkg, 'Pub_S5', 3200.0), step=100.0)
-            pub_i5 = c_pub4.number_input("PLV I5 (€)", key="sim_pub_i5", value=ref_number(donnees_mkg, 'Pub_I5', 4200.0), step=100.0)
-            pub_i7 = c_pub5.number_input("PLV I7 (€)", key="sim_pub_i7", value=ref_number(donnees_mkg, 'Pub_I7', 3500.0), step=100.0)
+            pub_s3 = c_pub1.number_input("PLV S3 (€)", key="sim_pub_s3", value=plv_m1["Shorty 3"], step=100.0)
+            pub_i3 = c_pub2.number_input("PLV I3 (€)", key="sim_pub_i3", value=plv_m1["Integral 3"], step=100.0)
+            pub_s5 = c_pub3.number_input("PLV S5 (€)", key="sim_pub_s5", value=plv_m1["Shorty 5"], step=100.0)
+            pub_i5 = c_pub4.number_input("PLV I5 (€)", key="sim_pub_i5", value=plv_m1["Integral 5"], step=100.0)
+            pub_i7 = c_pub5.number_input("PLV I7 (€)", key="sim_pub_i7", value=plv_m1["Integral 7"], step=100.0)
 
+        prix_simulateur = {'Shorty 3': prix_s3, 'Integral 3': prix_i3, 'Shorty 5': prix_s5, 'Integral 5': prix_i5, 'Integral 7': prix_i7}
         budgets_p_dict = {'Shorty 3': pub_s3, 'Integral 3': pub_i3, 'Shorty 5': pub_s5, 'Integral 5': pub_i5, 'Integral 7': pub_i7}
 
         with st.container(border=True):
@@ -3398,20 +3501,20 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
         taux_profitabilite_cumule = (res_avant_impot_cumule_sim / ca_cumule_sim * 100) if ca_cumule_sim > 0 else taux_profitabilite
         taux_rentabilite_cumule = (res_avant_impot_cumule_sim / capitaux_propres * 100) if capitaux_propres > 0 else taux_rentabilite
 
-        # Calcul PDM pour le scénario courant
+        # Calcul PDM pour le scénario courant : leviers saisis et leurs valeurs M-1
+        # (valeurs initiales des widgets), pour ne transmettre que leur variation.
         pdm_result = _compute_pdm_scenario(
             engine=engine,
             tour_id_actif=tour_id_actif,
             tour_id_precedent=tour_id_precedent,
             periode_actuelle=periode_db,
             periode_m1=period_for_tour(tour_id_precedent),
-            donnees_mkg=donnees_mkg,
+            leviers={"prix": prix_simulateur, "pub_marque": budget_pub_marque, "pub_produit": budgets_p_dict},
+            leviers_m1={"prix": prix_m1, "pub_marque": budget_marque_m1, "pub_produit": plv_m1},
             ordres_prod_dict=ordres_prod_dict,
             nb_m_dec_sim=nb_m_dec_sim,
             nb_m_ass_sim=nb_m_ass_sim,
             nb_m_cond_sim=nb_m_cond_sim,
-            budget_mkg_prev=budget_mkg_prev,
-            budgets_p_dict=budgets_p_dict,
             own_company=3,
         )
         _log_duree("calcul PDM")
@@ -3433,8 +3536,16 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
 
             # Ligne PDM
             k7, k8, k9 = st.columns(3)
-            k7.metric("PDM de référence", f"{pdm_result['pdm_reference']:.2f} %", help=f"Source : {pdm_result.get('calibration_confidence', 'inconnue')}")
-            k8.metric("PDM potentielle", f"{pdm_result['pdm_potentielle']:.2f} %", help="Avant contrainte de capacité")
+            k7.metric(
+                "PDM de référence", f"{pdm_result['pdm_reference']:.2f} %",
+                help=f"Source : {pdm_result.get('pdm_reference_source') or 'inconnue'} · "
+                     f"calibration : {pdm_result.get('calibration_confidence', 'inconnue')}",
+            )
+            k8.metric(
+                "PDM potentielle", f"{pdm_result['pdm_potentielle']:.2f} %",
+                help="Avant contrainte de capacité. Seule la variation des leviers saisis par rapport à M-1 "
+                     "(prix et publicité du produit du segment, publicité de marque) l'écarte de la PDM de référence.",
+            )
             k9.metric("PDM réalisable", f"{pdm_result['pdm_realisable']:.2f} %", help=f"Après contrainte capacité (taux service : {pdm_result['service_rate']*100:.1f}%)")
 
             if not treso_ouverture_connue:
@@ -3447,6 +3558,17 @@ elif module_principal == "🧠 Simulateur & Décision Stratégique":
             if pdm_result['warnings']:
                 for w in pdm_result['warnings']:
                     st.warning(f"⚠️ PDM : {w}")
+
+            if pdm_result.get("detail_leviers"):
+                with st.expander("🔎 Détail du calcul de PDM — à valider sur données réelles avant décision"):
+                    st.caption(
+                        f"Produit du segment : {pdm_result['segment_product'] or 'non identifiable (effet appliqué à toute la gamme)'}"
+                        f" · {pdm_result['calibration_resume']}. Le candidat reprend la base observée et n'en change que les "
+                        "leviers saisis, en variation par rapport à leur valeur M-1. À vérifier : la base observée doit "
+                        "correspondre aux décisions M-1, et l'effet d'un levier suit le signe de son coefficient."
+                    )
+                    st.dataframe(pd.DataFrame(pdm_result["detail_leviers"]), hide_index=True, width="stretch")
+                    st.dataframe(pd.DataFrame(pdm_result["coefficients"]), hide_index=True, width="stretch")
 
         with diag_box.container():
             _titre_diag = "🧭 Période de référence utilisée" + (f" — ⚠️ {len(diag_ref.alerts)} alerte(s)" if diag_ref.alerts else " — ✅ cohérente")

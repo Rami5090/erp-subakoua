@@ -322,9 +322,27 @@ def seed_rapport_annee(db):
     db.commit()
 
 
+def seed_benchmark_concurrentiel(db):
+    """Benchmark concurrentiel mensuel complet : la part de marché du cockpit se calibre."""
+    from rapport_jeu_essai import benchmark_concurrentiel
+
+    if os.environ.get("SIM_SANS_EXTRACTIONS") == "1":
+        return
+    for row in benchmark_concurrentiel():
+        db.execute("INSERT INTO erp_etudes (periode, study_id, payload, read_allowed) VALUES (?,?,?,?)",
+                   (row["periode"], row["study_id"], row["payload"], row["read_allowed"]))
+    db.commit()
+
+
 def seed(db, scenario):
     if scenario == "rapport_annee":
         seed_rapport_annee(db)
+        return
+    if scenario == "pdm_calibree":
+        # Année complète + benchmark mensuel (prix, qualité, publicités, parts) :
+        # historique concurrentiel suffisant pour calibrer la PDM du centre de décision.
+        seed_rapport_annee(db)
+        seed_benchmark_concurrentiel(db)
         return
     # Historique SQL saisi jusqu'en Juin (tour 6) ; marketing jusqu'en Mai (tour 5) : comme sur ta capture.
     for t in range(1, 7):

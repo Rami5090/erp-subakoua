@@ -15,10 +15,15 @@ Particularités volontaires :
   mars (financées par un emprunt) ; le prix de l'Integral 7 baisse en avril ;
 * le benchmark concurrentiel (étude « Comparaison des parts de marché ») est
   publié en décembre.
+
+``benchmark_concurrentiel()`` fournit en plus, à part, un benchmark MENSUEL
+complet (prix, qualité, publicités, parts) qui permet de calibrer la part de
+marché du centre de décision (scénario « pdm_calibree » du banc d'essai).
 """
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from constants import MONTH_NAMES, PRODUCT_ID_TO_NAME
@@ -213,3 +218,77 @@ def jeu_essai_annee() -> dict[str, Any]:
         row["id"] = i
         row["type_donnee"] = "etat_actuel"
     return {"erp_donnees": donnees, "erp_etudes": etudes, "tables": tables}
+
+
+# ---------------------------------------------------------------------------
+# Benchmark concurrentiel mensuel (part de marché du centre de décision)
+# ---------------------------------------------------------------------------
+#: Le benchmark suit le segment de l'Integral 5 : les ventes propres y sont
+#: celles de ce produit, ce qui le rend identifiable comme produit du segment.
+SEGMENT_BENCHMARK = "MONO_T"
+#: Leviers des six entreprises : prix (€), qualité, publicité de marque (€),
+#: publicité produit (€). Ceux de l'entreprise 3 sont ses leviers OBSERVÉS : ils
+#: diffèrent volontairement des décisions saisies (Integral 5 à 280 €, marque
+#: 70 000 €, PLV 4 000 € en décembre) pour vérifier que cet écart ne crée, à lui
+#: seul, aucune variation de part de marché.
+LEVIERS_BENCHMARK = {
+    1: (300.0, 61.0, 82_000.0, 5_200.0),
+    2: (272.0, 54.0, 52_000.0, 2_600.0),
+    NUMERO: (285.0, 58.0, 72_000.0, 4_300.0),
+    4: (292.0, 63.0, 61_000.0, 3_400.0),
+    5: (262.0, 50.0, 47_000.0, 2_900.0),
+    6: (312.0, 66.0, 90_000.0, 6_100.0),
+}
+#: Utilité du logit multinomial qui génère les parts : le prix pèse négativement.
+UTILITE_BENCHMARK = {"prix": -0.04, "qualite": 0.05, "log_publicite_marque": 0.6, "log_publicite_produit": 0.25}
+
+
+def leviers_benchmark(entreprise: int, mois: int) -> tuple[float, float, float, float]:
+    """Leviers d'une entreprise pour un mois ; ceux des concurrents varient d'un mois à l'autre."""
+    prix, qualite, marque, produit = LEVIERS_BENCHMARK[entreprise]
+    if entreprise == NUMERO:
+        return prix, qualite, marque, produit
+    return (
+        prix + 6.0 * ((mois + 2 * entreprise) % 5 - 2),
+        qualite + ((mois + entreprise) % 3 - 1),
+        float(round(marque * (1 + 0.05 * ((mois + entreprise) % 4 - 1.5)))),
+        float(round(produit * (1 + 0.08 * ((2 * mois + entreprise) % 3 - 1)))),
+    )
+
+
+def benchmark_concurrentiel() -> list[dict[str, Any]]:
+    """Études « Facteurs clés » de janvier à décembre : leviers et parts des six entreprises.
+
+    Les parts suivent un logit multinomial (``UTILITE_BENCHMARK``) ; les ventes propres
+    sont celles de l'Integral 5 du mois. L'historique (12 périodes × 6 entreprises)
+    suffit à calibrer la réponse de la part de marché aux leviers.
+    """
+    u = UTILITE_BENCHMARK
+    etudes: list[dict[str, Any]] = []
+    for mois in range(1, 13):
+        utilites = {}
+        for entreprise in LEVIERS_BENCHMARK:
+            prix, qualite, marque, produit = leviers_benchmark(entreprise, mois)
+            utilites[entreprise] = (
+                u["prix"] * prix + u["qualite"] * qualite
+                + u["log_publicite_marque"] * math.log(marque)
+                + u["log_publicite_produit"] * math.log(produit)
+                + 0.04 * math.sin(7 * mois + 3 * entreprise)  # bruit déterministe
+            )
+        plus_haute = max(utilites.values())
+        poids = {e: math.exp(u - plus_haute) for e, u in utilites.items()}
+        parts = {e: p / sum(poids.values()) for e, p in poids.items()}
+        ventes_propres = unites_du_mois(mois)[SEGMENT_BENCHMARK]
+        marche = ventes_propres / parts[NUMERO]
+        lignes = []
+        for entreprise in sorted(LEVIERS_BENCHMARK):
+            prix, qualite, marque, produit = leviers_benchmark(entreprise, mois)
+            lignes.append({
+                "Entreprise": str(entreprise),
+                "Ventes": ventes_propres if entreprise == NUMERO else int(round(parts[entreprise] * marche)),
+                "part de marché": round(100.0 * parts[entreprise], 2),
+                "Prix (€)": prix, "Qualité": qualite,
+                "Publicité de marque": marque, "Publicité produit (€)": produit,
+            })
+        etudes.append(_etude(mois, "pevcfcpfquca", {"Facteurs clés": lignes}))
+    return etudes
