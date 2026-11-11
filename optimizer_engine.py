@@ -171,19 +171,47 @@ def predict_relative_share(calibration: Calibration, scenario: Mapping[str, floa
     return float(ex[0] / ex.sum())
 
 
-def build_competitive_history(period_data: Mapping[str, Mapping[str, Any]], own_company: int, extract_snapshot_fn, periods: Sequence[str] | None = None) -> pd.DataFrame:
+def build_competitive_history(
+    period_data: Mapping[str, Mapping[str, Any]],
+    own_company: int,
+    extract_snapshot_fn,
+    periods: Sequence[str] | None = None,
+    anchor_period: str | None = None,
+) -> pd.DataFrame:
     """Construit l'historique concurrentiel à partir des périodes legacy et/ou API.
 
     ``periods`` permet d'inclure les mois présents uniquement dans erp_etudes ;
     auparavant, l'historique se limitait aux clés de erp_donnees.
+
+    ``anchor_period`` borne l'historique à l'ancrage, sans fuite vers des périodes
+    futures : seules les périodes au plus tard à l'ancrage sont interrogées, et une
+    observation n'est retenue que si la période réelle de son benchmark l'est aussi.
+    Sans ancrage, toutes les périodes sont lues.
+
+    Chaque observation porte la période RÉELLE de son benchmark (``snap["period"]``),
+    et non la période interrogée : ``extract_snapshot_fn`` se replie sur le dernier
+    benchmark antérieur quand un mois n'a pas le sien, et ce benchmark recopié ne doit
+    compter qu'une fois. Une seule observation est gardée par (période du benchmark,
+    entreprise) — la première complète, les périodes étant interrogées dans l'ordre
+    chronologique —, si bien que ``n_obs``, ``n_periods`` et donc la confiance de la
+    calibration comptent des benchmarks distincts.
     """
+    from forecast_engine import period_index
+
     rows: list[dict[str, Any]] = []
     period_list = list(periods) if periods is not None else list(period_data.keys())
-    for period in sorted(set(period_list)):
-
+    limit = period_index(anchor_period) if anchor_period is not None else None
+    for period in sorted(set(period_list), key=lambda p: (period_index(p), str(p))):
+        if limit is not None and period_index(period) > limit:
+            continue
         try:
             snap = extract_snapshot_fn(period)
         except Exception:
+            continue
+        # Période réelle du benchmark : le mois interrogé, ou le benchmark antérieur sur
+        # lequel le snapshot s'est replié.
+        observed = snap.get("period") or period
+        if limit is not None and period_index(observed) > limit:
             continue
         snap_rows = snap.get("rows", []) or []
         # v2.9.2 : si l'étude ne publie pas la colonne de PDM, on la reconstruit à partir des ventes
@@ -199,7 +227,7 @@ def build_competitive_history(period_data: Mapping[str, Mapping[str, Any]], own_
             if share_pct is None and n_sales >= 2 and sales_total > 0 and (_num(r.get("ventes")) or 0) > 0:
                 share_pct = float(_num(r.get("ventes"))) / sales_total * 100.0
             rows.append({
-                "periode": period,
+                "periode": observed,
                 "entreprise": company_id,
                 "part_marche": share_pct,
                 "prix": _num(r.get("prix")),
@@ -207,12 +235,14 @@ def build_competitive_history(period_data: Mapping[str, Mapping[str, Any]], own_
                 "publicite": _num(r.get("publicite")),
                 "publicite_produit": _num(r.get("publicite_produit")) or 0.0,
                 "ventes": _num(r.get("ventes")),
-                "is_own": int(r.get("entreprise")) == own_company,
+                "is_own": company_id == own_company,
             })
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    return df.dropna(subset=["entreprise", "part_marche", "prix", "qualite", "publicite"]).reset_index(drop=True)
+    df = df.dropna(subset=["entreprise", "part_marche", "prix", "qualite", "publicite"])
+    # Un benchmark recopié sur les mois qui n'ont pas le leur ne compte qu'une fois.
+    return df.drop_duplicates(subset=["periode", "entreprise"], keep="first").reset_index(drop=True)
 
 
 

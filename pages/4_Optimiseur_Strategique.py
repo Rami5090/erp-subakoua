@@ -171,12 +171,13 @@ if forecast_df.empty:
 
 rows=competitive.get("rows") or []
 own=competitive.get("own") or {}
-# Historique concurrentiel : inclut les périodes présentes uniquement dans erp_etudes.
+# Historique concurrentiel : inclut les périodes présentes uniquement dans erp_etudes,
+# borné à l'ancrage (aucune fuite vers des périodes futures), une observation par benchmark réel.
 def snap_for_period(p):
     return extract_competitive_snapshot(period_data, own_company, study_data=study_data, anchor_period=p)
 
 history_periods = ordered_periods(set(period_data) | set(study_data))
-hist = build_competitive_history(period_data, own_company, snap_for_period, periods=history_periods)
+hist = build_competitive_history(period_data, own_company, snap_for_period, periods=history_periods, anchor_period=anchor)
 if "publicite_produit" not in hist.columns:
     hist["publicite_produit"] = 0.0
 cal = calibrate_descriptive_response(hist)

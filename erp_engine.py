@@ -228,13 +228,17 @@ def _preparer_pdm(_engine, empreinte_etudes: str, empreinte_donnees: str, period
         prep["erreur"] = "Aucune donnée concurrentielle trouvée pour l'ancrage"
         return prep
 
-    # 4. Historique de calibration à partir de l'état observé (et non des décisions M-1).
+    # 4. Historique de calibration à partir de l'état observé (et non des décisions M-1),
+    #    borné à M-1 : aucune période postérieure ne nourrit la calibration. Une seule
+    #    observation par benchmark réel : un mois sans le sien ne recopie pas le précédent.
     def snap_for_period(p):
         return extract_competitive_snapshot(
             period_data, own_company_number=own_company, study_data=study_data, anchor_period=p,
         )
 
-    hist = build_competitive_history(period_data, own_company, snap_for_period, periods=list(period_data.keys()))
+    hist = build_competitive_history(
+        period_data, own_company, snap_for_period, periods=list(period_data.keys()), anchor_period=periode_m1,
+    )
 
     # 5. Calibration descriptive
     cal = calibrate_descriptive_response(hist)

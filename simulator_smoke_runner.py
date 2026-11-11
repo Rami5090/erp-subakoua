@@ -136,6 +136,12 @@ class Stub:
         options = list(options)
         if self._sidebar and "période" in label:
             return os.environ.get("SIM_MONTH", options[0])
+        if not k.get("key"):
+            # Menu sans `key` : surcharge par libellé, ex. l'ancrage de l'Optimiseur
+            # avec SIM_DECISIONS='{"ancrage": "Année 1 - Juin"}'.
+            override = self._override_par_label(label)
+            if override is not None and override in options:
+                return override
         if "période" in str(label).lower():
             # SIM_TOUR=8 : choisit le tour de la page d'analyse quantitative
             # ou du livrable finance.
@@ -261,6 +267,12 @@ class FakeConn:
         LOG["sql_requetes"] += 1          # mesure du nombre d'allers-retours avec la base
         return FakeResult(self.db.execute(_sql_pour_sqlite(str(sql)), params or {}))
 
+    # Interface DBAPI minimale : `pd.read_sql(requête, conn)` (pages 3 et 4) lit la
+    # connexion ouverte par `engine.connect()` comme une connexion SQLite.
+    def cursor(self): return self.db.cursor()
+    def commit(self): self.db.commit()
+    def rollback(self): self.db.rollback()
+
 
 class FakeEngine(sqlite3.Connection):
     def connect(self): return FakeConn(self)
@@ -322,13 +334,20 @@ def seed_rapport_annee(db):
     db.commit()
 
 
-def seed_benchmark_concurrentiel(db):
-    """Benchmark concurrentiel mensuel complet : la part de marché du cockpit se calibre."""
+def seed_benchmark_concurrentiel(db, posterieur: bool = False):
+    """Benchmark concurrentiel mensuel complet : la part de marché du cockpit se calibre.
+
+    ``posterieur`` republie en plus le benchmark de décembre pour Année 2 - Janvier : une
+    période postérieure à un ancrage en décembre, qui ne doit jamais nourrir la calibration.
+    """
     from rapport_jeu_essai import benchmark_concurrentiel
 
     if os.environ.get("SIM_SANS_EXTRACTIONS") == "1":
         return
-    for row in benchmark_concurrentiel():
+    etudes = benchmark_concurrentiel()
+    if posterieur:
+        etudes.append({**etudes[-1], "periode": "Année 2 - Janvier"})
+    for row in etudes:
         db.execute("INSERT INTO erp_etudes (periode, study_id, payload, read_allowed) VALUES (?,?,?,?)",
                    (row["periode"], row["study_id"], row["payload"], row["read_allowed"]))
     db.commit()
@@ -338,11 +357,13 @@ def seed(db, scenario):
     if scenario == "rapport_annee":
         seed_rapport_annee(db)
         return
-    if scenario == "pdm_calibree":
+    if scenario in ("pdm_calibree", "pdm_calibree_futur"):
         # Année complète + benchmark mensuel (prix, qualité, publicités, parts) :
         # historique concurrentiel suffisant pour calibrer la PDM du centre de décision.
+        # « _futur » : un benchmark existe aussi APRÈS décembre (contrôle de fuite temporelle
+        # avec un ancrage en décembre, seul mois où le jeu publie les ventes par produit).
         seed_rapport_annee(db)
-        seed_benchmark_concurrentiel(db)
+        seed_benchmark_concurrentiel(db, posterieur=scenario == "pdm_calibree_futur")
         return
     # Historique SQL saisi jusqu'en Juin (tour 6) ; marketing jusqu'en Mai (tour 5) : comme sur ta capture.
     for t in range(1, 7):
@@ -519,6 +540,10 @@ def main():
     OVERRIDES.update(json.loads(os.environ.get("SIM_DECISIONS", "{}")))
     sys.modules["streamlit"] = fake
     sa = types.ModuleType("sqlalchemy")
+    # Version volontairement inférieure au minimum exigé par pandas : `pd.read_sql`
+    # ignore alors ce double (au lieu d'échouer faute de version) et lit la connexion
+    # factice comme une connexion DBAPI (voir FakeConn.cursor).
+    sa.__version__ = "0"
     sa.create_engine = lambda *a, **k: db
     sa.text = lambda s: s
     sa.bindparam = lambda *a, **k: None

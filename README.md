@@ -408,8 +408,15 @@ chaque prédiction n'utilisant que des données strictement antérieures au poin
 ### Optimisation — `optimizer_engine.py`
 
 - **Calibration** : régression **ridge** résolue en forme fermée, sur variables centrées-réduites,
-  ciblant la part de marché. La confiance (*faible / modérée / bonne*) déduit du nombre
-  d'observations.
+  ciblant la part de marché. La confiance (*faible / modérée / bonne*) se déduit du nombre
+  d'observations et de périodes.
+- **Historique de calibration** (`build_competitive_history`) : **borné à l'ancrage** — M-1 dans le
+  cockpit, période d'ancrage dans l'Optimiseur. Aucune période postérieure n'est interrogée, et une
+  observation dont le benchmark serait postérieur est écartée : **aucune fuite temporelle**. Chaque
+  observation porte la période **réelle** de son benchmark : un mois sans benchmark propre se replie
+  sur le précédent, qui ne compte **qu'une fois** (une observation par période de benchmark et par
+  entreprise). Le nombre d'observations et de périodes — dont dépendent la confiance et le
+  rétrécissement de la PDM ancrée — ne compte que des benchmarks distincts.
 - **Part de marché ancrée** : mise à jour en **logit** sur la part observée plutôt qu'une prédiction
   de niveau absolu — le modèle ne fabrique donc jamais de part de marché invérifiable.
 - **Capacité** : l'excédent de charge est **plafonné** et remonté comme demande non servie.
@@ -451,9 +458,11 @@ neutralisé. Une publicité nulle en M-1 ou à l'observation se transpose en éc
 - **Pas de plafond marketing** dans le cockpit : la dépense est la décision elle-même. Seul un atelier
   chargé mais vide de machines rend le scénario irréalisable.
 
-> ⚠️ **À valider sur données réelles avant de décider.** La calibration est descriptive, non causale.
+> ⚠️ **À valider sur données réelles avant de décider.** La calibration est descriptive, non causale,
+> et ne porte que sur les benchmarks publiés au plus tard à M-1.
 > Le volet *🔎 Détail du calcul de PDM* du tableau de bord affiche la base observée et sa source, la
-> décision M-1, la saisie, le candidat et les coefficients calibrés. Avant de s'appuyer sur les chiffres :
+> décision M-1, la saisie, le candidat, les coefficients calibrés et, en légende, le nombre
+> d'observations et de périodes de la calibration. Avant de s'appuyer sur les chiffres :
 >
 > 1. le produit du segment est le bon, et aucune base ne provient d'une « valeur par défaut » ;
 > 2. la base observée est proche des décisions M-1 — un écart important signale une source à vérifier
@@ -609,7 +618,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `289 passed, 2 skipped`**
+**Résultat actuel : `310 passed, 2 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -617,7 +626,9 @@ python -m pytest -q
 | `test_optimizer_engine.py` | Calibration, prédiction de part, grille respectant le budget |
 | `test_optimizer_capacity_limits.py` | Fusion des données concurrentes, **capacité appliquée comme plafond** |
 | `test_pdm_candidat.py` | **Scénario candidat de la PDM** : base observée intacte sans décision nouvelle, prix du segment en variation relative, publicité de marque seule, PLV du seul produit du segment, qualité inchangée, **ancrage posé sur une copie**, effet d'une baisse de prix selon le signe du coefficient, produit du segment reconnu sur les ventes réelles |
-| `test_pdm_centre_decision.py` | PDM du centre de décision de bout en bout (benchmark mensuel calibrable) : **sans changement de levier, PDM potentielle = PDM de référence** ; baisse du prix du segment ⇒ PDM selon le coefficient calibré ; leviers d'un autre produit sans effet ; cache sans effet sur le résultat |
+| `test_pdm_centre_decision.py` | PDM du centre de décision de bout en bout (benchmark mensuel calibrable) : **calibration bornée à M-1** (ancrée en juin : 36 observations sur 6 périodes, pas l'année entière) ; **sans changement de levier, PDM potentielle = PDM de référence** ; baisse du prix du segment ⇒ PDM selon le coefficient calibré ; leviers d'un autre produit sans effet ; cache sans effet sur le résultat |
+| `test_historique_calibration.py` | **Historique de calibration de la PDM** : aucune période postérieure à l'ancrage interrogée ni retenue ; **une observation par benchmark réel** — un mois sans benchmark propre ne recopie pas le précédent (benchmarks en janvier et mars, périodes janvier → avril : 2 périodes, pas 4), confiance non gonflée ; mêmes résultats avec les données du cockpit et de l'Optimiseur |
+| `test_page_optimiseur.py` | L'Optimiseur s'exécute de bout en bout : **un benchmark postérieur à l'ancrage n'entre pas dans la calibration** |
 | `test_break_even_engine.py` | **Point d'équilibre exact**, imputation des charges fixes, mix sous contrainte de capacité, **équilibre hors de portée signalé**, objectif marge/volume, **valeurs à atteindre** (plancher de prix, plafond de coût, machines à ajouter) |
 | `test_cours_engine.py` | **Prévision des cours** : méthode choisie par backtest, série triée chronologiquement, historique insuffisant sans prévision, cours négatif ramené à zéro |
 | `test_table_prix_marche.py` | Lecture des tables du module expert-comptable **par contenu** (onglet dictionnaire *ou* liste de tableaux — structure réelle du portail) |
@@ -638,7 +649,8 @@ python -m pytest -q
 | `test_auth_core.py` / `test_auth_roles.py` | Fail-closed, verrouillage, expiration, session forgée rejetée |
 | `test_subakoua_api.py` / `test_study_ui_routes.py` | Endpoints, garde-fou de lisibilité, **aucune URL inventée** |
 
-**Invariants protégés par les tests :** aucune fuite temporelle · aucune URL inventée · aucun
+**Invariants protégés par les tests :** aucune fuite temporelle (prévision comme calibration de la
+PDM) · un benchmark ne compte qu'une fois dans la calibration · aucune URL inventée · aucun
 payload non lisible traité comme acquis · le rôle ne provient jamais de l'URL · le dépassement de
 capacité plafonne au lieu d'éliminer le scénario · **on ne cède jamais plus de machines qu'on n'en
 possède, et le parc ne descend jamais sous zéro** · **sans décision nouvelle, la PDM potentielle égale
@@ -677,7 +689,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 289 tests exécutés + 2 ignorés
+├── test_*.py                     # 310 tests exécutés + 2 ignorés
 ├── rapport_jeu_essai.py          # Année de jeu fictive (tests du rapport, benchmark PDM calibrable)
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne

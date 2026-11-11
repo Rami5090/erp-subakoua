@@ -8,6 +8,8 @@ reconnu comme produit du segment. Les leviers observés de l'entreprise
 (280 €, 70 000 €, 4 000 €). Les leviers sont forcés par SIM_DECISIONS.
 
 Invariants protégés :
+* la calibration ne lit aucune période postérieure à M-1 : ancrée en juin, elle
+  porte sur 36 observations (6 entreprises × 6 mois), pas sur toute l'année ;
 * sans changement de levier, PDM potentielle = PDM de référence — l'écart
   entre décision M-1 et observation ne crée aucune variation artificielle ;
 * une baisse du prix du produit du segment fait varier la PDM selon le signe
@@ -17,6 +19,7 @@ Invariants protégés :
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -58,9 +61,27 @@ def _levier(data, prefixe):
     return next(l for l in _table(data, "Levier") if l["Levier"].startswith(prefixe))
 
 
+def _calibration(data) -> tuple[int, int]:
+    """(observations, périodes) annoncés par la légende du volet « Détail du calcul de PDM »."""
+    legende = next(c for c in data["captions"] if "observations sur" in c)
+    trouve = re.search(r"(\d+) observations sur (\d+) période", legende)
+    return int(trouve.group(1)), int(trouve.group(2))
+
+
 @pytest.fixture(scope="module")
 def neutre():
     return _run()
+
+
+def test_ancree_en_decembre_la_calibration_lit_toute_l_annee(neutre):
+    assert _calibration(neutre) == (72, 12)  # 6 entreprises × 12 benchmarks mensuels
+
+
+def test_la_calibration_ne_lit_aucune_periode_posterieure_a_m1():
+    juin = _run(SIM_MONTH="Juillet N+1")  # M-1 = Année 1 - Juin ; le jeu publie aussi juillet → décembre
+
+    # Seuls les benchmarks de janvier à juin nourrissent la calibration (et non les 12 mois).
+    assert _calibration(juin) == (36, 6)
 
 
 def test_la_calibration_aboutit_et_le_produit_du_segment_est_reconnu(neutre):
