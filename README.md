@@ -281,19 +281,44 @@ stratégique et opérationnel, de l'année écoulée (**description et analyse**
 | Forme : graphiques, tableaux, logo, couleurs | 10 graphiques commentés (CA, ventes par produit, mix, PDM, concurrence, résultat, trésorerie, ateliers, cascade prix/volume/mix), tableaux, page de garde avec logo, **charte couleurs au choix**, sommaire, pagination, annexes de traçabilité |
 
 **Mode d'emploi** : choisir la période auditée → onglet *Identité & charte* (nom, logo,
-couleurs) → *Équipe* (membres et rôles) → rédiger la *Partie collective* et les *Parties
-individuelles* (les consignes de l'évaluation sont rappelées sous chaque champ) → *Aperçu de
-l'audit* → *Générer le rapport*. Un **contrôle de complétude** mesure l'avancement au regard
-des attendus ; le **brouillon JSON** permet à chaque membre de reprendre le travail.
+couleurs) → *Équipe* (membres et rôles) → *Rédaction assistée* (facultatif : un paragraphe de
+contexte suffit à obtenir un brouillon de tous les textes) → relire et compléter la *Partie
+collective* et les *Parties individuelles* (les consignes de l'évaluation sont rappelées sous
+chaque champ) → *Aperçu de l'audit* → *Générer le rapport*. Un **contrôle de complétude** mesure
+l'avancement au regard des attendus ; le **brouillon JSON** (contexte compris) permet à chaque
+membre de reprendre le travail.
 
-**Garde-fous** : aucun texte n'est inventé à la place de l'équipe — un champ vide apparaît
-surligné « [À COMPLÉTER] » dans le Word avec sa consigne ; aucun chiffre n'est extrapolé — un
-mois sans donnée reste vide et l'annexe C indique l'étude (souvent gratuite) qui le fournirait ;
-chaque chiffre renvoie à sa source (annexe B). Les lectures stratégiques sont présentées comme
-des **propositions à valider** par l'équipe. La page est en lecture seule (aucune écriture en base).
+**✨ Rédaction assistée** (`rapport_redaction.py`, API Claude d'Anthropic) : l'équipe décrit son
+année en un paragraphe — stratégie et intentions, faits marquants, organisation, une phrase par
+membre. Le module en tire un **brouillon** des 7 textes de la partie collective et des 7 textes de
+chaque partie individuelle, à partir de ce contexte, des paramètres saisis (entreprise, membres,
+rôles, missions, outils retenus, indicateurs du périmètre de chacun) et des faits de l'audit. Les
+textes remplissent les champs de la page : l'équipe les relit et les corrige avant de générer le
+Word.
+
+| Garde-fou | Mise en œuvre |
+|---|---|
+| Aucun chiffre inventé | Le modèle ne reçoit que les chiffres de l'audit, **formatés comme dans le Word**, avec consigne de les recopier tels quels ; tout montant, pourcentage ou nombre ≥ 100 absent des sources est **signalé « à vérifier »** sous le bouton |
+| Aucun fait inventé | Ce que les sources ne disent pas (situation concrète, erreur précise, ressenti) devient « [À COMPLÉTER : …] », **surligné en jaune** dans le Word et compté |
+| Le travail de l'équipe est préservé | Par défaut, seuls les champs **vides** sont rédigés ; les textes existants sont transmis au modèle pour rester cohérent, jamais écrasés (case « Remplacer » pour les réécrire) |
+| Réponse structurée | Sortie JSON imposée par un schéma (un texte par champ) ; refus des garde-fous, réponse tronquée ou illisible ⇒ message clair, rien n'est écrit |
+| Coût maîtrisé | Bouton **réservé aux utilisateurs connectés** (chaque rédaction est un appel facturé) ; invite système mise en cache |
+
+Modèle par défaut `claude-opus-5-5` (effort `medium`), en flux, avec **repli serveur** sur le modèle
+recommandé par Anthropic si les garde-fous du modèle déclinent la demande (`fallbacks: "default"`).
+Le contexte, les paramètres et les chiffres de l'audit sont envoyés à l'API d'Anthropic ; rien
+n'est écrit en base. Configuration : section `[anthropic]` des secrets (voir *Configuration*).
+
+**Garde-fous du rapport** : sans rédaction assistée, aucun texte n'est écrit à la place de
+l'équipe — un champ vide apparaît surligné « [À COMPLÉTER] » dans le Word avec sa consigne ; aucun
+chiffre n'est extrapolé — un mois sans donnée reste vide et l'annexe C indique l'étude (souvent
+gratuite) qui le fournirait ; chaque chiffre renvoie à sa source (annexe B). Les lectures
+stratégiques sont présentées comme des **propositions à valider** par l'équipe. La page est en
+lecture seule (aucune écriture en base).
 
 Moteurs : `rapport_engine.py` (consolidation et analyses, pur), `rapport_graphiques.py`
-(matplotlib, API objet), `rapport_docx.py` (python-docx), `depot_donnees.py` (lectures partagées).
+(matplotlib, API objet), `rapport_docx.py` (python-docx), `rapport_redaction.py` (rédaction
+assistée, API Claude), `depot_donnees.py` (lectures partagées).
 
 ## 🧮 Le simulateur
 
@@ -593,7 +618,14 @@ user_password = ""      # ou : user_password_sha256 = "<hash>"
 [subakoua]              # portail de simulation
 user = ""
 password = ""
+
+[anthropic]             # OPTIONNEL : rédaction assistée du rapport professionnel (page 8)
+api_key = ""            # clé API Anthropic (sinon : variable ANTHROPIC_API_KEY)
+# model = "claude-opus-5-5"   # défaut
+# effort = "medium"           # low | medium | high | xhigh | max
 ```
+
+La rédaction assistée n'est proposée qu'en **mode Utilisateur** : renseignez aussi `[auth]`.
 
 **Générer un hash SHA-256 :**
 
@@ -609,6 +641,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | Connexion MySQL |
 | `ERP_USER_PASSWORD` ou `ERP_USER_PASSWORD_SHA256` | Mot de passe du mode Utilisateur |
 | `HEADLESS`, `SCRAPER_TIMEOUT_MS`, `SCRAPER_RETRIES` | Comportement du scraper |
+| `ANTHROPIC_API_KEY` (`ANTHROPIC_MODEL`, `ANTHROPIC_EFFORT`) | Rédaction assistée du rapport, si la section `[anthropic]` des secrets est absente |
 
 > 🚫 **Ne jamais commiter `.env` ni `secrets.toml`** — ils sont déjà couverts par `.gitignore`.
 
@@ -618,7 +651,7 @@ python -c "import hashlib,getpass;print(hashlib.sha256(getpass.getpass().encode(
 python -m pytest -q
 ```
 
-**Résultat actuel : `310 passed, 2 skipped`**
+**Résultat actuel : `340 passed, 2 skipped`**
 
 | Fichier | Couverture |
 |---|---|
@@ -636,8 +669,9 @@ python -m pytest -q
 | `test_page_analyse_quantitative.py` | La page d'analyse s'exécute de bout en bout, produit un seuil cohérent et **liste les valeurs à atteindre** |
 | `test_equilibre_centre_decision.py` | Le centre de décision expose un point d'équilibre cohérent avec le volume vendu |
 | `test_rapport_engine.py` | **Rapport professionnel** : consolidation annuelle, priorité des sources (saisie 0 = non saisi), une seule étude « Ventes » de décembre reconstitue l'année, **décomposition prix/volume/mix exacte**, chronologie, constats, aucun constat inventé sans données, brouillon JSON, complétude |
-| `test_rapport_docx.py` | Document Word conforme aux attendus (parties collective et individuelles, annexes), graphiques et tableaux présents, charte appliquée, **zéro « À compléter » quand tout est rempli** |
-| `test_page_rapport_professionnel.py` | La page génère et télécharge le rapport de bout en bout ; le brouillon se recharge ; base fraîche gérée sans plantage |
+| `test_rapport_docx.py` | Document Word conforme aux attendus (parties collective et individuelles, annexes), graphiques et tableaux présents, charte appliquée, **zéro « À compléter » quand tout est rempli**, « [À COMPLÉTER : …] » d'un texte rédigé surligné et compté |
+| `test_rapport_redaction.py` | **Rédaction assistée** : seuls les champs vides sont demandés et **aucun texte existant n'est écrasé** ; le modèle reçoit contexte, paramètres et chiffres de l'audit ; un texte par champ imposé par schéma ; **chiffre absent des sources signalé** ; refus, troncature, réponse illisible ⇒ rien n'est écrit ; requête réelle du SDK (transport simulé, sans réseau) et erreurs de l'API traduites |
+| `test_page_rapport_professionnel.py` | La page génère et télécharge le rapport de bout en bout ; le brouillon se recharge ; base fraîche gérée sans plantage ; **rédaction assistée** (API simulée) : contexte et chiffres envoyés, 21 champs remplis jusque dans le Word, chiffre inventé signalé, **visiteur bloqué**, refus sans effet |
 | `test_performance_cache.py` | Une interaction du cockpit ne relit pas toute la base ; le cache ne change pas les résultats ; **une étude resynchronisée est bien relue** |
 | `test_depot_donnees.py` | Lecture tolérante (table absente ⇒ erreur signalée, pas d'exception) et empreintes incluant la date de synchronisation |
 | `test_page_livrable_finance.py` | La page Livrable s'exécute de bout en bout (bilan lu, marges produites) et **dégrade sans planter** si les tables du scraper manquent |
@@ -669,6 +703,7 @@ erp-subakoua/
 ├── rapport_engine.py             # Rapport professionnel : audit annuel, constats, complétude
 ├── rapport_graphiques.py         # Graphiques commentés du rapport (matplotlib)
 ├── rapport_docx.py               # Génération du rapport Word
+├── rapport_redaction.py          # Rédaction assistée (API Claude) : contexte → brouillon des textes
 ├── depot_donnees.py              # Lectures partagées et empreintes de cache
 ├── optimizer_engine.py           # Calibration, capacité, scénarios
 ├── finance_engine.py             # Comptabilité prévisionnelle (Decimal)
@@ -689,7 +724,7 @@ erp-subakoua/
 ├── db_schema.py                  # Schéma local et migrations de colonnes
 ├── constants.py                  # Produits, temps, nomenclature, périodes, finance
 │
-├── test_*.py                     # 310 tests exécutés + 2 ignorés
+├── test_*.py                     # 340 tests exécutés + 2 ignorés
 ├── rapport_jeu_essai.py          # Année de jeu fictive (tests du rapport, benchmark PDM calibrable)
 ├── simulator_smoke_runner.py     # Banc d'essai sans Streamlit ni MySQL
 ├── validate_study_routes.py      # Validateur de routage hors ligne

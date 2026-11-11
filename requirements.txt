@@ -8,3 +8,4 @@ statsmodels>=0.14.6,<0.16
 pypdf>=6.0
 python-docx>=1.1
 matplotlib>=3.8
+anthropic>=2.8,<3

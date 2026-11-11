@@ -22,7 +22,8 @@ sys.path.insert(0, str(ROOT))
 
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "aout_sans_juillet"
 LOG: dict = {"metrics": [], "warnings": [], "errors": [], "success": [], "captions": [], "inputs": {},
-             "tables": [], "charts": 0, "images": 0, "downloads": [], "sql_requetes": 0}
+             "tables": [], "charts": 0, "images": 0, "downloads": [], "sql_requetes": 0, "infos": [],
+             "redaction": []}
 
 #: Leviers du simulateur à surcharger (clé session_state -> valeur), ex.
 #: SIM_DECISIONS='{"sim_ced_dec": 2}'. S'applique comme valeur par défaut des
@@ -61,7 +62,7 @@ class Stub:
             "columns": st._columns, "tabs": lambda labels, *a, **k: [Stub(st._state) for _ in labels],
             "metric": st._metric, "warning": st._msg("warnings"), "error": st._msg("errors"),
             "dataframe": st._dataframe, "altair_chart": st._chart,
-            "success": st._msg("success"), "caption": st._msg("captions"),
+            "success": st._msg("success"), "caption": st._msg("captions"), "info": st._msg("infos"),
             "stop": lambda: (_ for _ in ()).throw(SystemExit()),
         }
         return table.get(name, noop)
@@ -99,9 +100,11 @@ class Stub:
     def _text(self, label, *a, **k): return self._key_val(k, k.get("value", ""))
 
     def _button(self, label="", *a, **k):
-        """SIM_CLICK='Générer' simule un clic sur le bouton dont le libellé contient ce texte."""
-        clic = os.environ.get("SIM_CLICK", "")
-        return bool(clic) and clic in str(label)
+        """SIM_CLICK='Générer' simule un clic sur le bouton dont le libellé contient ce texte ;
+        'Rédiger|Générer' en clique plusieurs. Comme dans Streamlit, un bouton désactivé ne se clique pas."""
+        if k.get("disabled"):
+            return False
+        return any(clic and clic in str(label) for clic in os.environ.get("SIM_CLICK", "").split("|"))
 
     def _editor(self, data=None, *a, **k):
         """Éditeur de tableau : renvoie les données, ou la surcharge SIM_DECISIONS de sa clé."""
@@ -235,6 +238,62 @@ class FakeStreamlit(types.ModuleType):
 
     def __getattr__(self, name):
         return getattr(self._main, name)
+
+
+# --------------------------------------------------------------------------- API Claude factice
+def faux_anthropic() -> types.ModuleType:
+    """Double du SDK `anthropic` (SIM_ANTHROPIC=1) : aucune requête ne quitte la machine.
+
+    `Anthropic().beta.messages.stream(**params)` journalise la requête dans LOG["redaction"]
+    et rend un message dont le texte JSON remplit le schéma demandé : chaque champ reçoit
+    « Texte rédigé pour <chemin>. » ; la synthèse cite en plus un chiffre de l'audit
+    (15 272 032 €) et un chiffre inventé (99,9 %), chaque champ « forces » un passage à
+    compléter. SIM_ANTHROPIC_ARRET force la raison d'arrêt (ex. « refusal »).
+    """
+    module = types.ModuleType("anthropic")
+    for nom in ("AnthropicError", "APIError", "APIStatusError", "APIConnectionError", "APITimeoutError",
+                "AuthenticationError", "PermissionDeniedError", "NotFoundError", "RateLimitError", "BadRequestError"):
+        setattr(module, nom, type(nom, (Exception,), {}))
+
+    def remplir(schema, chemin=""):
+        if schema.get("type") == "object":
+            return {cle: remplir(sous, f"{chemin}.{cle}" if chemin else cle)
+                    for cle, sous in (schema.get("properties") or {}).items()}
+        texte = f"Texte rédigé pour {chemin}."
+        if chemin == "collectif.synthese":
+            texte += " Notre chiffre d'affaires atteint 15 272 032 € et notre part de marché 99,9 %."
+        if chemin.endswith(".forces"):
+            texte += " [À COMPLÉTER : une situation concrète du jeu]"
+        return texte
+
+    class Flux:
+        def __init__(self, params): self.params = params
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def get_final_message(self):
+            p = self.params
+            sortie = p.get("output_config") or {}
+            LOG["redaction"].append({
+                "model": p.get("model"), "betas": p.get("betas"), "fallbacks": p.get("fallbacks"),
+                "max_tokens": p.get("max_tokens"), "effort": sortie.get("effort"),
+                "format": (sortie.get("format") or {}).get("type"),
+                "system_cache": bool(((p.get("system") or [{}])[0] or {}).get("cache_control")),
+                "message": p["messages"][0]["content"], "schema": sortie["format"]["schema"],
+            })
+            texte = json.dumps(remplir(sortie["format"]["schema"]), ensure_ascii=False)
+            return types.SimpleNamespace(
+                model=p.get("model"), stop_reason=os.environ.get("SIM_ANTHROPIC_ARRET", "end_turn"),
+                stop_details=None, usage=types.SimpleNamespace(input_tokens=12_000, output_tokens=3_000),
+                content=[types.SimpleNamespace(type="thinking", thinking=""), types.SimpleNamespace(type="text", text=texte)],
+            )
+
+    class Anthropic:
+        def __init__(self, *a, **k):
+            self.beta = types.SimpleNamespace(messages=types.SimpleNamespace(stream=lambda **params: Flux(params)))
+
+    module.Anthropic = Anthropic
+    return module
 
 
 # --------------------------------------------------------------------------- MySQL factice (SQLite)
@@ -552,6 +611,8 @@ def main():
     sys.modules.update({"sqlalchemy": sa, "sqlalchemy.engine": sa_engine})
     dotenv = types.ModuleType("dotenv"); dotenv.load_dotenv = lambda *a, **k: None
     sys.modules["dotenv"] = dotenv
+    if os.environ.get("SIM_ANTHROPIC") == "1":
+        sys.modules["anthropic"] = faux_anthropic()  # aucune requête vers l'API réelle
     auth = types.ModuleType("auth")
     auth.setup = lambda: None
     # SIM_EDITOR=1 ouvre les espaces réservés aux utilisateurs (saisie des données).
@@ -580,7 +641,7 @@ def main():
             db.executescript(os.environ["SIM_ENTRE_EXECUTIONS"])
             db.commit()
         # Chaque exécution imite une interaction : le journal ne garde que la dernière.
-        for _cle in ("metrics", "warnings", "errors", "success", "captions", "tables", "downloads"):
+        for _cle in ("metrics", "warnings", "errors", "success", "captions", "tables", "downloads", "infos"):
             LOG[_cle] = []
         LOG["charts"], LOG["images"] = 0, 0
         avant, debut = LOG["sql_requetes"], time.perf_counter()

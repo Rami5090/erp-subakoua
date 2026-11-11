@@ -118,6 +118,23 @@ def test_les_champs_vides_sont_signales_jamais_inventes(audit, graphiques):
     assert compter_a_completer(octets) >= 8               # stratégie, outils, méthodes, recul, conclusion, logo…
 
 
+def test_un_passage_a_completer_dans_un_texte_redige_est_surligne_et_compte(audit, graphiques):
+    """Brouillons de la rédaction assistée : le marqueur peut porter une précision."""
+    from dataclasses import replace
+    contenu = _complet()
+    membre = replace(contenu.membres[0], forces="Rigueur. [À COMPLÉTER : une situation concrète du jeu]")
+    contenu = replace(contenu, strategie="Volume. [À COMPLÉTER : la date de la baisse de prix] Puis **qualité**.",
+                      membres=(membre,))
+    octets = generer_rapport_docx(audit, contenu, graphiques, G.CHARTE_DEFAUT, _logo())
+
+    assert compter_a_completer(octets) == 2
+    document = docx.Document(io.BytesIO(octets))
+    runs = [r for p in document.paragraphs for r in p.runs]
+    runs += [r for t in document.tables for ligne in t.rows for c in ligne.cells for p in c.paragraphs for r in p.runs]
+    surlignes = {r.text for r in runs if r.font.highlight_color == docx.enum.text.WD_COLOR_INDEX.YELLOW}
+    assert surlignes == {"[À COMPLÉTER : la date de la baisse de prix]", "[À COMPLÉTER : une situation concrète du jeu]"}
+
+
 def test_sommaire_et_champs_mis_a_jour_a_l_ouverture(audit, graphiques):
     octets = generer_rapport_docx(audit, _complet(), graphiques)
     document = docx.Document(io.BytesIO(octets))

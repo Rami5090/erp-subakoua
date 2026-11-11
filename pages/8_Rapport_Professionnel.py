@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 import unicodedata
+from dataclasses import replace
 from datetime import date
 
 import pandas as pd
@@ -29,6 +31,7 @@ from constants import PERIOD_INDEX, TOURS_PERIODES
 from db_utils import get_read_engine
 import depot_donnees as depot
 import rapport_engine as R
+import rapport_redaction as RR
 from rapport_docx import DOCX_DISPONIBLE, compter_a_completer, generer_rapport_docx, rapport_markdown
 from rapport_graphiques import CHARTE_DEFAUT, CHARTES, MATPLOTLIB_DISPONIBLE, Charte, contraste, graphiques_rapport
 
@@ -49,26 +52,10 @@ if engine is None:
 COLONNES_MEMBRES = ["Nom", "Rôle", "Missions"]
 NOMS_OUTILS = [o.nom for o in R.OUTILS_ERP]
 CHAMPS_IDENTITE = ("titre", "sous_titre", "entreprise", "equipe", "formation", "etablissement", "enseignants", "date")
-#: (champ, libellé, nombre de mots visé)
-CHAMPS_COLLECTIFS = (
-    ("synthese", "Synthèse de l'année (résumé)", 120),
-    ("presentation", "Présentation de l'entreprise et de l'équipe", 100),
-    ("strategie", "Les stratégies mises en œuvre", 150),
-    ("outils", "Les outils (complément à la liste des outils de l'ERP)", 60),
-    ("methodes", "Les méthodes de travail et la gestion de projet", 80),
-    ("prise_de_recul", "Explication et prise de recul sur les résultats", 150),
-    ("conclusion", "Conclusion de la partie collective", 60),
-)
+#: (champ, libellé, nombre de mots visé) — partagés avec la rédaction assistée.
+CHAMPS_COLLECTIFS = R.CHAMPS_COLLECTIFS
 #: (champ du membre, libellé, clé de consigne)
-CHAMPS_INDIVIDUELS = (
-    ("outils", "Les outils que j'ai montés", "outils_membre"),
-    ("forces", "Mes forces", "forces"),
-    ("faiblesses", "Mes faiblesses", "faiblesses"),
-    ("reussites", "Mes réussites", "reussites"),
-    ("erreurs", "Mes erreurs", "erreurs"),
-    ("mission_specifique", "Ma mission spécifique", "mission_specifique"),
-    ("bilan", "Bilan personnel", "bilan"),
-)
+CHAMPS_INDIVIDUELS = R.CHAMPS_INDIVIDUELS
 STATUTS = {"ok": "✅ fait", "partiel": "🔸 à compléter", "manquant": "⛔ manquant"}
 NATURES = {"force": "💪 force", "faiblesse": "⚠️ faiblesse", "vigilance": "🔎 vigilance", "info": "ℹ️ constat"}
 
@@ -138,7 +125,7 @@ def _appliquer_brouillon() -> None:
     except Exception as exc:
         st.session_state["rp_message"] = ("error", f"Brouillon illisible ({type(exc).__name__}).")
         return
-    for champ in CHAMPS_IDENTITE + tuple(c for c, _, _ in CHAMPS_COLLECTIFS):
+    for champ in CHAMPS_IDENTITE + ("contexte",) + tuple(c for c, _, _ in CHAMPS_COLLECTIFS):
         st.session_state[f"rp_{champ}"] = getattr(contenu, champ)
     st.session_state["rp_outils_erp"] = [o for o in contenu.outils_erp if o in NOMS_OUTILS]
     st.session_state["rp_outils_gp"] = [o for o in contenu.outils_gp if o in R.OUTILS_GP]
@@ -186,9 +173,9 @@ if not audit.mois_renseignes:
     st.warning("Aucune donnée de l'ERP sur cette période : le rapport sera généré avec sa structure et ses consignes, "
                "sans chiffres. Synchronisez les études (page Scraper) ou saisissez les données réelles.")
 
-tab_id, tab_equipe, tab_coll, tab_indiv, tab_audit, tab_gen = st.tabs([
-    "🏷️ Identité & charte", "👥 Équipe", "🧭 Partie collective", "🙋 Parties individuelles",
-    "📊 Aperçu de l'audit", "📄 Générer le rapport",
+tab_id, tab_equipe, tab_redaction, tab_coll, tab_indiv, tab_audit, tab_gen = st.tabs([
+    "🏷️ Identité & charte", "👥 Équipe", "✨ Rédaction assistée", "🧭 Partie collective",
+    "🙋 Parties individuelles", "📊 Aperçu de l'audit", "📄 Générer le rapport",
 ])
 
 # --------------------------------------------------------------------------- identité & charte
@@ -270,6 +257,108 @@ with tab_equipe:
                 membres_lignes.append(membre)
     st.caption(f"{len(membres_lignes)} membre(s) renseigné(s).")
 
+# --------------------------------------------------------------------------- rédaction assistée
+# Ce bloc s'exécute AVANT la création des champs rédigés (onglets suivants) : il peut donc
+# y écrire les textes produits dans la même exécution (Streamlit refuse de modifier la
+# valeur d'un widget déjà créé).
+def _texte_session(cle: str) -> str:
+    return _texte(st.session_state.get(cle))
+
+
+def _liste_session(cle: str, valides, defaut=()) -> tuple[str, ...]:
+    valeur = st.session_state.get(cle, list(defaut))
+    return tuple(o for o in (valeur if isinstance(valeur, list) else []) if o in valides)
+
+
+def _contenu_courant(contexte_equipe: str) -> tuple[R.ContenuRapport, list[str]]:
+    """Contenu tel que saisi à cet instant (textes lus dans la session) et clé de chaque membre."""
+    cles = [_cle_membre(ligne["Nom"], rang) for rang, ligne in enumerate(membres_lignes)]
+    membres_saisis = tuple(
+        R.Membre(nom=ligne["Nom"], role=ligne["Rôle"], missions=ligne["Missions"],
+                 outils_erp=_liste_session(f"rp_m_{cle}_outils_erp", NOMS_OUTILS),
+                 **{champ: _texte_session(f"rp_m_{cle}_{champ}") for champ, _, _ in CHAMPS_INDIVIDUELS})
+        for ligne, cle in zip(membres_lignes, cles)
+    )
+    return R.ContenuRapport(
+        **{k: saisies.get(k, "") for k in CHAMPS_IDENTITE},
+        contexte=contexte_equipe,
+        **{c: _texte_session(f"rp_{c}") for c, _, _ in CHAMPS_COLLECTIFS},
+        outils_erp=_liste_session("rp_outils_erp", NOMS_OUTILS, NOMS_OUTILS),
+        outils_gp=_liste_session("rp_outils_gp", R.OUTILS_GP),
+        membres=membres_saisis,
+    ), cles
+
+
+config_redaction = RR.lire_configuration(st.secrets, os.environ)
+redaction_possible = is_editor() and RR.sdk_disponible()
+with tab_redaction:
+    st.info("Décrivez votre année en un paragraphe : Claude (API d'Anthropic) en rédige un **brouillon** des textes "
+            "du rapport — partie collective et parties individuelles — à partir de ce contexte, des paramètres "
+            "saisis (entreprise, équipe, rôles, outils) et des chiffres de l'audit. Relisez et corrigez ensuite "
+            "chaque champ dans les onglets « 🧭 Partie collective » et « 🙋 Parties individuelles ».")
+    contexte = _texte(st.text_area(
+        "Contexte de l'année (un paragraphe)", key="rp_contexte", height=220,
+        placeholder="Ex. : Notre stratégie : des prix sous le marché pour gagner du volume, centrée sur l'Integral 7. "
+                    "En mars, nous avons emprunté pour acheter deux machines de découpe ; l'été, l'atelier a saturé. "
+                    "Organisation : une réunion de décision à chaque tour et un Kanban partagé. Alex (finance) a piloté "
+                    "la trésorerie et l'emprunt ; Sam (production) a anticipé la saturation mais a tardé à recruter…",
+        help="Stratégie et intentions, faits marquants, organisation de l'équipe, et une phrase par membre "
+             "(contribution, réussite, difficulté). Plus il est précis, moins il restera de passages à compléter.",
+    ))
+    st.caption(f"{R.nombre_mots(contexte)} mot(s) · décrivez ce que les chiffres ne disent pas : vos intentions, "
+               "vos arbitrages, ce que chacun a fait. Les chiffres viennent de l'audit.")
+    o1, o2, o3 = st.columns(3)
+    rediger_collectif = bool(o1.checkbox("Partie collective", value=True, key="rp_red_collectif"))
+    rediger_individuel = bool(o2.checkbox("Parties individuelles", value=True, key="rp_red_individuel"))
+    remplacer_textes = bool(o3.checkbox(
+        "Remplacer les textes déjà rédigés", value=False, key="rp_red_remplacer",
+        help="Décoché : seuls les champs vides sont rédigés ; les textes existants servent de contexte."))
+    if not is_editor():
+        st.info("🔒 Réservé aux utilisateurs connectés : chaque rédaction est un appel facturé à l'API Claude.")
+    elif not RR.sdk_disponible():
+        st.warning("Rédaction assistée indisponible : installez le paquet « anthropic » "
+                   "(pip install -r requirements.txt).")
+    clic_redaction = st.button("✨ Rédiger les paragraphes", type="primary", disabled=not redaction_possible)
+    if clic_redaction and not redaction_possible:
+        st.error("Rédaction assistée réservée aux utilisateurs connectés.")
+    elif clic_redaction and not contexte.strip():
+        st.warning("Rédigez d'abord le paragraphe de contexte : c'est la source principale du brouillon.")
+    elif clic_redaction:
+        contenu_saisi, cles_membres = _contenu_courant(contexte)
+        demande = RR.preparer_demande(audit, contenu_saisi, cles_membres, collectif=rediger_collectif,
+                                      individuel=rediger_individuel, remplacer=remplacer_textes)
+        if demande.nb_champs == 0:
+            st.info("Rien à rédiger : les champs sélectionnés sont déjà remplis "
+                    "(cochez « Remplacer les textes déjà rédigés » pour les réécrire).")
+        else:
+            redaction = None
+            with st.spinner(f"Rédaction de {demande.nb_champs} champ(s) par Claude…"):
+                try:
+                    redaction = RR.rediger(demande, config_redaction)
+                except RR.ErreurRedaction as exc:
+                    st.error(str(exc))
+            if redaction is not None:
+                ecritures = RR.mises_a_jour(redaction, st.session_state, remplacer_textes)
+                for _cle, _texte_redige in ecritures.items():
+                    st.session_state[_cle] = _texte_redige
+                st.session_state["rp_redaction_bilan"] = {
+                    "champs": len(ecritures), "modele": redaction.modele,
+                    "a_completer": RR.passages_a_completer(redaction),
+                    "a_verifier": RR.chiffres_non_verifies(redaction, demande),
+                }
+    bilan_redaction = st.session_state.get("rp_redaction_bilan")
+    if isinstance(bilan_redaction, dict):
+        st.success(f"✨ Dernière rédaction : {bilan_redaction.get('champs', 0)} champ(s) rempli(s) par "
+                   f"{bilan_redaction.get('modele') or 'Claude'}. Relisez-les dans les onglets « 🧭 Partie "
+                   "collective » et « 🙋 Parties individuelles ».")
+        if bilan_redaction.get("a_completer"):
+            st.info(f"{bilan_redaction['a_completer']} passage(s) « [À COMPLÉTER : …] » attendent une information "
+                    "que seule l'équipe peut apporter (surlignés en jaune dans le Word).")
+        for _champ, _nombres in (bilan_redaction.get("a_verifier") or {}).items():
+            st.warning(f"Chiffre(s) absent(s) des données de l'audit, à vérifier — {_champ} : {', '.join(_nombres)}")
+    st.caption(f"Modèle : {config_redaction.modele} · effort {config_redaction.effort}. Le contexte, les paramètres "
+               "du rapport et les chiffres de l'audit sont envoyés à l'API d'Anthropic ; rien n'est écrit en base.")
+
 # --------------------------------------------------------------------------- partie collective
 with tab_coll:
     st.info("Rédigez ici la partie collective. Un champ vide reste signalé « À COMPLÉTER » (surligné) dans le Word. "
@@ -322,6 +411,7 @@ with tab_indiv:
 
 contenu = R.ContenuRapport(
     **{k: saisies.get(k, "") for k in CHAMPS_IDENTITE},
+    contexte=contexte,
     **{c: saisies.get(c, "") for c, _, _ in CHAMPS_COLLECTIFS},
     outils_erp=tuple(o for o in (outils_erp if isinstance(outils_erp, list) else NOMS_OUTILS) if o in NOMS_OUTILS),
     outils_gp=tuple(o for o in (outils_gp if isinstance(outils_gp, list) else []) if o in R.OUTILS_GP),
@@ -403,8 +493,9 @@ with tab_gen:
     st.dataframe(pd.DataFrame([{"Partie": c.partie, "Critère": c.critere, "Statut": STATUTS.get(c.statut, c.statut),
                                 "Détail": c.detail} for c in criteres]), hide_index=True, width="stretch")
 
+    # Le paragraphe de contexte n'apparaît pas dans le Word : le modifier ne rend pas le document obsolète.
     empreinte = hashlib.sha1(
-        (contenu.to_json() + repr(couleurs) + debut + fin + str(numero) + cle_donnees
+        (replace(contenu, contexte="").to_json() + repr(couleurs) + debut + fin + str(numero) + cle_donnees
          + hashlib.sha1(logo or b"").hexdigest()).encode("utf-8")).hexdigest()
     nom_fichier = f"Rapport_professionnel_{_slug(contenu.entreprise) or 'subakoua'}_{date.today():%Y%m%d}"
     if st.button("📄 Générer le rapport Word", type="primary", disabled=not DOCX_DISPONIBLE):

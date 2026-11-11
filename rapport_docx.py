@@ -30,6 +30,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from constants import PRODUCTS
 from rapport_engine import (
+    A_COMPLETER,
     ATELIERS,
     BFR,
     CA,
@@ -286,14 +287,17 @@ class _Redacteur:
     @staticmethod
     def _runs(p, texte: str, italique: bool = False, taille: float | None = None, couleur: str | None = None,
               gras: bool = False) -> None:
-        """Texte avec mise en gras légère : **mot** devient gras."""
-        morceaux = re.split(r"(\*\*[^*]+\*\*)", str(texte or ""))
+        """Texte avec mise en gras légère : **mot** devient gras ; « [À COMPLÉTER : …] » est surligné."""
+        morceaux = re.split(r"(\*\*[^*]+\*\*|" + A_COMPLETER.pattern + ")", str(texte or ""), flags=re.IGNORECASE)
         for m in morceaux:
             if not m:
                 continue
             est_gras = m.startswith("**") and m.endswith("**") and len(m) > 4
+            a_completer = not est_gras and A_COMPLETER.fullmatch(m) is not None
             run = p.add_run(m[2:-2] if est_gras else m)
-            run.bold = gras or est_gras
+            run.bold = gras or est_gras or a_completer
+            if a_completer:
+                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
             run.italic = italique
             if taille:
                 run.font.size = Pt(taille)
@@ -996,11 +1000,11 @@ def compter_a_completer(docx: bytes) -> int:
     if not DOCX_DISPONIBLE:
         return 0
     doc = Document(io.BytesIO(docx))
-    n = sum(p.text.count(MARQUEUR_A_COMPLETER) for p in doc.paragraphs)
+    n = sum(len(A_COMPLETER.findall(p.text)) for p in doc.paragraphs)
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
-                n += sum(p.text.count(MARQUEUR_A_COMPLETER) for p in cell.paragraphs)
+                n += sum(len(A_COMPLETER.findall(p.text)) for p in cell.paragraphs)
     return n
 
 

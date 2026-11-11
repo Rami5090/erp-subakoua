@@ -88,6 +88,84 @@ def test_la_page_signale_ce_qui_reste_a_completer(execution):
     assert "Critères remplis" in {m[0] for m in data["metrics"]}
 
 
+# --------------------------------------------------------------------------- rédaction assistée
+#: Saisie minimale : un paragraphe de contexte et l'équipe, aucun texte rédigé.
+SAISIE_REDACTION = {
+    "rp_debut": "Année 1 - Janvier", "rp_fin": "Année 1 - Décembre", "rp_entreprise": "Néoprène & Co",
+    "rp_membres": SAISIE["rp_membres"],
+    "rp_contexte": "Stratégie de volume : prix sous le marché, focalisation sur l'Integral 7. Alex a piloté la "
+                   "trésorerie et l'emprunt de mars ; Sam a géré la saturation de l'atelier de découpe.",
+}
+
+
+@pytest.fixture(scope="module")
+def redaction(tmp_path_factory):
+    """Utilisateur connecté : « Rédiger les paragraphes » puis « Générer le rapport Word » (API Claude simulée)."""
+    dossier = tmp_path_factory.mktemp("redaction")
+    data = _run_page(dossier, saisie=SAISIE_REDACTION, extra_env={
+        "SIM_EDITOR": "1", "SIM_ANTHROPIC": "1", "SIM_CLICK": "Rédiger les paragraphes|Générer le rapport Word"})
+    return data, dossier
+
+
+def test_la_redaction_envoie_le_contexte_et_les_chiffres_de_l_audit(redaction):
+    data, _ = redaction
+    assert data["errors"] == []
+    (requete,) = data["redaction"]
+    assert (requete["model"], requete["effort"], requete["format"]) == ("claude-opus-5-5", "medium", "json_schema")
+    assert requete["fallbacks"] == "default" and requete["betas"] == ["server-side-fallback-2026-07-01"]
+    assert requete["system_cache"] is True
+    assert SAISIE_REDACTION["rp_contexte"] in requete["message"]
+    assert "15 272 032 €" in requete["message"].replace(" ", " ")  # CA de l'audit, format du Word
+    assert list(requete["schema"]["properties"]["membres"]["properties"]) == ["membre_1", "membre_2"]
+
+
+def test_les_paragraphes_rediges_remplissent_le_rapport_word(redaction):
+    data, dossier = redaction
+    docx = pytest.importorskip("docx")
+    assert any("21 champ(s) rempli(s)" in s for s in data["success"])   # 7 collectifs + 2 × 7 individuels
+    fichier = next(d["file_name"] for d in data["downloads"] if d["file_name"].endswith(".docx"))
+    document = docx.Document(io.BytesIO((dossier / fichier).read_bytes()))
+    texte = "\n".join(p.text for p in document.paragraphs)
+    assert "Texte rédigé pour collectif.synthese" in texte
+    assert "Texte rédigé pour membres.membre_2.bilan" in texte
+    assert any("2 passage(s) « [À COMPLÉTER : …] »" in i for i in data["infos"])
+
+
+def test_un_chiffre_absent_de_l_audit_est_signale(redaction):
+    data, _ = redaction
+    alertes = [w.replace(" ", " ") for w in data["warnings"] if "à vérifier" in w]
+    assert len(alertes) == 1 and "99,9 %" in alertes[0] and "15 272 032" not in alertes[0]
+
+
+def test_le_contexte_et_les_textes_rediges_sont_dans_le_brouillon(redaction):
+    data, dossier = redaction
+    import rapport_engine as R
+    fichier = next(d["file_name"] for d in data["downloads"] if d["file_name"].endswith(".json"))
+    contenu = R.ContenuRapport.from_json((dossier / fichier).read_bytes())
+    assert contenu.contexte == SAISIE_REDACTION["rp_contexte"]
+    assert contenu.synthese.startswith("Texte rédigé pour collectif.synthese")
+
+
+def test_un_visiteur_ne_peut_pas_lancer_la_redaction(tmp_path):
+    data = _run_page(tmp_path, saisie=SAISIE_REDACTION, clic=False, extra_env={
+        "SIM_EDITOR": "0", "SIM_ANTHROPIC": "1", "SIM_CLICK": "Rédiger les paragraphes"})
+    assert data["errors"] == []
+    assert data["redaction"] == []                                    # bouton désactivé : aucun appel facturé
+    assert any("Réservé aux utilisateurs connectés" in i for i in data["infos"])
+
+
+def test_un_refus_du_modele_n_ecrit_aucun_texte(tmp_path):
+    data = _run_page(tmp_path, saisie=SAISIE_REDACTION, extra_env={
+        "SIM_EDITOR": "1", "SIM_ANTHROPIC": "1", "SIM_ANTHROPIC_ARRET": "refusal",
+        "SIM_CLICK": "Rédiger les paragraphes|Générer le rapport Word"})
+    assert any("déclinée par les garde-fous" in e for e in data["errors"])
+    assert len(data["redaction"]) == 1 and not any("Dernière rédaction" in s for s in data["success"])
+    import rapport_engine as R
+    fichier = next(d["file_name"] for d in data["downloads"] if d["file_name"].endswith(".json"))
+    contenu = R.ContenuRapport.from_json((tmp_path / fichier).read_bytes())
+    assert contenu.synthese == "" and all(m.bilan == "" for m in contenu.membres)   # rien n'a été écrit
+
+
 def test_la_page_degrade_sans_planter_sur_une_base_fraiche(tmp_path):
     """Tables du scraper absentes : la page le dit et produit quand même la trame du rapport."""
     data = _run_page(tmp_path, saisie={}, extra_env={"SIM_SANS_EXTRACTIONS": "1"})

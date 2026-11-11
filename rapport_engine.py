@@ -1633,6 +1633,31 @@ CONSIGNES: dict[str, str] = {
     "bilan": "Ce que cette SAE vous a appris (compétences, posture professionnelle).",
 }
 
+#: Passage à compléter par l'équipe, seul (champ vide) ou au fil d'un texte rédigé :
+#: « [À COMPLÉTER] » ou « [À COMPLÉTER : ce qu'il faut préciser] ». Surligné dans le Word.
+A_COMPLETER = re.compile(r"\[À COMPLÉTER(?:\s*:[^\]]*)?\]", re.IGNORECASE)
+
+#: Champs rédigés de la partie collective : (champ, libellé, nombre de mots visé).
+CHAMPS_COLLECTIFS: tuple[tuple[str, str, int], ...] = (
+    ("synthese", "Synthèse de l'année (résumé)", 120),
+    ("presentation", "Présentation de l'entreprise et de l'équipe", 100),
+    ("strategie", "Les stratégies mises en œuvre", 150),
+    ("outils", "Les outils (complément à la liste des outils de l'ERP)", 60),
+    ("methodes", "Les méthodes de travail et la gestion de projet", 80),
+    ("prise_de_recul", "Explication et prise de recul sur les résultats", 150),
+    ("conclusion", "Conclusion de la partie collective", 60),
+)
+#: Champs rédigés de chaque partie individuelle : (champ du membre, libellé, clé de consigne).
+CHAMPS_INDIVIDUELS: tuple[tuple[str, str, str], ...] = (
+    ("outils", "Les outils que j'ai montés", "outils_membre"),
+    ("forces", "Mes forces", "forces"),
+    ("faiblesses", "Mes faiblesses", "faiblesses"),
+    ("reussites", "Mes réussites", "reussites"),
+    ("erreurs", "Mes erreurs", "erreurs"),
+    ("mission_specifique", "Ma mission spécifique", "mission_specifique"),
+    ("bilan", "Bilan personnel", "bilan"),
+)
+
 
 @dataclass(frozen=True)
 class Membre:
@@ -1659,6 +1684,9 @@ class ContenuRapport:
     etablissement: str = ""
     enseignants: str = ""
     date: str = ""
+    #: Paragraphe de contexte de l'équipe : entrée de la rédaction assistée, gardé
+    #: dans le brouillon JSON mais absent du Word.
+    contexte: str = ""
     synthese: str = ""
     presentation: str = ""
     strategie: str = ""
