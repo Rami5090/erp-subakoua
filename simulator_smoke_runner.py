@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "aout_sans_juillet"
 LOG: dict = {"metrics": [], "warnings": [], "errors": [], "success": [], "captions": [], "inputs": {},
-             "tables": [], "charts": 0}
+             "tables": [], "charts": 0, "images": 0, "downloads": []}
 
 #: Leviers du simulateur à surcharger (clé session_state -> valeur), ex.
 #: SIM_DECISIONS='{"sim_ced_dec": 2}'. S'applique comme valeur par défaut des
@@ -48,8 +48,12 @@ class Stub:
         table = {
             "number_input": st._number, "text_input": st._text, "selectbox": st._select,
             "radio": st._radio, "slider": st._slider, "checkbox": lambda l, *a, **k: st._chk(l, k),
-            "button": lambda *a, **k: False,
+            "button": st._button,
             "form_submit_button": lambda *a, **k: os.environ.get("SIM_SUBMIT") == "1",
+            "text_area": st._text, "color_picker": lambda l, *a, **k: st._key_val(k, k.get("value", "#000000")),
+            "multiselect": lambda l, options=(), *a, **k: st._key_val(k, list(k.get("default") or [])),
+            "data_editor": st._editor, "file_uploader": lambda *a, **k: None,
+            "download_button": st._download, "image": st._image,
             "columns": st._columns, "tabs": lambda labels, *a, **k: [Stub(st._state) for _ in labels],
             "metric": st._metric, "warning": st._msg("warnings"), "error": st._msg("errors"),
             "dataframe": st._dataframe, "altair_chart": st._chart,
@@ -89,6 +93,33 @@ class Stub:
         return v
 
     def _text(self, label, *a, **k): return self._key_val(k, k.get("value", ""))
+
+    def _button(self, label="", *a, **k):
+        """SIM_CLICK='Générer' simule un clic sur le bouton dont le libellé contient ce texte."""
+        clic = os.environ.get("SIM_CLICK", "")
+        return bool(clic) and clic in str(label)
+
+    def _editor(self, data=None, *a, **k):
+        """Éditeur de tableau : renvoie les données, ou la surcharge SIM_DECISIONS de sa clé."""
+        override = OVERRIDES.get(k.get("key")) if k.get("key") else None
+        if override is not None:
+            import pandas as pd
+            return pd.DataFrame(override)
+        return data
+
+    def _download(self, label="", data=None, file_name=None, *a, **k):
+        """Téléchargement : journalisé, et écrit dans SIM_DOWNLOAD_DIR si la variable est définie."""
+        contenu = data.encode("utf-8") if isinstance(data, str) else data
+        taille = len(contenu) if isinstance(contenu, (bytes, bytearray)) else None
+        LOG["downloads"].append({"label": str(label), "file_name": file_name, "size": taille})
+        dossier = os.environ.get("SIM_DOWNLOAD_DIR")
+        if dossier and file_name and isinstance(contenu, (bytes, bytearray)):
+            Path(dossier, Path(str(file_name)).name).write_bytes(bytes(contenu))
+        return False
+
+    def _image(self, *a, **k):
+        LOG["images"] += 1
+        return self
     def _slider(self, label, *a, **k): return self._key_val(k, k.get("value", a[0] if a else 0))
 
     def _chk(self, label, k):
@@ -231,7 +262,30 @@ def erp(db, periode, module, contenu):
                (periode, module, json.dumps(contenu, ensure_ascii=False)))
 
 
+def seed_rapport_annee(db):
+    """Année 1 complète (janvier → décembre) issue de `rapport_jeu_essai`."""
+    from rapport_jeu_essai import jeu_essai_annee
+
+    jeu = jeu_essai_annee()
+    if os.environ.get("SIM_SANS_EXTRACTIONS") != "1":
+        for row in jeu["erp_donnees"]:
+            db.execute("INSERT INTO erp_donnees (periode, type_donnee, module, contenu) VALUES (?, 'etat_actuel', ?, ?)",
+                       (row["periode"], row["module"], row["contenu"]))
+        for row in jeu["erp_etudes"]:
+            db.execute("INSERT INTO erp_etudes (periode, study_id, payload, read_allowed) VALUES (?,?,?,?)",
+                       (row["periode"], row["study_id"], row["payload"], row["read_allowed"]))
+    for table, lignes in jeu["tables"].items():
+        for ligne in lignes:
+            colonnes = ", ".join(ligne)
+            marques = ", ".join("?" for _ in ligne)
+            db.execute(f"INSERT INTO {table} ({colonnes}) VALUES ({marques})", tuple(ligne.values()))
+    db.commit()
+
+
 def seed(db, scenario):
+    if scenario == "rapport_annee":
+        seed_rapport_annee(db)
+        return
     # Historique SQL saisi jusqu'en Juin (tour 6) ; marketing jusqu'en Mai (tour 5) : comme sur ta capture.
     for t in range(1, 7):
         db.execute("INSERT INTO Historique_Equipe VALUES (?,2.0,1.0,0.5,1000,100,500,0)", (t,))

@@ -519,9 +519,12 @@ def extract_savings_balance(period_data: Mapping[str, Any]) -> Optional[Decimal]
         if str(row.get("Actif", "")).strip().lower() == "compte épargne":
             return to_decimal(row.get("Net exercice N", row.get("Brut")))
     # Étude « Bilan version détaillée » : poste 215 « placements sur livret ».
+    # Une étude sans ce poste laisse la place au bilan d'ouverture.
     bilan = study_payload(period_data, STUDY_BILAN_DETAILLE)
     if bilan:
-        return _study_num(bilan, ("po215Net",), ("po215",))
+        valeur = _study_num(bilan, ("po215Net",), ("po215",))
+        if valeur is not None:
+            return valeur
     # Bilan d'ouverture : l'épargne y porte son propre agrégat.
     initial = study_payload(period_data, STUDY_BILAN_INITIAL)
     if initial:
@@ -725,9 +728,14 @@ def extract_capitaux_propres(period_data: Mapping[str, Any]) -> Optional[Decimal
     for row in rows:
         if str(row.get("Passif", "")).strip().lower() == "total capitaux propres":
             return to_decimal(row.get("Exercice N"))
+    # Chaque source n'est retenue que si elle porte réellement le poste : une
+    # étude « Bilan » achetée mais sans total des capitaux propres ne doit pas
+    # masquer celui publié par l'étude « Résultats ».
     bilan = study_payload(period_data, STUDY_BILAN_DETAILLE)
     if bilan:
-        return _study_num(bilan, ("totalCapitauxPropres",))
+        valeur = _study_num(bilan, ("totalCapitauxPropres",))
+        if valeur is not None:
+            return valeur
     resultats = study_payload(period_data, STUDY_RESULTATS_ENTREPRISE)
     if resultats:
         return _study_num(resultats, ("equity",), ("cumEquity",))
